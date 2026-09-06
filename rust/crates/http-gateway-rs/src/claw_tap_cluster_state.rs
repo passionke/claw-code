@@ -19,7 +19,7 @@ use crate::gateway_llm_model_apply::{
 use crate::pool::interactive_backend::interactive_backend_is_e2b;
 use crate::session_db::GatewaySessionDb;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TapConsistency {
     /// clawTap health clusterId + clusterHash match gateway PG.
@@ -30,7 +30,7 @@ pub enum TapConsistency {
     ClusterMismatch,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ClawTapClusterSnapshot {
     #[serde(rename = "clusterId", skip_serializing_if = "Option::is_none")]
     pub cluster_id: Option<String>,

@@ -83,7 +83,7 @@ e2b 解析为 host 绝对路径 `{hostMountRoot}/{relPath}`，再 bind 进 e2b �
 |------|------|
 | `CLAW_E2B_API_URL` | e2bserver API（`10.8.0.1:3000`） |
 | PG `e2bNasApi.baseUrl` | claw-nas-api singleton HTTP 入口（`./deploy/stack/gateway.sh nas-api-up` 写入） |
-| `CLAW_E2B_NAS_HOST_MOUNT` | **e2b 宿主机** NAS 挂载点（如 `/mnt/nas0`）→ 写入 `nasConfig.hostMountRoot` |
+| e2b `GET /health` → `nas.hostMountRoot` | **e2b 宿主机** bind 根（配置在 e2bserver `deploy.toml [nas]`） |
 | `CLAW_WORK_ROOT` | Gateway 容器内本地 workspace（**不是** NAS） |
 
 ```text
@@ -135,10 +135,8 @@ e2b podman -v  →  guest /claw_host_root
 | `CLAW_E2B_API_URL` | `http://10.8.0.1:3000` | 同左 |
 | PG `e2bNasApi.baseUrl` | **必填**（`gateway.sh nas-api-up` 写入）；未配置则 gateway **启动失败** | 同左 |
 | `CLAW_E2B_SANDBOX_URL` | `http://10.8.0.1:3002` | 同左 |
-| `CLAW_E2B_NAS_SERVER` | `10.8.0.11` | 同左 |
-| `CLAW_E2B_NAS_HOST_MOUNT` | `/mnt/nas0`（e2b 宿主机） | `/mnt/nas0` |
+| e2b `[nas].host_mount_root` | `/mnt/nas0`（e2b deploy.toml） | `/mnt/nas0` |
 | `CLAW_USE_NAS_VOLUME` | `0` | `0` |
-| `CLAW_TAP_TRACES_DIR` | `/mnt/nas0/tap-traces` | 同左 |
 
 Gateway **不设** `CLAW_NAS_HOST_MOUNT`（不直连 NAS）。Canonical IP 见 [`architecture-governance.md`](architecture-governance.md) §1。
 

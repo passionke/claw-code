@@ -3,10 +3,11 @@ use crate::app_state::AppState;
 use crate::routes::app::{
     apply_gateway_llm_model_head_handler, apply_gateway_llm_model_revision_handler,
     delete_gateway_git_pat_handler, delete_gateway_llm_model_handler,
-    ensure_gateway_e2b_singleton_handler, get_gateway_bootstrap_status_handler,
-    get_gateway_e2b_singletons_handler, get_gateway_e2b_templates_handler,
-    get_gateway_global_settings_handler, issue_gateway_admin_mcp_token_handler,
-    list_gateway_llm_model_versions_handler, post_gateway_bootstrap_apply_llm_from_env_handler,
+    ensure_gateway_e2b_singleton_handler, get_gateway_bootstrap_env_snapshot_handler,
+    get_gateway_bootstrap_status_handler, get_gateway_e2b_singletons_handler,
+    get_gateway_e2b_templates_handler, get_gateway_global_settings_handler,
+    issue_gateway_admin_mcp_token_handler, list_gateway_llm_model_versions_handler,
+    post_gateway_bootstrap_apply_deploy_env_handler, post_gateway_bootstrap_apply_llm_from_env_handler,
     post_gateway_bootstrap_ensure_core_handler, probe_gateway_claw_tap_handler,
     put_gateway_active_llm_config_handler, put_gateway_claw_tap_handler,
     put_gateway_e2b_singleton_templates_handler, put_gateway_e2b_worker_settings_handler,
@@ -23,6 +24,14 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/v1/gateway/bootstrap/status",
             get(get_gateway_bootstrap_status_handler),
+        )
+        .route(
+            "/v1/gateway/bootstrap/env-snapshot",
+            get(get_gateway_bootstrap_env_snapshot_handler),
+        )
+        .route(
+            "/v1/gateway/bootstrap/apply-deploy-env",
+            post(post_gateway_bootstrap_apply_deploy_env_handler),
         )
         .route(
             "/v1/gateway/bootstrap/apply-llm-from-env",

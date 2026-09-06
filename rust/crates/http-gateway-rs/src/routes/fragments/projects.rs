@@ -332,9 +332,9 @@ pub(crate) async fn try_pull_project_git(
         let secret = remote.git_token.as_deref();
         let cache = project_git_sync::git_import_cache_dir(&work_dir, &remote.id);
         match project_git_sync::pull_remote_to_cache(&cache, remote, &excluded).await {
-            Ok((mut outcome, files)) => {
+            Ok((mut outcome, bundle)) => {
                 if let Err(e) = nas
-                    .replace_git_import_dest(proj_id, &remote.dest_rel, &files)
+                    .replace_git_import_dest(proj_id, &remote.dest_rel, &bundle)
                     .await
                 {
                     let msg = project_git_sync::redact_git_secret(&format!("nas write: {e}"), secret);

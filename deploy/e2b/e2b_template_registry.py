@@ -3,15 +3,74 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
 _DEBIAN_DEFAULT = "debian:bookworm-slim"
 _DEBIAN_CN = "docker.1ms.run/library/debian:bookworm-slim"
+_CN_APT_MIRROR = "mirrors.aliyun.com"
+_ACR_IMAGE_PREFIX = "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke"
+_GHCR_IMAGE_PREFIX = "ghcr.io/passionke"
+_DEFAULT_WORKER_RELEASE = "release-v1.6.17"
+_DEFAULT_TAP_TAG_GLOBAL = "v0.0.11"
+_DEFAULT_TAP_TAG_CN = "latest"
 
 
 def _env(name: str) -> str:
     return os.environ.get(name, "").strip()
+
+
+def _parse_region_value(raw: str) -> str:
+    return raw.strip().strip('"').strip("'").lower()
+
+
+def _region_from_bashrc() -> str:
+    bashrc = Path.home() / ".bashrc"
+    if not bashrc.is_file():
+        return ""
+    for line in bashrc.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^\s*(?:export\s+)?region=(.+)$", line.strip())
+        if m:
+            return _parse_region_value(m.group(1))
+    return ""
+
+
+def _region_from_claw_region_file() -> str:
+    path = Path.home() / ".claw-region"
+    if not path.is_file():
+        return ""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        if key.strip().lower() in ("region", "region_name"):
+            return _parse_region_value(val)
+    return ""
+
+
+def region_name() -> str:
+    """Same keys as deploy/stack/lib/claw-region.sh (region / REGION / CLAW_REGION)."""
+    for key in ("region", "REGION", "CLAW_REGION"):
+        val = _env(key)
+        if val:
+            return _parse_region_value(val)
+    from_file = _region_from_claw_region_file()
+    if from_file:
+        return from_file
+    return _region_from_bashrc()
+
+
+def region_is_china() -> bool:
+    return region_name() == "china"
+
+
+def cn_mirror_enabled() -> bool:
+    """CN debian/apt mirrors; CI SG skips (matches claw-region.sh). Author: kejiqing"""
+    if _env("GITHUB_ACTIONS").lower() == "true":
+        return False
+    return region_is_china()
 
 
 def load_repo_dotenv(repo_root: Path | None = None) -> Path:
@@ -35,24 +94,42 @@ def load_repo_dotenv(repo_root: Path | None = None) -> Path:
     return root
 
 
-def template_debian_base_image() -> str:
-    """Resolve debian bookworm-slim for e2b Template.build / Dockerfile FROM."""
-    explicit = _env("CLAW_E2B_TEMPLATE_DEBIAN_IMAGE")
+def template_image_prefix() -> str:
+    """Registry namespace for passionke images; region=china → ACR (see claw-region.sh). Author: kejiqing"""
+    if cn_mirror_enabled():
+        return _ACR_IMAGE_PREFIX
+    return _GHCR_IMAGE_PREFIX
+
+
+def template_claude_tap_image() -> str:
+    """claw-observe FROM; region=china → ACR claw-tap:latest. CLAUDE_TAP_IMAGE overrides."""
+    explicit = _env("CLAUDE_TAP_IMAGE")
     if explicit:
         return explicit
-    cn = _env("CLAW_E2B_CN").lower()
-    if cn in ("1", "true", "yes", "on", "cn"):
+    prefix = template_image_prefix()
+    tag = _DEFAULT_TAP_TAG_CN if cn_mirror_enabled() else _DEFAULT_TAP_TAG_GLOBAL
+    return f"{prefix}/claw-tap:{tag}"
+
+
+def template_gateway_worker_image() -> str:
+    """Worker template FROM; region=china → ACR. CLAW_E2B_* overrides."""
+    explicit = _env("CLAW_E2B_TEMPLATE_FROM_IMAGE") or _env("CLAW_E2B_WORKER_IMAGE")
+    if explicit:
+        return explicit
+    return f"{template_image_prefix()}/claw-gateway-worker:{_DEFAULT_WORKER_RELEASE}"
+
+
+def template_debian_base_image() -> str:
+    """Resolve debian bookworm-slim for e2b Template.build / Dockerfile FROM."""
+    if cn_mirror_enabled() and _env("CLAW_USE_DOCKER_IO") != "1":
         return _DEBIAN_CN
     return _DEBIAN_DEFAULT
 
 
 def template_debian_apt_mirror() -> str:
     """Debian apt mirror host; empty = keep image default sources."""
-    explicit = _env("CLAW_E2B_DEBIAN_APT_MIRROR")
-    if explicit:
-        return explicit
-    if _env("CLAW_E2B_CN").lower() in ("1", "true", "yes", "on", "cn"):
-        return "mirrors.aliyun.com"
+    if cn_mirror_enabled():
+        return _CN_APT_MIRROR
     return ""
 
 
@@ -76,11 +153,12 @@ def log_debian_base_resolution(*, api_url: str = "") -> str:
     """Print resolved debian ref; return it for callers."""
     img = template_debian_base_image()
     print(
-        f"==> debian base: {img!r} "
-        f"(CLAW_E2B_CN={_env('CLAW_E2B_CN') or '(unset)'}, "
-        f"CLAW_E2B_TEMPLATE_DEBIAN_IMAGE={_env('CLAW_E2B_TEMPLATE_DEBIAN_IMAGE') or '(unset)'})",
+        f"==> debian base: {img!r} (region={region_name() or '(unset)'})",
         file=sys.stderr,
     )
+    mirror = template_debian_apt_mirror()
+    if mirror:
+        print(f"==> debian apt mirror: {mirror!r}", file=sys.stderr)
     if api_url:
         print(
             f"==> e2b build runs on server ({api_url}); "

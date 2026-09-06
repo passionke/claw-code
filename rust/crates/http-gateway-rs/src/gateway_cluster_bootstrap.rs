@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-use crate::claw_tap_cluster_state::{self, ClawTapClusterHandle, TapConsistency};
-use crate::cluster_identity::gateway_cluster_id;
+use crate::claw_tap_cluster_state::{self, ClawTapClusterHandle, ClawTapClusterSnapshot, TapConsistency};
 use crate::gateway_e2b_core_readiness::{load_core_readiness_snapshot, observe_component_ready};
+use crate::gateway_e2b_singleton_api::{self, E2bSingletonsStatusResponse};
+use crate::cluster_identity::gateway_cluster_id;
 use crate::gateway_e2b_nas_api_settings::E2bNasApiSettings;
 use crate::gateway_e2b_observe_settings::E2bObserveSettings;
 use crate::gateway_e2b_worker_settings::E2bWorkerSettings;
@@ -17,7 +18,7 @@ use crate::gateway_global_settings::{
     self, get_gateway_global_settings, put_active_llm_config, PutActiveLlmConfigInput,
 };
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
-use crate::pool::interactive_backend::interactive_backend_is_e2b;
+use crate::pool::interactive_backend::{interactive_backend_is_e2b, E2bNasApiSingleton};
 use crate::pool::PoolClients;
 use crate::session_db::GatewaySessionDb;
 use claw_e2b_sandbox_client::E2bSandboxClient;
@@ -65,7 +66,7 @@ pub struct ClusterBootstrapSettings {
     pub completed_at_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ClusterBootstrapSnapshot {
     #[serde(rename = "needsBootstrap")]
     pub needs_bootstrap: bool,
@@ -82,6 +83,10 @@ pub struct ClusterBootstrapSnapshot {
     pub template_entries: Vec<BootstrapTemplateEntry>,
     #[serde(rename = "completedAtMs", skip_serializing_if = "Option::is_none")]
     pub completed_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub singletons: Option<E2bSingletonsStatusResponse>,
+    #[serde(rename = "clawTap", skip_serializing_if = "Option::is_none")]
+    pub claw_tap: Option<ClawTapClusterSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -143,12 +148,17 @@ fn build_id_ready(build_id: Option<&String>) -> bool {
     build_id.is_some_and(|id| !id.trim().is_empty())
 }
 
+fn nas_api_bootstrap_required() -> bool {
+    E2bNasApiSingleton::enabled_from_env()
+}
+
 fn template_entries_from_settings(
     observe: &E2bObserveSettings,
     nas_api: &E2bNasApiSettings,
     worker: &E2bWorkerSettings,
     worker_relaxed: &E2bWorkerSettings,
 ) -> Vec<BootstrapTemplateEntry> {
+    let nas_required = nas_api_bootstrap_required();
     vec![
         BootstrapTemplateEntry {
             key: "e2bObserve".into(),
@@ -160,7 +170,7 @@ fn template_entries_from_settings(
             key: "e2bNasApi".into(),
             alias: "claw-nas-api".into(),
             build_id: nas_api.build_id.clone(),
-            ready: build_id_ready(nas_api.build_id.as_ref()),
+            ready: !nas_required || build_id_ready(nas_api.build_id.as_ref()),
         },
         BootstrapTemplateEntry {
             key: "e2bWorker".into(),
@@ -188,28 +198,19 @@ fn template_entries_from_settings(
 #[must_use]
 pub fn template_build_commands(cluster_id: &str) -> Vec<BootstrapCommand> {
     let cid = cluster_id.trim();
-    vec![
-        BootstrapCommand {
-            label: "全量核心模板（observe + nas-api + worker strict/relaxed）".into(),
-            command: format!(
-                "export CLAW_CLUSTER_ID={cid}\nexport CLAW_GATEWAY_DATABASE_URL='<workbox-pg-url>'\n./deploy/e2b/build-selfhosted-templates.sh"
-            ),
-            hint: Some(
-                "在开发机 claw-code 仓库根目录执行；PG URL 与 workbox Gateway 相同。见 deploy/e2b/WORKER-BUILD.md"
-                    .into(),
-            ),
-        },
-        BootstrapCommand {
-            label: "Worker strict + relaxed（日常增量）".into(),
-            command: format!(
-                "export CLAW_CLUSTER_ID={cid}\nexport CLAW_GATEWAY_DATABASE_URL='<workbox-pg-url>'\n./deploy/stack/gateway.sh e2b-worker-deploy"
-            ),
-            hint: Some(
-                "Mac arm64 可加 --from-ci-image release-vX.Y.Z。构建完成后 PG 出现 e2bWorker / e2bWorkerRelaxed buildId"
-                    .into(),
-            ),
-        },
-    ]
+    let label = if nas_api_bootstrap_required() {
+        "deploy host：构建四个核心 e2b 模板"
+    } else {
+        "deploy host：构建核心 e2b 模板（无 NAS，跳过 claw-nas-api）"
+    };
+    vec![BootstrapCommand {
+        label: label.into(),
+        command: "./deploy/e2b/build-selfhosted-templates.sh".into(),
+        hint: Some(format!(
+            "在 claw-code 仓库根目录、deploy host 上执行（已 source .env；CLAW_CLUSTER_ID={cid}）。\
+             无 NAS 时在 .env 设 CLAW_E2B_NAS_API=0。"
+        )),
+    }]
 }
 
 async fn llm_phase_complete(db: &GatewaySessionDb) -> Result<bool, sqlx::Error> {
@@ -278,6 +279,8 @@ pub async fn cluster_bootstrap_status(
             template_commands: vec![],
             template_entries: vec![],
             completed_at_ms: None,
+            singletons: None,
+            claw_tap: None,
         });
     }
 
@@ -398,6 +401,21 @@ pub async fn cluster_bootstrap_status(
         first_incomplete_phase(&phases)
     };
 
+    let singletons = if let Some(c) = client {
+        gateway_e2b_singleton_api::load_e2b_singletons_status(db, Some(c))
+            .await
+            .ok()
+    } else {
+        gateway_e2b_singleton_api::load_e2b_singletons_status(db, None)
+            .await
+            .ok()
+    };
+    let claw_tap = if let Some(handle) = claw_tap_cluster {
+        Some(claw_tap_cluster_state::snapshot_from_handle(handle).await)
+    } else {
+        None
+    };
+
     Ok(ClusterBootstrapSnapshot {
         needs_bootstrap,
         cluster_id: cluster_id.clone(),
@@ -407,6 +425,8 @@ pub async fn cluster_bootstrap_status(
         template_commands: template_build_commands(&cluster_id),
         template_entries,
         completed_at_ms: bootstrap_meta.completed_at_ms,
+        singletons,
+        claw_tap,
     })
 }
 
@@ -602,8 +622,12 @@ mod tests {
     #[test]
     fn template_commands_include_cluster_id() {
         let cmds = template_build_commands("workbox-20260828");
-        assert_eq!(cmds.len(), 2);
-        assert!(cmds[0].command.contains("CLAW_CLUSTER_ID=workbox-20260828"));
+        assert_eq!(cmds.len(), 1);
+        assert!(cmds[0].command.contains("build-selfhosted-templates.sh"));
+        assert!(cmds[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("CLAW_CLUSTER_ID=workbox-20260828")));
     }
 
     #[test]

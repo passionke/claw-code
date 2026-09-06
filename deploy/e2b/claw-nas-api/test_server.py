@@ -4,11 +4,19 @@
 
 from __future__ import annotations
 
+import gzip
+import io
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 
-from server import _atomic_symlink
+from server import (
+    _atomic_symlink,
+    _extract_git_import_tar,
+    _finish_git_import_parts,
+    _git_import_upload_staging,
+)
 
 
 class AtomicSymlinkTests(unittest.TestCase):
@@ -52,6 +60,81 @@ class AtomicSymlinkTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 _atomic_symlink(link, ".claw/project-home-versions/rev-a")
             self.assertIn("refusing to replace directory", str(ctx.exception))
+
+
+def _tar_gz_bytes(files: dict[str, bytes]) -> bytes:
+  buf = io.BytesIO()
+  with tarfile.open(fileobj=buf, mode="w:") as archive:
+    for rel, data in files.items():
+      info = tarfile.TarInfo(name=rel)
+      info.size = len(data)
+      archive.addfile(info, io.BytesIO(data))
+  raw = buf.getvalue()
+  out = io.BytesIO()
+  with gzip.GzipFile(fileobj=out, mode="wb") as gz:
+    gz.write(raw)
+  return out.getvalue()
+
+
+class ExtractGitImportTarTests(unittest.TestCase):
+    def test_extract_replaces_dest_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / "cluster" / "proj_1" / "home" / "repo"
+            dest.mkdir(parents=True)
+            (dest / "old.txt").write_text("old", encoding="utf-8")
+            tar_gz = _tar_gz_bytes(
+                {
+                    "README.md": b"# new\n",
+                    "src/a.rs": b"fn main() {}\n",
+                }
+            )
+            count = _extract_git_import_tar(dest, tar_gz)
+            self.assertEqual(count, 2)
+            self.assertFalse((dest / "old.txt").exists())
+            self.assertEqual((dest / "README.md").read_bytes(), b"# new\n")
+            self.assertEqual((dest / "src/a.rs").read_bytes(), b"fn main() {}\n")
+
+    def test_extract_rejects_path_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "cluster" / "proj_1" / "home" / "repo"
+            tar_gz = _tar_gz_bytes({"../escape.txt": b"x"})
+            with self.assertRaises(ValueError):
+                _extract_git_import_tar(dest, tar_gz)
+
+
+class FinishGitImportPartsTests(unittest.TestCase):
+    def test_finish_concat_parts_then_extract_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            import server
+
+            prev = server.NAS_ROOT
+            server.NAS_ROOT = root
+            try:
+                dest_rel = "cluster/proj_9/home/starfish"
+                tar_gz = _tar_gz_bytes(
+                    {
+                        "README.md": b"# chunked\n",
+                        "pkg/main.py": b"print('ok')\n",
+                    }
+                )
+                mid = len(tar_gz) // 2 or 1
+                chunks = [tar_gz[:mid], tar_gz[mid:]]
+                upload_id = "test-upload-1"
+                staging = _git_import_upload_staging(upload_id)
+                staging.mkdir(parents=True)
+                for i, chunk in enumerate(chunks):
+                    (staging / f"part-{i:04d}").write_bytes(chunk)
+                result = _finish_git_import_parts(dest_rel, upload_id, len(chunks))
+                self.assertEqual(result["parts"], len(chunks))
+                self.assertEqual(result["extracted"], 2)
+                dest = root / dest_rel
+                self.assertEqual((dest / "README.md").read_bytes(), b"# chunked\n")
+                self.assertEqual((dest / "pkg/main.py").read_bytes(), b"print('ok')\n")
+                self.assertFalse(staging.exists())
+            finally:
+                server.NAS_ROOT = prev
 
 
 if __name__ == "__main__":

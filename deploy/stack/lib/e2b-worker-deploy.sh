@@ -197,9 +197,9 @@ if [[ "${FROM_CI_IMAGE}" -eq 1 ]]; then
 elif [[ "${SKIP_COMPILE}" -eq 0 ]]; then
   claw_step_begin "1/${TOTAL_STEPS} linux compile (platform=${CLAW_LINUX_COMPILE_PLATFORM})"
   CN_FLAG=0
-  if [[ "${CLAW_USE_CN_CRATES_MIRROR:-0}" == "1" || "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]]; then
-    CN_FLAG=1
-  fi
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/deploy/stack/lib/claw-region.sh"
+  claw_cn_mirror_enabled && CN_FLAG=1
   if [[ "${CLAW_USE_DOCKER_IO:-}" == "1" ]] || [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
     REG="docker.io"
   else

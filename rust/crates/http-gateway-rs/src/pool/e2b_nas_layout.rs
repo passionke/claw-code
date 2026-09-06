@@ -27,33 +27,15 @@ pub fn allocate_worker_id() -> String {
     format!("wrk_{ms:x}_{seq:x}")
 }
 
-/// True when gateway process can mkdir/symlink on the same NAS tree e2b binds.
+/// True when gateway uses claw-nas-api for NAS layout (e2b production path).
 #[must_use]
-pub fn e2b_nas_layout_active(nas_root: &Path) -> bool {
-    if let Ok(m) = std::env::var("CLAW_NAS_HOST_MOUNT") {
-        let trimmed = m.trim();
-        if !trimmed.is_empty() {
-            if Path::new(trimmed).exists() {
-                return true;
-            }
-            return nas_root.is_dir();
-        }
-    }
-    nas_root.join("proj_1").exists() || nas_root.join(".claw-e2b-tools").exists()
+pub fn e2b_nas_layout_active(_nas_root: &Path) -> bool {
+    true
 }
 
-/// Resolved NAS host root for Gateway file operations (`mkdir`, symlink, chown).
+/// Legacy local NAS root (dev only); e2b production uses claw-nas-api HTTP.
 #[must_use]
 pub fn nas_host_root(work_root: &Path, _pool_rpc_host_work_root: Option<&Path>) -> PathBuf {
-    if let Ok(m) = std::env::var("CLAW_NAS_HOST_MOUNT") {
-        let trimmed = m.trim();
-        if !trimmed.is_empty() {
-            let p = PathBuf::from(trimmed);
-            if p.exists() {
-                return p;
-            }
-        }
-    }
     work_root.to_path_buf()
 }
 

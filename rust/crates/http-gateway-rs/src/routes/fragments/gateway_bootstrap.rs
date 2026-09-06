@@ -25,6 +25,45 @@ pub(crate) async fn get_gateway_bootstrap_status_handler(
 }
 
 #[utoipa::path(
+    get,
+    path = "/v1/gateway/bootstrap/env-snapshot",
+    tag = "Gateway Bootstrap",
+    operation_id = "get_gateway_bootstrap_env_snapshot_handler",
+    summary = "Deploy env snapshot for bootstrap wizard",
+    responses(
+        (status = 200, description = "Env snapshot", body = gateway_bootstrap_deploy::BootstrapEnvSnapshot),
+    )
+)]
+pub(crate) async fn get_gateway_bootstrap_env_snapshot_handler(
+    State(state): State<AppState>,
+) -> Json<gateway_bootstrap_deploy::BootstrapEnvSnapshot> {
+    Json(gateway_bootstrap_deploy::bootstrap_env_snapshot(
+        &state.session_db,
+    ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/gateway/bootstrap/apply-deploy-env",
+    tag = "Gateway Bootstrap",
+    operation_id = "post_gateway_bootstrap_apply_deploy_env_handler",
+    summary = "Merge whitelisted keys into deploy .env",
+    responses(
+        (status = 200, description = "Apply outcome", body = gateway_bootstrap_deploy::BootstrapApplyDeployEnvResponse),
+        (status = 400, description = "Apply failed"),
+    )
+)]
+pub(crate) async fn post_gateway_bootstrap_apply_deploy_env_handler(
+    State(state): State<AppState>,
+    Json(body): Json<gateway_bootstrap_deploy::BootstrapApplyDeployEnvInput>,
+) -> Result<Json<gateway_bootstrap_deploy::BootstrapApplyDeployEnvResponse>, ApiError> {
+    let resp = gateway_bootstrap_deploy::apply_deploy_env(&state.session_db, body)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(resp))
+}
+
+#[utoipa::path(
     post,
     path = "/v1/gateway/bootstrap/apply-llm-from-env",
     tag = "Gateway Bootstrap",

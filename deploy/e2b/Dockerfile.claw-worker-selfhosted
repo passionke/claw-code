@@ -1,10 +1,19 @@
 # claw-worker for self-hosted e2bserver: CI worker image + e2b runtime layers. Author: kejiqing
 # Build: CLAW_E2B_WORKER_IMAGE=<acr>/claw-gateway-worker:release-vX \
 #        python3 deploy/e2b/build-claw-worker-selfhosted.py
+# region=china → DEBIAN_APT_MIRROR=mirrors.aliyun.com (e2b_template_registry.py). Author: kejiqing
 ARG WORKER_BASE_IMAGE=crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-gateway-worker:release-v1.6.17
+ARG DEBIAN_APT_MIRROR=
 FROM ${WORKER_BASE_IMAGE}
+ARG DEBIAN_APT_MIRROR
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN if [ -n "${DEBIAN_APT_MIRROR}" ]; then \
+      sed -i "s|mirrors.tuna.tsinghua.edu.cn|${DEBIAN_APT_MIRROR}|g; s|deb.debian.org|${DEBIAN_APT_MIRROR}|g; s|security.debian.org|${DEBIAN_APT_MIRROR}|g" \
+        /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+      sed -i "s|mirrors.tuna.tsinghua.edu.cn|${DEBIAN_APT_MIRROR}|g; s|deb.debian.org|${DEBIAN_APT_MIRROR}|g; s|security.debian.org|${DEBIAN_APT_MIRROR}|g" \
+        /etc/apt/sources.list 2>/dev/null || true; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
     nfs-common \
     ca-certificates \
     sudo \

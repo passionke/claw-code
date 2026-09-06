@@ -66,7 +66,7 @@ pull **不**跑 `apply_project_config`：PG 物化只走 activate → `project_h
 | 旧字段 `gitUrl`/`gitRef`/`gitPatId` | 读作 `remotes[0]`。 |
 
 - 保存：`PUT /v1/project/config/{proj_id}` 的 `gitSyncJson`；PUT **省略** `gitSyncJson` 时保留库内已有配置。
-- 拉取：`POST /v1/projects/{proj_id}/git/pull`（gateway clone scratch → nas-api 写入 dest；**不**改 `project_home_def`）；**仅手动**，无自动 poll。
+- 拉取：`POST /v1/projects/{proj_id}/git/pull`（gateway clone scratch → **tar.gz 一次** nas-api `PUT /v1/extract-tar/...` 解压到 dest；**不**改 `project_home_def`）；**仅手动**，无自动 poll。
 - Pool worker 通过 **`/claw_ds` bind** 读 project home（strict 只读，relaxed 可写；再拉取覆盖 git dest）。skills / rules / CLAUDE 仍以 DB → `project_home_def` 为准。
 
 ### `skills_json` 约定

@@ -19,18 +19,15 @@ from e2b_template_registry import (
     load_repo_dotenv,
     log_debian_base_resolution,
     template_apt_prepare_prefix,
+    template_debian_apt_mirror,
     template_debian_base_image,
+    template_gateway_worker_image,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
 
 DOCKERFILE_E2B = _E2B_DIR / "Dockerfile.claw-worker-selfhosted"
-
-DEFAULT_WORKER_IMAGE = (
-    "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/"
-    "passionke/claw-gateway-worker:release-v1.6.17"
-)
 
 WORKER_START_CMD = "/usr/local/bin/claw-worker-start"
 WORKER_READY_CMD = "/usr/local/bin/claw-worker-ready"
@@ -49,7 +46,7 @@ def _conn_opts() -> dict[str, str]:
 
 
 def _worker_base_image() -> str:
-    return _env("CLAW_E2B_TEMPLATE_FROM_IMAGE") or _env("CLAW_E2B_WORKER_IMAGE", DEFAULT_WORKER_IMAGE)
+    return template_gateway_worker_image()
 
 
 def _e2b_worker_image_tag(worker_image: str) -> str:
@@ -135,25 +132,30 @@ def _build_e2b_worker_image(worker_image: str) -> str:
     if not DOCKERFILE_E2B.is_file():
         raise SystemExit(f"error: missing {DOCKERFILE_E2B}")
 
+    apt_mirror = template_debian_apt_mirror()
+    if apt_mirror:
+        print(f"==> debian apt mirror (worker layer): {apt_mirror!r}")
+
     print(
         f"==> {rt} build e2b worker image {e2b_image!r} "
         f"(FROM {worker_image!r}, {platform}); 250 will pull this image"
     )
-    subprocess.check_call(
-        [
-            rt,
-            "build",
-            "-f",
-            str(DOCKERFILE_E2B),
-            "--build-arg",
-            f"WORKER_BASE_IMAGE={worker_image}",
-            "--platform",
-            platform,
-            "-t",
-            e2b_image,
-            str(_E2B_DIR),
-        ]
-    )
+    build_args = [
+        rt,
+        "build",
+        "-f",
+        str(DOCKERFILE_E2B),
+        "--build-arg",
+        f"WORKER_BASE_IMAGE={worker_image}",
+        "--build-arg",
+        f"DEBIAN_APT_MIRROR={apt_mirror}",
+        "--platform",
+        platform,
+        "-t",
+        e2b_image,
+        str(_E2B_DIR),
+    ]
+    subprocess.check_call(build_args)
     if _env("CLAW_E2B_WORKER_E2B_PUSH", "1") not in ("0", "false", "no"):
         _acr_login_if_needed(e2b_image)
         print(f"==> {rt} push {e2b_image!r}")

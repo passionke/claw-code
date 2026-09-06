@@ -78,18 +78,18 @@ pub async fn run() {
             );
         }
     }
-    // e2b: NAS layout is claw-nas-api only (no gateway local mount fallback).
+    // e2b without NAS: CLAW_E2B_NAS_API=0 skips claw-nas-api singleton (local workspace only).
     if e2b_client.is_some() && !pool::E2bNasApiSingleton::enabled_from_env() {
-        eprintln!("http-gateway-rs: CLAW_E2B_NAS_API must not be disabled in e2b mode");
-        std::process::exit(1);
+        tracing::info!(
+            target: "claw_e2b_nas",
+            "CLAW_E2B_NAS_API=0 — nas-api singleton disabled; workspace without NFS"
+        );
     }
     let nas_api = Arc::new(pool::E2bNasApiSingleton::new());
     let nas_layout = pool::NasLayoutBackend::new(Arc::clone(&nas_api));
     let pool_clients = pool::PoolClients::from_env(
         Arc::clone(&live_report_hub),
-        work_root.clone(),
         e2b_client.clone(),
-        pool_rpc_host_work_root.clone(),
         nas_layout,
     );
     let co_located_pool_id = Some(pool_clients.pool_id().to_string());

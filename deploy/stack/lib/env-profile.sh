@@ -31,6 +31,9 @@ claw_apply_deploy_profile() {
   local profile
   local _profile_lib
   _profile_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=claw-region.sh
+  source "${_profile_lib}/claw-region.sh"
+  claw_apply_region_defaults
   # shellcheck source=release-images.sh
   source "${_profile_lib}/release-images.sh"
   profile="$(claw_deploy_profile_name)" || return 1
@@ -42,7 +45,11 @@ claw_apply_deploy_profile() {
     local)
       unset CLAW_POOL_DAEMON_TCP CLAW_POOL_DAEMON_SOCKET CLAW_POOL_DAEMON_TCP_HOST 2>/dev/null || true
       unset CLAW_POOL_RPC_TRANSPORT 2>/dev/null || true
-      export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-podman}"
+      if [[ "$(uname -s)" == Darwin ]]; then
+        export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-podman}"
+      else
+        export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-docker}"
+      fi
       export GATEWAY_IMAGE="${GATEWAY_IMAGE:-claw-gateway-rs:local}"
       export GATEWAY_PLAYGROUND_IMAGE="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
       # shellcheck source=/dev/null

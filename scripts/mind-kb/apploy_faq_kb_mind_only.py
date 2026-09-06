@@ -496,9 +496,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--nas-host-mount",
-        default=os.environ.get("CLAW_E2B_NAS_HOST_MOUNT")
-        or repo_env.get("CLAW_E2B_NAS_HOST_MOUNT")
-        or DEFAULT_NAS_ROOT,
+        default=os.environ.get("CLAW_KB_NAS_HOST") or DEFAULT_NAS_ROOT,
     )
     ap.add_argument("--nas-ssh", default=os.environ.get("CLAW_E2B_NAS_SSH", DEFAULT_NAS_SSH))
     ap.add_argument("--project-home", default="")

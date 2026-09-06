@@ -60,26 +60,25 @@ impl NasLayoutBackend {
             .await
     }
 
-    /// Replace `{cluster}/proj_N/home/<destRel>/` with cloned files (system overlay). Author: kejiqing
+    /// Replace `{cluster}/proj_N/home/<destRel>/` with cloned files (tar.gz → nas-api extract). Author: kejiqing
     pub async fn replace_git_import_dest(
         &self,
         proj_id: i64,
         dest_rel: &str,
-        files: &[crate::project_git_sync::GitImportFile],
+        bundle: &crate::project_git_sync::GitImportBundle,
     ) -> Result<(), String> {
         let cluster_id = self.cluster_id()?;
         let dest_abs = crate::project_git_sync::git_import_nas_dest(&cluster_id, proj_id, dest_rel)
             .map_err(|e| format!("git destRel: {e}"))?;
-        self.nas_api.rmdir_git_import_dest(&dest_abs).await?;
-        self.mkdir_rel(&dest_abs).await?;
-        for file in files {
-            let rel_under_home =
-                crate::project_git_sync::git_import_home_file_rel(dest_rel, &file.rel)
-                    .map_err(|e| format!("git dest file: {e}"))?;
-            self.put_proj_home_file(&cluster_id, proj_id, &rel_under_home, &file.bytes)
-                .await?;
-        }
-        Ok(())
+        tracing::info!(
+            file_count = bundle.file_count,
+            tar_bytes = bundle.tar_gz.len(),
+            dest = %dest_abs,
+            "git import upload to nas-api"
+        );
+        self.nas_api
+            .upload_git_import_tar_gz_dest(&dest_abs, &bundle.tar_gz)
+            .await
     }
 
     async fn symlink_rel(&self, rel: &str, target: &str) -> Result<(), String> {

@@ -16,19 +16,15 @@ from e2b_template_registry import (
     apply_template_skip_cache_force,
     load_repo_dotenv,
     log_debian_base_resolution,
+    template_claude_tap_image,
     template_debian_apt_mirror,
+    template_gateway_worker_image,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
 
 DOCKERFILE_E2B = _E2B_DIR / "Dockerfile.claw-observe-selfhosted"
-
-DEFAULT_CLAUDE_TAP_IMAGE = "ghcr.io/passionke/claude-tap:v0.0.11"
-DEFAULT_WORKER_IMAGE = (
-    "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/"
-    "passionke/claw-gateway-worker:release-v1.6.17"
-)
 
 OBSERVE_START_CMD = "/usr/local/bin/claw-observe-start"
 OBSERVE_READY_CMD = "/usr/local/bin/claw-observe-ready"
@@ -85,11 +81,11 @@ def _acr_login_if_needed(image_ref: str) -> None:
 
 
 def _tap_base_image() -> str:
-    return _env("CLAUDE_TAP_IMAGE", DEFAULT_CLAUDE_TAP_IMAGE)
+    return template_claude_tap_image()
 
 
 def _worker_release_tag() -> str:
-    base = _env("CLAW_E2B_WORKER_IMAGE", DEFAULT_WORKER_IMAGE)
+    base = template_gateway_worker_image()
     if ":" not in base:
         return "latest"
     return base.rsplit(":", 1)[-1]
@@ -101,7 +97,7 @@ def _e2b_observe_image_tag(*, skip_cache: bool) -> str:
     if explicit:
         return explicit
 
-    base = _env("CLAW_E2B_WORKER_IMAGE", DEFAULT_WORKER_IMAGE)
+    base = template_gateway_worker_image()
     release_tag = _worker_release_tag()
     observe_tag = _env("CLAW_E2B_OBSERVE_E2B_TAG")
     if not observe_tag:
@@ -136,10 +132,10 @@ def _build_e2b_observe_image(live_port: int, e2b_image: str) -> str:
     subprocess.check_call([rt, "pull", "--platform", platform, tap_base])
 
     if apt_mirror:
+        from e2b_template_registry import region_name
+
         print(
-            f"==> debian apt mirror: {apt_mirror!r} "
-            f"(CLAW_E2B_CN={_env('CLAW_E2B_CN') or '(unset)'}, "
-            f"CLAW_E2B_DEBIAN_APT_MIRROR={_env('CLAW_E2B_DEBIAN_APT_MIRROR') or '(unset)'})"
+            f"==> debian apt mirror: {apt_mirror!r} (region={region_name() or '(unset)'})"
         )
 
     print(

@@ -122,6 +122,15 @@ claw_linux_compile_release() {
   [[ -n "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-}" ]] && \
     cargo_env_args+=(-e "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS}")
 
+  # utoipa-swagger-ui build.rs downloads GitHub zip; CN hosts often fail direct curl. Author: kejiqing
+  if [[ "${use_cn_cargo}" == "1" && -z "${SWAGGER_UI_DOWNLOAD_URL:-}" ]]; then
+    cargo_env_args+=(
+      -e "SWAGGER_UI_DOWNLOAD_URL=https://ghfast.top/https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.17.14.zip"
+    )
+  elif [[ -n "${SWAGGER_UI_DOWNLOAD_URL:-}" ]]; then
+    cargo_env_args+=(-e "SWAGGER_UI_DOWNLOAD_URL=${SWAGGER_UI_DOWNLOAD_URL}")
+  fi
+
   # shellcheck disable=SC2086
   "${container_cli}" run --rm --pull=never --platform "linux/${linux_arch}" \
     -e "CLAW_RUST_VERSION=${CLAW_RUST_VERSION}" \
@@ -222,9 +231,9 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     REG="${REG%/}"
   fi
   CN_FLAG=0
-  if [[ "${GITHUB_ACTIONS:-}" != "true" ]] && [[ "${CLAW_USE_CN_CRATES_MIRROR:-0}" == "1" || "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]]; then
-    CN_FLAG=1
-  fi
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/deploy/stack/lib/claw-region.sh"
+  claw_cn_mirror_enabled && CN_FLAG=1
   # shellcheck source=/dev/null
   source "${ROOT_DIR}/deploy/stack/lib/rust-compile-image.sh"
   COMPILE_IMAGE="$(claw_ensure_rust_compile_image "${ROOT_DIR}" "${CONTAINER_CLI}" "${REG}")"

@@ -15,20 +15,20 @@ import {
   FormOutlined,
 } from "@ant-design/icons";
 import type { MenuProps } from "antd";
-import { Avatar, Button, Dropdown, Layout, Menu, Select, Space, Tag, Typography } from "antd";
+import { Avatar, Button, Dropdown, Layout, Menu, Select, Space, Spin, Tag, Typography } from "antd";
 import { useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { adminLogout, fetchAdminMe } from "../api/client";
 import CreateProjectModal from "../components/CreateProjectModal";
-import BootstrapBanner from "../components/BootstrapBanner";
 import { useApp } from "../context/AppContext";
+import { useClusterBootstrap } from "../hooks/useClusterBootstrap";
+import ClusterBootstrapGatePage from "../pages/ClusterBootstrapGatePage";
 import { formatProjectLabel } from "../utils/projectLabel";
 import { isOvsWorkerRelaxed, ovsIdeHref } from "../utils/ovsUrl";
 
 const { Header, Sider, Content } = Layout;
 
 const GLOBAL_MENU_CHILDREN = [
-  { key: "/global/bootstrap", label: "首次引导" },
   { key: "/global/inference", label: "全局推理" },
   { key: "/global/e2b-platform", label: "e2b 平台" },
   { key: "/global/e2b-core", label: "核心组件" },
@@ -71,6 +71,7 @@ export default function AdminLayout() {
     gatewayImageTag,
     projectConfig,
   } = useApp();
+  const { snap, ready, needsBootstrap, refresh } = useClusterBootstrap();
   const loc = useLocation();
   const nav = useNavigate();
   const [adminUser, setAdminUser] = useState("");
@@ -132,6 +133,34 @@ export default function AdminLayout() {
     value: p.projId,
     label: formatProjectLabel(p),
   }));
+
+  if (!ready || !snap) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#0f1419",
+        }}
+      >
+        <Spin size="large" />
+      </div>
+    );
+  }
+
+  if (needsBootstrap && snap) {
+    return (
+      <ClusterBootstrapGatePage
+        snap={snap}
+        onRefresh={() => refresh(false)}
+        onComplete={async () => {
+          await refresh(false);
+        }}
+      />
+    );
+  }
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
@@ -216,7 +245,6 @@ export default function AdminLayout() {
           />
         </Sider>
         <Content style={{ padding: 16, overflow: "auto" }}>
-          <BootstrapBanner />
           <Outlet />
         </Content>
       </Layout>

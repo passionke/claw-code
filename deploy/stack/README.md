@@ -134,7 +134,7 @@ cp deploy/stack/env.production.example .env
 
 ### 1.2 镜像
 
-**本地开发（macOS）**：**首次** `podman run` 编译会慢（拉依赖，和 Rust 有关，不是网关逻辑慢）；**第二次起** 卷 `claw-cargo-registry` 缓存后明显变快。镜像打包只做 COPY（秒级）。`.env` 保留 `CLAW_USE_CN_CRATES_MIRROR=1`。
+**本地开发（macOS）**：**首次** `podman run` 编译会慢（拉依赖，和 Rust 有关，不是网关逻辑慢）；**第二次起** 卷 `claw-cargo-registry` 缓存后明显变快。镜像打包只做 COPY（秒级）。国内机器在 `~/.bashrc` 设 `export region=china`（见 `deploy/stack/lib/claw-region.sh`）。
 
 **Linux / CI**：镜像内完整编译，用同一 `gateway.sh build`（非 Darwin 路径）。
 
@@ -242,8 +242,8 @@ machine 掩盖端口分流。
 
 ## 4. 构建说明摘录
 
-- 基础镜像仓库：默认 `CONTAINER_BASE_REGISTRY=docker.1ms.run`（`.env`）；`CLAW_USE_DOCKER_IO=1` 时用 `docker.io`。
-- 国内可选：`CLAW_USE_CN_RUST_MIRROR=1`（仅影响 **首次** rustup 相关层；镜像已改为用 base 镜像自带 **stable**，不再 `rustup install nightly`，避免 nightly 每天更新导致反复下 `rust-std`）。宿主 `rust/.cargo/config.toml.example` 拷贝见 `.env.example` 注释。
+- 基础镜像仓库：默认 `CONTAINER_BASE_REGISTRY=docker.1ms.run`（`region=china` 时）；`CLAW_USE_DOCKER_IO=1` 时用 `docker.io`。
+- 国内/国际：`export region=china`（`~/.bashrc` 或 `.env` 的 `REGION=china`）→ apt/cargo/rust 走国内镜像；否则国际默认。详见 `deploy/stack/lib/claw-region.sh`。
 
 ---
 

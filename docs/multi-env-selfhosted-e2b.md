@@ -4,62 +4,51 @@ Author: kejiqing
 
 ## Goal
 
-For multi-cluster/multi-environment deployment, keep all environment-specific values in repo root `.env` anchors and avoid hardcoded host/domain values in runtime scripts.
+Gateway `.env` holds **only Gateway → e2b API client** settings. e2b host config (NAS bind root, traffic, `sandbox_domain`) lives in **e2bserver** `config/deploy.toml` on the e2b machine.
 
-## What changed
+## claw-code `.env` (Gateway)
 
-- Added gateway command: `./deploy/stack/gateway.sh sync-e2b-env`
-  - Script path: `deploy/stack/lib/sync-e2b-host-env.sh`
-  - Applies `.env` anchors to co-located e2bserver configs:
-    - panel config: `config/deploy.toml`
-    - worker config: `config/worker.toml`
-- `gateway.sh up` now auto-runs `sync-e2b-env` when `CLAW_E2B_SERVER_ROOT` is set.
-- Added production template: `deploy/stack/env.selfhosted-prod.example`
-  - Uses `anchors + derived` pattern for environment migration.
-- `sync-e2b-env` now enforces DNS correctness:
-  - It fails fast if `CLAW_E2B_DOMAIN` does not resolve to `CLAW_E2B_HOST`.
-  - No `/etc/hosts` fallback is performed.
+Maintain:
 
-## Source of truth
+- `CLAW_E2B_API_URL` / `CLAW_E2B_API_KEY`
+- `CLAW_E2B_DOMAIN` / `CLAW_E2B_SANDBOX_URL` (self-hosted exec/traffic)
+- `CLAW_CLUSTER_ID`, PG URLs, LLM bootstrap, gateway ports
 
-Only maintain environment-dependent values in `.env`:
+Optional anchor pattern (see `deploy/stack/env.selfhosted-prod.example`):
 
-- e2b endpoints and domain:
-  - `CLAW_E2B_HOST`
-  - `CLAW_E2B_API_PORT`
-  - `CLAW_E2B_SANDBOX_PORT`
-  - `CLAW_E2B_TRAFFIC_PORT`
-  - `CLAW_E2B_DOMAIN`
-- e2b host integration:
-  - `CLAW_E2B_SERVER_ROOT`
-  - `CLAW_E2B_NAS_HOST_MOUNT`
-- database anchors:
-  - `CLAW_PG_HOST`
-  - `CLAW_PG_PORT`
-  - `CLAW_PG_USER`
-  - `CLAW_PG_PASSWORD`
-  - `CLAW_PG_DATABASE`
+- `CLAW_E2B_HOST` + ports → derive `CLAW_E2B_API_URL` / `CLAW_E2B_SANDBOX_URL` in `.env` only (compose convenience, not pushed to e2b)
 
-Derived URLs in `.env` should reference anchors only.
+## e2bserver (e2b host)
+
+Edit on the e2b machine:
+
+- `config/deploy.toml` — `sandbox_domain`, `[nas].host_mount_root`, `traffic_addr`
+- `scripts/install-nginx-traffic.sh` when traffic/nginx is needed
+
+Verify: `curl http://<e2b-api>/health` → `nas.hostMountRoot`, `sandboxInject: bind`.
 
 ## Recommended workflow (new environment)
 
-1. Copy template:
-   - `cp deploy/stack/env.selfhosted-prod.example .env`
-2. Edit only anchor values.
-3. Ensure DNS:
-   - `CLAW_E2B_DOMAIN` apex and wildcard point to `CLAW_E2B_HOST`.
-4. Sync e2b config:
-   - `./deploy/stack/gateway.sh sync-e2b-env --restart --nginx`
-5. Start gateway/admin:
-   - `./deploy/stack/gateway.sh quick` (or `up`)
-6. Verify:
-   - `curl http://127.0.0.1:${GATEWAY_HOST_PORT}/readyz`
-   - `curl http://127.0.0.1:${GATEWAY_HOST_PORT}/v1/gateway/global-settings/e2b-singletons`
-   - `curl http://${CLAW_E2B_HOST}:${CLAW_E2B_API_PORT}/health`
+1. Copy template: `cp deploy/stack/env.selfhosted-prod.example .env`
+2. Edit Gateway anchors (API URL, domain, PG, cluster id).
+3. On e2b host: configure `deploy.toml` + NAS directory + nginx traffic.
+4. `./deploy/stack/gateway.sh up` (or `quick`)
+5. Verify:
+   - `curl http://127.0.0.1:${GATEWAY_HOST_PORT}/v1/gateway/bootstrap/status`
+   - `curl http://127.0.0.1:${GATEWAY_HOST_PORT}/v1/gateway/global-settings` → `e2bNas` from e2b `/health`
 
 ## Notes
 
-- Do not hand-edit e2bserver toml files for environment migration; use `sync-e2b-env`.
-- Do not introduce fallback paths for DNS/hosts in deploy scripts.
-- Keep one default deployment path (anchors in `.env` + sync command) to reduce operational branching.
+- Do not duplicate e2b `[nas]` / `sandbox_domain` in claw-code `.env`.
+- One path: Gateway calls e2b API; e2b owns bind/traffic config.
+
+## Workbox example (2026-08-28)
+
+| Surface | URL |
+|---------|-----|
+| Admin (NeuroGate playground) | `https://neurogate.workbox.spone.xyz/admin` |
+| Gateway API | `https://gateway.workbox.spone.xyz` |
+| e2b Panel | `https://e2b.workbox.spone.xyz` |
+| Sandbox traffic | `{port}-sbx_{id}.workbox.spone.xyz` |
+
+Admin domain spelling is **`neurogate`** (matches product name NeuroGate). See [`deploy/docs/workbox-neurogate-https.md`](../deploy/docs/workbox-neurogate-https.md).

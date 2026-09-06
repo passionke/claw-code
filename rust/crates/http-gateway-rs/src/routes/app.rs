@@ -33,7 +33,8 @@ use crate::biz_advice_report::{
 };
 use crate::{
     admin_mcp_http, admin_mcp_solve, claw_tap_cluster_state, client_origin,
-    gateway_admin_mcp_token, gateway_claw_tap_settings, gateway_cluster_bootstrap,
+    gateway_admin_mcp_token, gateway_bootstrap_deploy, gateway_claw_tap_settings,
+    gateway_cluster_bootstrap,
     gateway_e2b_core_readiness, gateway_e2b_nas_settings, gateway_e2b_observe_proxy,
     gateway_e2b_observe_reset, gateway_e2b_singleton_api, gateway_e2b_worker_settings,
     gateway_endpoint, gateway_global_settings, gateway_llm_config_sync, gateway_project_e2b_worker,

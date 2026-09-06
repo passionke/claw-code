@@ -12,6 +12,11 @@ use serde_json::{json, Value};
 use tokio::fs;
 use tokio::process::Command;
 
+/// Per git-import source file size cap. Author: kejiqing
+pub const MAX_GIT_IMPORT_FILE_BYTES: usize = 64 * 1024 * 1024;
+/// Per HTTP upload chunk when shipping tar.gz to nas-api. Author: kejiqing
+pub const MAX_GIT_IMPORT_UPLOAD_PART_BYTES: usize = 64 * 1024 * 1024;
+
 const RESERVED_DEST_RELS: &[&str] = &["project_home_def", ".claw", ".vscode", ".git", "home"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -126,6 +131,12 @@ impl std::fmt::Display for ProjectGitSyncError {
 impl std::error::Error for ProjectGitSyncError {}
 
 type SyncResult<T> = Result<T, ProjectGitSyncError>;
+
+/// `git archive` tar.gz ready for nas-api `tar -xzf`. Author: kejiqing
+pub struct GitImportBundle {
+    pub tar_gz: Vec<u8>,
+    pub file_count: usize,
+}
 
 pub struct GitImportFile {
     pub rel: String,
@@ -775,7 +786,7 @@ async fn ensure_git_repo(
     Ok(())
 }
 
-/// Walk cloned tree (skip `.git` and PG-controlled paths) → files for nas-api put. Author: kejiqing
+/// Collect tracked files via `git ls-files` (reliable on virtiofs after `git reset`). Author: kejiqing
 pub fn collect_import_files(
     src_root: &Path,
     excluded_home_relpaths: &[PathBuf],
@@ -783,6 +794,57 @@ pub fn collect_import_files(
     if !src_root.is_dir() {
         return Ok(Vec::new());
     }
+    if src_root.join(".git").is_dir() {
+        return collect_import_files_git(src_root, excluded_home_relpaths);
+    }
+    collect_import_files_walk(src_root, excluded_home_relpaths)
+}
+
+fn collect_import_files_git(
+    src_root: &Path,
+    excluded_home_relpaths: &[PathBuf],
+) -> SyncResult<Vec<GitImportFile>> {
+    let output = std::process::Command::new("git")
+        .current_dir(src_root)
+        .args(["ls-files", "-z"])
+        .output()
+        .map_err(|e| ProjectGitSyncError::new(format!("git ls-files: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ProjectGitSyncError::new(format!(
+            "git ls-files in {} failed: {stderr}",
+            src_root.display()
+        )));
+    }
+    let mut out = Vec::new();
+    for rel_bytes in output.stdout.split(|b| b == &0) {
+        if rel_bytes.is_empty() {
+            continue;
+        }
+        let rel_str = std::str::from_utf8(rel_bytes).map_err(|e| {
+            ProjectGitSyncError::new(format!("git ls-files path not utf8: {e}"))
+        })?;
+        let rel = Path::new(rel_str);
+        if is_home_rel_db_controlled(rel, excluded_home_relpaths) {
+            continue;
+        }
+        let path = src_root.join(rel);
+        let bytes = std::fs::read(&path)
+            .map_err(|e| ProjectGitSyncError::new(format!("read file {}: {e}", path.display())))?;
+        out.push(GitImportFile {
+            rel: rel_str.replace('\\', "/"),
+            bytes,
+        });
+    }
+    out.sort_by(|a, b| a.rel.cmp(&b.rel));
+    Ok(out)
+}
+
+/// Walk cloned tree when `src_root` is not a git repo (unit tests). Author: kejiqing
+fn collect_import_files_walk(
+    src_root: &Path,
+    excluded_home_relpaths: &[PathBuf],
+) -> SyncResult<Vec<GitImportFile>> {
     let mut out = Vec::new();
     let mut stack = vec![src_root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -818,12 +880,100 @@ pub fn collect_import_files(
     Ok(out)
 }
 
+pub async fn pack_git_import_tar_gz_from_repo(
+    cache_dir: &Path,
+    excluded_home_relpaths: &[PathBuf],
+) -> SyncResult<GitImportBundle> {
+    if !cache_dir.join(".git").is_dir() {
+        return Err(ProjectGitSyncError::new(format!(
+            "git import cache is not a repo: {}",
+            cache_dir.display()
+        )));
+    }
+    let file_count = count_git_import_files(cache_dir, excluded_home_relpaths)?;
+    let mut cmd = Command::new("git");
+    cmd.current_dir(cache_dir)
+        .arg("archive")
+        .arg("--format=tar.gz")
+        .arg("HEAD")
+        .arg("--")
+        .arg(".");
+    for ex in excluded_home_relpaths {
+        let rel = ex.to_string_lossy().replace('\\', "/");
+        cmd.arg(format!(":(exclude){rel}"));
+    }
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| ProjectGitSyncError::new(format!("git archive: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ProjectGitSyncError::new(format!(
+            "git archive in {} failed: {stderr}",
+            cache_dir.display()
+        )));
+    }
+    let tar_gz = output.stdout;
+    if tar_gz.is_empty() {
+        return Err(ProjectGitSyncError::new(
+            "git archive produced empty tar.gz",
+        ));
+    }
+    Ok(GitImportBundle {
+        tar_gz,
+        file_count,
+    })
+}
+
+fn count_git_import_files(
+    cache_dir: &Path,
+    excluded_home_relpaths: &[PathBuf],
+) -> SyncResult<usize> {
+    let output = std::process::Command::new("git")
+        .current_dir(cache_dir)
+        .args(["ls-files", "-z"])
+        .output()
+        .map_err(|e| ProjectGitSyncError::new(format!("git ls-files: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ProjectGitSyncError::new(format!(
+            "git ls-files in {} failed: {stderr}",
+            cache_dir.display()
+        )));
+    }
+    let mut count = 0usize;
+    for rel_bytes in output.stdout.split(|b| b == &0) {
+        if rel_bytes.is_empty() {
+            continue;
+        }
+        let rel_str = std::str::from_utf8(rel_bytes).map_err(|e| {
+            ProjectGitSyncError::new(format!("git ls-files path not utf8: {e}"))
+        })?;
+        if is_home_rel_db_controlled(Path::new(rel_str), excluded_home_relpaths) {
+            continue;
+        }
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Split tar.gz into ≤64MB upload parts (concat on nas-api before one extract). Author: kejiqing
+pub fn split_git_import_upload_parts(tar_gz: &[u8]) -> Vec<Vec<u8>> {
+    if tar_gz.is_empty() {
+        return vec![Vec::new()];
+    }
+    tar_gz
+        .chunks(MAX_GIT_IMPORT_UPLOAD_PART_BYTES)
+        .map(<[u8]>::to_vec)
+        .collect()
+}
+
 /// Clone/fetch one remote into gateway scratch; return commit + files to upload. Author: kejiqing
 pub async fn pull_remote_to_cache(
     cache_dir: &Path,
     remote: &GitRemote,
     excluded_home_relpaths: &[PathBuf],
-) -> SyncResult<(GitRemotePullOutcome, Vec<GitImportFile>)> {
+) -> SyncResult<(GitRemotePullOutcome, GitImportBundle)> {
     let git_url = remote.git_url.trim();
     let git_ref = remote.git_ref.trim();
     let token = remote.git_token.as_deref().map(str::trim);
@@ -838,7 +988,13 @@ pub async fn pull_remote_to_cache(
     };
     ensure_git_repo(cache_dir, &clone_url, git_ref, token).await?;
     let commit_id = git_run(cache_dir, &["rev-parse", "HEAD"], token).await.ok();
-    let files = collect_import_files(cache_dir, excluded_home_relpaths)?;
+    let bundle = pack_git_import_tar_gz_from_repo(cache_dir, excluded_home_relpaths).await?;
+    tracing::info!(
+        file_count = bundle.file_count,
+        tar_bytes = bundle.tar_gz.len(),
+        cache = %cache_dir.display(),
+        "git import packed tar.gz"
+    );
     let pulled = commit_before != commit_id;
     Ok((
         GitRemotePullOutcome {
@@ -850,7 +1006,7 @@ pub async fn pull_remote_to_cache(
             commit_id,
             error: None,
         },
-        files,
+        bundle,
     ))
 }
 
@@ -1048,10 +1204,18 @@ mod tests {
     #[test]
     fn collect_import_skips_git_and_db_paths() {
         let root = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(root.path().join(".git")).expect("git");
-        std::fs::write(root.path().join(".git/HEAD"), "ref").expect("head");
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root.path())
+            .status()
+            .expect("git init");
         std::fs::write(root.path().join("README.md"), "# repo").expect("readme");
         std::fs::write(root.path().join("CLAUDE.md"), "nope").expect("claude");
+        std::process::Command::new("git")
+            .args(["add", "README.md", "CLAUDE.md"])
+            .current_dir(root.path())
+            .status()
+            .expect("git add");
         let files =
             collect_import_files(root.path(), &[PathBuf::from("CLAUDE.md")]).expect("collect");
         let rels: Vec<_> = files.iter().map(|f| f.rel.as_str()).collect();
@@ -1143,6 +1307,126 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn pack_git_import_tar_gz_from_repo_uses_git_archive() {
+        let repo = tempfile::tempdir().expect("repo");
+        let root = repo.path();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .expect("git init");
+        std::fs::write(root.join("README.md"), b"# hi\n").expect("write");
+        std::fs::create_dir_all(root.join("app")).expect("mkdir");
+        std::fs::write(root.join("app/main.rs"), b"fn main() {}\n").expect("write");
+        std::fs::write(root.join("CLAUDE.md"), b"skip me\n").expect("claude");
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .status()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"])
+            .current_dir(root)
+            .status()
+            .expect("git commit");
+        let excluded = vec![PathBuf::from("CLAUDE.md")];
+        let bundle = pack_git_import_tar_gz_from_repo(root, &excluded)
+            .await
+            .expect("pack");
+        assert_eq!(bundle.file_count, 2);
+        assert!(bundle.tar_gz.len() > 2);
+        assert_eq!(bundle.tar_gz[0], 0x1f);
+        assert_eq!(bundle.tar_gz[1], 0x8b);
+        let list = std::process::Command::new("tar")
+            .args(["-tzf", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("tar tzf");
+        // write tar to tar -tzf via shell is easier:
+        let output = std::process::Command::new("tar")
+            .args(["-tzf", "/dev/stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn();
+        let output = match output {
+            Ok(mut child) => {
+                use std::io::Write;
+                child
+                    .stdin
+                    .take()
+                    .expect("stdin")
+                    .write_all(&bundle.tar_gz)
+                    .expect("write tar");
+                child.wait_with_output().expect("tar wait")
+            }
+            Err(_) => {
+                let tmp = tempfile::NamedTempFile::new().expect("tmp");
+                std::fs::write(tmp.path(), &bundle.tar_gz).expect("write tmp");
+                std::process::Command::new("tar")
+                    .args(["-tzf", tmp.path().to_str().expect("path")])
+                    .output()
+                    .expect("tar list")
+            }
+        };
+        let listing = String::from_utf8_lossy(&output.stdout);
+        assert!(listing.contains("README.md"));
+        assert!(listing.contains("app/main.rs"));
+        assert!(!listing.contains("CLAUDE.md"));
+    }
+
+    #[test]
+    fn split_git_import_upload_parts_chunks_at_64mb() {
+        let one = vec![0u8; MAX_GIT_IMPORT_UPLOAD_PART_BYTES];
+        let parts = split_git_import_upload_parts(&one);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].len(), MAX_GIT_IMPORT_UPLOAD_PART_BYTES);
+
+        let mut two = one.clone();
+        two.push(1);
+        let parts = split_git_import_upload_parts(&two);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].len(), MAX_GIT_IMPORT_UPLOAD_PART_BYTES);
+        assert_eq!(parts[1], vec![1u8]);
+
+        assert_eq!(
+            split_git_import_upload_parts(&[]),
+            vec![Vec::<u8>::new()]
+        );
+    }
+
+    #[tokio::test]
+    async fn pack_git_import_tar_gz_from_repo_accepts_deep_paths() {
+        let rel = "app/biz/service-impl/src/main/java/com/sunmi/max/starfish/biz/app/consumption/bean/ApplicationMarketMessage.java";
+        assert!(rel.len() > 100, "fixture must exceed ustar name limit");
+        let repo = tempfile::tempdir().expect("repo");
+        let root = repo.path();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .expect("git init");
+        let file = root.join(rel);
+        stdfs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        stdfs::write(&file, b"package demo;\n").expect("write");
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .status()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"])
+            .current_dir(root)
+            .status()
+            .expect("git commit");
+        let bundle = pack_git_import_tar_gz_from_repo(root, &[])
+            .await
+            .expect("git archive deep path");
+        assert_eq!(bundle.file_count, 1);
+        assert!(bundle.tar_gz.len() > 2);
+    }
+
     /// NAS write path + worker `/claw_ds` bind: dest files are readable at guest path. Author: kejiqing
     #[test]
     fn git_import_files_readable_after_simulated_claw_ds_bind() {
@@ -1165,7 +1449,7 @@ mod tests {
             stdfs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
             stdfs::write(&file, body).expect("write clone file");
             stdfs::write(src.path().join("CLAUDE.md"), "pg owned").expect("claude");
-            let files = collect_import_files(src.path(), &excluded).expect("collect");
+            let files = collect_import_files_walk(src.path(), &excluded).expect("collect");
             assert!(
                 files.iter().all(|f| f.rel != "CLAUDE.md"),
                 "PG-controlled paths must not be uploaded into dest"
