@@ -19,6 +19,10 @@ set -a
 source "${ROOT_DIR}/.env"
 set +a
 
+# shellcheck source=/dev/null
+source "${ROOT_DIR}/deploy/stack/lib/claw-region.sh"
+claw_apply_region_defaults
+
 echo "==> [1/3] skip host pool (e2b-only)"
 echo "==> [2/3] playground image (admin SPA baked in image; default — no host dist bind)"
 rt="$(command -v podman 2>/dev/null || command -v docker)"
@@ -27,7 +31,7 @@ debian_reg="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
 debian_reg="${debian_reg%/}"
 node_img="${debian_reg}/library/node:20-alpine"
 apt_mirror_arg=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
-[[ "${CLAW_USE_CN_CRATES_MIRROR:-0}" == "1" || "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]] && apt_mirror_arg=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
+claw_cn_mirror_enabled && apt_mirror_arg=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
 if ! "${rt}" image exists "${pg_img}" 2>/dev/null; then
   echo "    building ${pg_img} (Containerfile.gateway-playground — npm build inside image)"
   # shellcheck disable=SC2086

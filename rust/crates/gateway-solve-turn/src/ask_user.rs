@@ -95,13 +95,13 @@ pub fn answer_path(session_home: &Path, question_id: &str) -> PathBuf {
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)
 }
 
 fn new_question_id() -> String {
     let ms = now_ms();
-    let n = (ms as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let n = ms.cast_unsigned().wrapping_mul(0x9e37_79b9_7f4a_7c15);
     format!("aq_{ms:x}_{n:x}")
 }
 

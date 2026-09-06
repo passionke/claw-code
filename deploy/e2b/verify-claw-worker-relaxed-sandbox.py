@@ -154,7 +154,6 @@ def main() -> int:
     print(f"==> template={template!r} proj={proj} cluster={cluster!r}")
 
     host_root = e2b_host_mount_root(
-        env_get=lambda k, d="": _env(k, d),
         api_url=api_url,
         api_key=api_key,
         self_hosted=True,

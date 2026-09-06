@@ -938,7 +938,7 @@ pub async fn load_public(
         active_llm_config: load_active_llm_config_public(db).await?,
         claw_tap: Some(ClawTapSettingsPublic::from(&settings.claw_tap)),
         e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
-            &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
+            None,
         )),
         oss: Some((&crate::oss_object_store::OssConfig::from_env()).into()),
         e2b_platform: Some(crate::gateway_e2b_platform_settings::e2b_platform_settings_public()),
@@ -963,7 +963,7 @@ pub async fn load_response(
         active_llm_config: load_active_llm_config_public(db).await?,
         claw_tap: Some(ClawTapSettingsPublic::from(&settings.claw_tap)),
         e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
-            &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
+            None,
         )),
         oss: Some((&crate::oss_object_store::OssConfig::from_env()).into()),
         e2b_platform: Some(crate::gateway_e2b_platform_settings::e2b_platform_settings_public()),
@@ -1216,7 +1216,7 @@ pub fn to_public(
         active_llm_config: None,
         claw_tap: Some(ClawTapSettingsPublic::from(&settings.claw_tap)),
         e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
-            &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
+            None,
         )),
         oss: Some((&crate::oss_object_store::OssConfig::from_env()).into()),
         e2b_platform: Some(crate::gateway_e2b_platform_settings::e2b_platform_settings_public()),

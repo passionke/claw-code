@@ -17,7 +17,7 @@ use crate::client_origin;
 use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::{
-    self, build_proj_bake_script, build_session_attach_script, gateway_proj_work_dir,
+    build_proj_bake_script, build_session_attach_script, gateway_proj_work_dir,
     gateway_session_home, interactive_backend_is_e2b, prepare_e2b_worker_llm_material,
     InteractiveBackendKind, InteractiveLease, InteractiveSessionSpec, PoolClients,
     PrepareE2bWorkerLlmOptions,
@@ -388,11 +388,10 @@ pub async fn terminal_start(
     let session_segment = crate::session_merge::sessions_directory_segment(session_id);
     let session_home = gateway_session_home(&ctx.work_root, req.proj_id, session_id)
         .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let nas_root = ctx.pool_clients.nas_host_root();
     if ctx.pool_clients.e2b_nas_layout_active() {
-        let cluster_id = pool::nas_cluster_id()
-            .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        pool::ensure_e2b_proj_nas_roots(&nas_root, &cluster_id, req.proj_id)
+        ctx.pool_clients
+            .nas_layout()
+            .ensure_e2b_proj_nas_roots(req.proj_id)
             .await
             .map_err(|e| {
                 TerminalApiError::new(

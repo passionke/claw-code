@@ -19,6 +19,7 @@ from e2b_template_registry import (
     log_debian_base_resolution,
     template_apt_prepare_prefix,
     template_debian_base_image,
+    template_gateway_worker_image,
 )
 from ovs_bundle import ovs_port, pack_ovs_bundle, relaxed_worker_ovs_install_runfile, stage_ovs_tree
 
@@ -80,11 +81,7 @@ def _stage_worker_bins(staging: Path, worker_image: str) -> None:
 
 
 def _worker_base_image() -> str:
-    return (
-        _env("CLAW_E2B_WORKER_IMAGE")
-        or _env("CLAW_E2B_TEMPLATE_FROM_IMAGE")
-        or "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/debian-bookworm-claw-worker:release-v1.6.17"
-    )
+    return template_gateway_worker_image()
 
 
 def _stage_claw_into(staging: Path) -> None:

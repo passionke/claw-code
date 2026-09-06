@@ -7,11 +7,13 @@
 
 use std::sync::Arc;
 
-use reqwest::header::CONTENT_TYPE;
+use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, EXPECT};
 use serde::Serialize;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use crate::gateway_e2b_nas_api_settings::load_e2b_nas_api_base_url;
+use crate::project_git_sync::split_git_import_upload_parts;
 use crate::session_db::GatewaySessionDb;
 
 /// HTTP client for the out-of-band nas-api singleton (endpoint resolved from PG).
@@ -41,6 +43,15 @@ struct SymlinkBody<'a> {
     target: &'a str,
 }
 
+#[derive(Serialize)]
+struct GitImportFinishBody<'a> {
+    #[serde(rename = "destRelPath")]
+    dest_rel_path: &'a str,
+    #[serde(rename = "uploadId")]
+    upload_id: &'a str,
+    parts: usize,
+}
+
 impl Default for E2bNasApiSingleton {
     fn default() -> Self {
         Self::new()
@@ -50,8 +61,14 @@ impl Default for E2bNasApiSingleton {
 impl E2bNasApiSingleton {
     #[must_use]
     pub fn new() -> Self {
+        let http = reqwest::Client::builder()
+            .http1_only()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            http: reqwest::Client::new(),
+            http,
             db: RwLock::new(None),
         }
     }
@@ -106,6 +123,8 @@ impl E2bNasApiSingleton {
             .http
             .put(&url)
             .header(CONTENT_TYPE, "application/octet-stream")
+            .header(CONTENT_LENGTH, bytes.len())
+            .header(EXPECT, "")
             .body(bytes.to_vec())
             .send()
             .await
@@ -155,6 +174,89 @@ impl E2bNasApiSingleton {
             .await
             .map_err(|e| format!("nas-api get_file body: {e}"))?;
         Ok(Some(bytes.to_vec()))
+    }
+
+    /// Chunked git-import: PUT parts (≤64MB each) then POST finish → one extract. Author: kejiqing
+    pub async fn upload_git_import_tar_gz_dest(
+        &self,
+        dest_rel_path: &str,
+        tar_gz: &[u8],
+    ) -> Result<(), String> {
+        let base = self.base_url().await?;
+        let dest = dest_rel_path.trim_start_matches('/');
+        let upload_id = Uuid::new_v4().simple().to_string();
+        let parts = split_git_import_upload_parts(tar_gz);
+        let part_count = parts.len();
+        if part_count == 1 {
+            return self
+                .extract_tar_git_import_dest(dest_rel_path, tar_gz)
+                .await;
+        }
+        for (index, chunk) in parts.into_iter().enumerate() {
+            let url = format!("{base}/v1/git-import-parts/{upload_id}/{index}");
+            let resp = self
+                .http
+                .put(&url)
+                .header(CONTENT_TYPE, "application/octet-stream")
+                .header(CONTENT_LENGTH, chunk.len())
+                .header(EXPECT, "")
+                .body(chunk)
+                .send()
+                .await
+                .map_err(|e| format!("nas-api git-import part {index} request: {e}"))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(format!(
+                    "nas-api git-import part {index} HTTP {status}: {text}"
+                ));
+            }
+        }
+        let finish_url = format!("{base}/v1/git-import-finish");
+        let resp = self
+            .http
+            .post(&finish_url)
+            .json(&GitImportFinishBody {
+                dest_rel_path: dest,
+                upload_id: &upload_id,
+                parts: part_count,
+            })
+            .send()
+            .await
+            .map_err(|e| format!("nas-api git-import-finish request: {e}"))?;
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        Err(format!("nas-api git-import-finish HTTP {status}: {text}"))
+    }
+
+    /// `PUT /v1/extract-tar/{relPath}` — single-shot tar.gz upload. Author: kejiqing
+    pub async fn extract_tar_git_import_dest(
+        &self,
+        dest_rel_path: &str,
+        tar_gz: &[u8],
+    ) -> Result<(), String> {
+        let base = self.base_url().await?;
+        let rel = dest_rel_path.trim_start_matches('/');
+        let url = format!("{base}/v1/extract-tar/{rel}");
+        let resp = self
+            .http
+            .put(&url)
+            .header(CONTENT_TYPE, "application/gzip")
+            .header(CONTENT_LENGTH, tar_gz.len())
+            .header(EXPECT, "")
+            .body(tar_gz.to_vec())
+            .send()
+            .await
+            .map_err(|e| format!("nas-api extract-tar request: {e}"))?;
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        Err(format!("nas-api extract-tar HTTP {status}: {text}"))
     }
 
     /// `POST /v1/rmdir` — recursive delete of a git-import dest under proj home. Author: kejiqing

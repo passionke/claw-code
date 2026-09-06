@@ -119,6 +119,45 @@ pub fn parse_pg_url(url: &str) -> Result<PgUrlParts, String> {
     })
 }
 
+/// Shared-PG RLS: libpq `options=-c app.cluster_id=…` (URL-encoded). Author: kejiqing
+pub fn pg_url_with_rls_cluster_id(url: &str, cluster_id: &str) -> Result<String, String> {
+    validate_cluster_id(cluster_id)?;
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("database URL is empty".into());
+    }
+    let encoded = format!("-c%20app.cluster_id%3D{cluster_id}");
+    if let Some((base, query)) = trimmed.split_once('?') {
+        Ok(format!(
+            "{base}?{}",
+            upsert_url_query_param(query, "options", &encoded)
+        ))
+    } else {
+        Ok(format!("{trimmed}?options={encoded}"))
+    }
+}
+
+fn upsert_url_query_param(query: &str, key: &str, value: &str) -> String {
+    let mut found = false;
+    let mut out: Vec<String> = query
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|pair| {
+            if let Some((k, _)) = pair.split_once('=') {
+                if k == key {
+                    found = true;
+                    return format!("{key}={value}");
+                }
+            }
+            pair.to_string()
+        })
+        .collect();
+    if !found {
+        out.push(format!("{key}={value}"));
+    }
+    out.join("&")
+}
+
 /// `SHA256(clusterId|scheme|user|dbname)` — clusterId + DB identity (scheme,user) + db name only; no host/port. Author: kejiqing
 #[must_use]
 pub fn compute_cluster_hash(cluster_id: &str, parts: &PgUrlParts) -> String {
@@ -347,6 +386,22 @@ mod tests {
         assert!(validate_cluster_id("prod-claw-01").is_ok());
         assert!(validate_cluster_id("").is_err());
         assert!(validate_cluster_id("bad id").is_err());
+    }
+
+    #[test]
+    fn pg_url_with_rls_cluster_id_adds_options() {
+        let url = "postgres://u:p@10.8.0.1:5433/claw_gateway";
+        let out = pg_url_with_rls_cluster_id(url, "workbox-20260828").unwrap();
+        assert!(out.contains("options=-c%20app.cluster_id%3Dworkbox-20260828"));
+    }
+
+    #[test]
+    fn pg_url_with_rls_cluster_id_replaces_options() {
+        let url =
+            "postgres://u:p@10.8.0.1:5433/claw_gateway?options=-c%20app.cluster_id%3Dlocal-dev";
+        let out = pg_url_with_rls_cluster_id(url, "workbox-20260828").unwrap();
+        assert!(out.contains("app.cluster_id%3Dworkbox-20260828"));
+        assert!(!out.contains("local-dev"));
     }
 
     #[test]

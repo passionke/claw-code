@@ -30,9 +30,14 @@ pub(crate) async fn get_gateway_global_settings_handler(
             }
         }
     }
-    body.e2b_nas = Some(gateway_e2b_nas_settings::e2b_nas_settings_public(
-        &state.cfg.work_root,
-    ));
+    body.e2b_nas = if let Some(client) = state.pool_clients.e2b_sandbox_client() {
+        let _ = client.refresh_e2b_platform_nas().await;
+        Some(gateway_e2b_nas_settings::e2b_nas_settings_public(
+            client.e2b_platform_nas().as_ref(),
+        ))
+    } else {
+        Some(gateway_e2b_nas_settings::e2b_nas_settings_public(None))
+    };
     Ok(Json(body))
 }
 

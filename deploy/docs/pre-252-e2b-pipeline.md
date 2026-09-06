@@ -120,7 +120,7 @@ CLAW_E2B_TEMPLATE_SKIP_CACHE=1    # 或 build 脚本 --skip-cache
 | debian 拉取超时 | `CLAW_E2B_CN=1` 或 250 Docker daemon 配 registry mirror |
 | gateway PG 连不上 | 库内密码与 URL 不一致；迁移后用 `ALTER USER` |
 | `nas-api-up` 503 | 先完成模板 build，再 `e2b-singletons-up` 或重启 gateway |
-| `nasConfig.mountPoints[].hostMountRoot is empty` | 250 建 `/data/claw-nas`，`.env` 设 `CLAW_E2B_NAS_HOST_MOUNT`；e2b `config.toml` `[nas].host_mount_root` 同步 |
+| `nasConfig.mountPoints[].hostMountRoot is empty` | e2b `[nas].host_mount_root` 未设或目录不存在 | e2b `GET /health`；宿主机 `ls` bind 根 |
 | observe / clawTap **502**、PG 里是 `192.168.9.252` | **勿手填 252**；`observe-tap-up --reset`；详见 [`e2b-observe-tap-troubleshoot.md`](./e2b-observe-tap-troubleshoot.md) |
 | `singleton_id does not exist`（observe-tap-up 写 PG 失败） | PG 已迁 `cluster_id`；确认 `e2b_pg_settings.py` 用 `CLAW_CLUSTER_ID`，再重跑 `observe-tap-up` |
 | `/readyz` 503、`clawTapCluster` 非 `strict` | 先修好 observe 单例，再 `curl …/healthz` 验 `8080-sbx_*/healthz` |

@@ -41,7 +41,6 @@ Commands:
   observe-tap-up Ensure e2b observe singleton (gateway API)
   nas-api-up    Ensure e2b claw-nas-api singleton (gateway API)
   e2b-singletons-up  nas-api + ovs + observe via gateway API (--reset to recreate)
-  sync-e2b-env     Apply .env anchors → e2bserver panel/worker config (--restart --nginx)
   e2b-pre-bootstrap  build templates (local) then singletons → PG; then gateway up --release
   pre-252-e2b-up     REMOVED — use up --release (e2b internalizes former host pool/tap)
   tap-down      Stop pool claude-tap only (legacy compose; production uses e2b observe)
@@ -119,7 +118,10 @@ case "${cmd}" in
   observe-tap-up) bash "${LIB}/e2b-tap-live-up.sh" "$@" ;;
   nas-api-up) bash "${LIB}/e2b-nas-api-up.sh" "$@" ;;
   e2b-singletons-up) bash "${LIB}/e2b-singletons-up.sh" "$@" ;;
-  sync-e2b-env) bash "${LIB}/sync-e2b-host-env.sh" "$@" ;;
+  sync-e2b-env)
+    echo "error: sync-e2b-env removed — configure e2bserver config/deploy.toml directly (NAS/traffic/domain)" >&2
+    exit 1
+    ;;
   e2b-pre-bootstrap) bash "${LIB}/e2b-pre-bootstrap.sh" "$@" ;;
   pre-252-e2b-up)
     echo "error: pre-252-e2b-up removed — use ./deploy/stack/gateway.sh up --release <tag> (see deploy/stack/env.pre-252.e2b.example)" >&2

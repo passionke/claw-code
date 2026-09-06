@@ -218,13 +218,19 @@ impl E2bSandboxClient {
         fetch_e2b_templates(&self.http, &self.config.api_url, &self.config.api_key).await
     }
 
-    /// True when e2b host injects NAS into sandbox via bind (`nas.ready` + hostMountRoot).
+    /// Cached e2b `GET /health` NAS block (host bind root lives on e2b host, not Gateway env).
     #[must_use]
-    pub fn e2b_nas_injects_vm(&self) -> bool {
+    pub fn e2b_platform_nas(&self) -> Option<E2bNasPlatform> {
         self.e2b_platform_nas
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
+            .clone()
+    }
+
+    /// True when e2b host injects NAS into sandbox via bind (`nas.ready` + hostMountRoot).
+    #[must_use]
+    pub fn e2b_nas_injects_vm(&self) -> bool {
+        self.e2b_platform_nas()
             .is_some_and(|p| p.ready && p.uses_host_bind_inject())
     }
 
@@ -1694,7 +1700,7 @@ impl E2bSandboxClient {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let p = platform.filter(|p| p.ready && p.uses_host_bind_inject())?;
-        let root = Self::e2b_bind_host_mount_root(&p)?;
+        let root = p.host_mount_root.clone()?;
         let points: Vec<Value> = mount_points
             .iter()
             .map(|m| {
@@ -1715,17 +1721,6 @@ impl E2bSandboxClient {
             "groupId": self.config.nas_group_id,
             "mountPoints": points,
         }))
-    }
-
-    /// e2b **host** NAS mount (bind source), not Gateway `CLAW_NAS_HOST_MOUNT`.
-    fn e2b_bind_host_mount_root(platform: &E2bNasPlatform) -> Option<String> {
-        if let Ok(v) = std::env::var("CLAW_E2B_NAS_HOST_MOUNT") {
-            let t = v.trim().to_string();
-            if !t.is_empty() {
-                return Some(t);
-            }
-        }
-        platform.host_mount_root.clone()
     }
 
     fn require_nas_config_body(&self, mount_points: &[NasMountPoint]) -> Result<Value, String> {

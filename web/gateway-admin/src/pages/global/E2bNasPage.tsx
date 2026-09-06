@@ -5,7 +5,7 @@ import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 import type { E2bNasSettings, GlobalSettingsResponse } from "../../types/globalSettings";
 
-/** Admin read-only e2b NAS view (source: repo `.env`, restart gateway to apply). Author: kejiqing */
+/** Admin read-only e2b NAS view (e2b GET /health + nas-api). Author: kejiqing */
 export default function E2bNasPage() {
   const { gatewayBase } = useApp();
   const [loading, setLoading] = useState(false);
@@ -22,14 +22,11 @@ export default function E2bNasPage() {
       setSettings(
         r.e2bNas ?? {
           readOnly: true,
-          nasHostMount: "",
-          e2bNasServer: "",
-          e2bNasExport: "",
+          e2bHostMountRoot: "",
+          e2bNasReady: false,
           configured: false,
-          gatewayWorkRoot: "/var/lib/claw/workspace",
-          nasRootResolved: "",
+          nasApiEnabled: true,
           layoutActive: false,
-          pathExists: false,
         }
       );
     } finally {
@@ -53,72 +50,47 @@ export default function E2bNasPage() {
       </Space>
 
       <Alert
-        type="warning"
-        showIcon
-        message="只读展示"
-        description={
-          <Typography.Paragraph style={{ marginBottom: 0 }}>
-            NAS 配置通过仓库根目录 <Typography.Text code>.env</Typography.Text> 维护，修改后需重启
-            Gateway 生效。Admin 不提供保存入口。
-            <br />
-            关键变量：<Typography.Text code>CLAW_NAS_HOST_MOUNT</Typography.Text>、
-            <Typography.Text code>CLAW_E2B_NAS_SERVER</Typography.Text>、
-            <Typography.Text code>CLAW_E2B_NAS_EXPORT</Typography.Text>、
-            <Typography.Text code>CLAW_WORK_ROOT</Typography.Text>
-          </Typography.Paragraph>
-        }
-      />
-
-      <Alert
         type="info"
         showIcon
-        message="三层 NAS 映射"
+        message="Gateway 不配置 e2b 宿主机 bind 根"
         description={
           <Typography.Paragraph style={{ marginBottom: 0 }}>
-            ① 宿主机 NFS → <Typography.Text code>/mnt/nas0</Typography.Text>（ECS）或{" "}
-            <Typography.Text code>/Volumes/claw-nas</Typography.Text>（Mac）
-            <br />
-            ② Gateway 容器：<Typography.Text code>CLAW_NAS_HOST_MOUNT</Typography.Text> bind →{" "}
-            <Typography.Text code>{settings?.gatewayWorkRoot ?? "CLAW_WORK_ROOT"}</Typography.Text>
-            <br />
-            ③ e2b sandbox：创建时静态 bind <Typography.Text code>proj_N/workers/…</Typography.Text> →{" "}
-            <Typography.Text code>/claw_host_root</Typography.Text>
+            workspace 逻辑路径由 Gateway 经 claw-nas-api 读写；e2b 宿主机 NAS bind / traffic 在
+            e2bserver <Typography.Text code>config/deploy.toml</Typography.Text> 维护。下方数据来自 e2b{" "}
+            <Typography.Text code>GET /health</Typography.Text>。
           </Typography.Paragraph>
         }
       />
 
-      <Card title="当前环境变量（只读）" loading={loading}>
+      <Card title="e2b 平台 NAS（只读）" loading={loading}>
         {settings ? (
           <Descriptions column={1} bordered size="small">
-            <Descriptions.Item label="CLAW_NAS_HOST_MOUNT">
-              <Typography.Text code copyable={settings.nasHostMount ? { text: settings.nasHostMount } : undefined}>
-                {settings.nasHostMount || "（未设置）"}
+            <Descriptions.Item label="e2b hostMountRoot">
+              <Typography.Text
+                code
+                copyable={
+                  settings.e2bHostMountRoot ? { text: settings.e2bHostMountRoot } : undefined
+                }
+              >
+                {settings.e2bHostMountRoot || "（e2b /health 未回报）"}
               </Typography.Text>
             </Descriptions.Item>
-            <Descriptions.Item label="CLAW_E2B_NAS_SERVER">
-              <Typography.Text code>{settings.e2bNasServer || "（未设置）"}</Typography.Text>
+            <Descriptions.Item label="sandboxInject">
+              <Typography.Text code>{settings.sandboxInject || "—"}</Typography.Text>
             </Descriptions.Item>
-            <Descriptions.Item label="CLAW_E2B_NAS_EXPORT">
-              <Typography.Text code>{settings.e2bNasExport || "（未设置）"}</Typography.Text>
+            <Descriptions.Item label="mountSource">
+              <Typography.Text code>{settings.mountSource || "—"}</Typography.Text>
             </Descriptions.Item>
-            <Descriptions.Item label="CLAW_WORK_ROOT">
-              <Typography.Text code>{settings.gatewayWorkRoot}</Typography.Text>
-            </Descriptions.Item>
-            <Descriptions.Item label="nasRootResolved">
-              <Typography.Text code>{settings.nasRootResolved || "—"}</Typography.Text>
-            </Descriptions.Item>
-            <Descriptions.Item label="Gateway 可见路径">
-              <Tag color={settings.pathExists ? "green" : "red"}>
-                {settings.pathExists ? "存在" : "不可见"}
+            <Descriptions.Item label="e2b NAS ready">
+              <Tag color={settings.e2bNasReady ? "green" : "red"}>
+                {settings.e2bNasReady ? "ready" : "not ready"}
               </Tag>
             </Descriptions.Item>
-            {settings.hasProjTree != null ? (
-              <Descriptions.Item label="proj 目录树">
-                <Tag color={settings.hasProjTree ? "green" : "default"}>
-                  {settings.hasProjTree ? "已有" : "无"}
-                </Tag>
-              </Descriptions.Item>
-            ) : null}
+            <Descriptions.Item label="nas-api">
+              <Tag color={settings.nasApiEnabled ? "green" : "default"}>
+                {settings.nasApiEnabled ? "enabled" : "disabled"}
+              </Tag>
+            </Descriptions.Item>
             <Descriptions.Item label="layoutActive">
               <Tag color={settings.layoutActive ? "green" : "red"}>
                 {settings.layoutActive ? "active" : "inactive"}
@@ -126,7 +98,7 @@ export default function E2bNasPage() {
             </Descriptions.Item>
             <Descriptions.Item label="configured">
               <Tag color={settings.configured ? "green" : "default"}>
-                {settings.configured ? "CLAW_NAS_HOST_MOUNT 已设" : "未配置"}
+                {settings.configured ? "就绪" : "未就绪"}
               </Tag>
             </Descriptions.Item>
           </Descriptions>

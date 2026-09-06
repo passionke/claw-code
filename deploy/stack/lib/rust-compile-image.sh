@@ -52,10 +52,12 @@ claw_rust_compile_apt_mirror() {
     printf '%s\n' "${CLAW_USE_CN_APT_MIRROR}"
     return 0
   fi
-  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    printf '0\n'
-  else
+  # shellcheck source=claw-region.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claw-region.sh"
+  if claw_cn_mirror_enabled; then
     printf '1\n'
+  else
+    printf '0\n'
   fi
 }
 
@@ -150,3 +152,6 @@ claw_ensure_rust_compile_image() {
   claw_rust_compile_build_local "${root_dir}" "${container_cli}" "${reg}" "${image_name}" "${apt_cn}"
   printf '%s\n' "${image_name}"
 }
+
+
+

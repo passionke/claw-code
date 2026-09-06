@@ -1,6 +1,5 @@
 //! Gateway → e2b cloud sandbox (solve + interactive). Author: kejiqing
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use claw_e2b_sandbox_client::E2bSandboxClient;
@@ -27,8 +26,6 @@ pub struct PoolClients {
     pool_id: String,
     e2b_interactive: Arc<E2bInteractiveBackend>,
     e2b_client: Arc<E2bSandboxClient>,
-    work_root: PathBuf,
-    pool_rpc_host_work_root: Option<PathBuf>,
     nas_layout: NasLayoutBackend,
 }
 
@@ -36,9 +33,7 @@ impl PoolClients {
     #[must_use]
     pub fn from_env(
         live_report_hub: Arc<LiveReportHub>,
-        work_root: PathBuf,
         e2b_client: Option<Arc<E2bSandboxClient>>,
-        pool_rpc_host_work_root: Option<PathBuf>,
         nas_layout: NasLayoutBackend,
     ) -> Self {
         let pool_id = std::env::var("CLAW_POOL_ID")
@@ -90,8 +85,6 @@ impl PoolClients {
             pool_id,
             e2b_interactive,
             e2b_client,
-            work_root,
-            pool_rpc_host_work_root,
             nas_layout,
         }
     }
@@ -99,14 +92,6 @@ impl PoolClients {
     #[must_use]
     pub fn nas_layout(&self) -> &NasLayoutBackend {
         &self.nas_layout
-    }
-
-    #[must_use]
-    pub fn nas_host_root(&self) -> PathBuf {
-        super::e2b_nas_layout::nas_host_root(
-            &self.work_root,
-            self.pool_rpc_host_work_root.as_deref(),
-        )
     }
 
     #[must_use]

@@ -12,12 +12,12 @@ SANDBOX_URL="${CLAW_E2B_SANDBOX_URL:-http://10.8.0.1:3002}"
 DOMAIN="${CLAW_E2B_DOMAIN:-supone.top}"
 TEMPLATE="${CLAW_E2B_TEMPLATE:-claw-worker}"
 CLUSTER_ID="${CLAW_CLUSTER_ID:-local-dev}"
-# Bind source on the **e2b host** (`10.8.0.1`). Prefer CLAW_E2B_NAS_HOST_MOUNT; else e2b /health nas.hostMountRoot.
-E2B_NAS_ROOT="${CLAW_E2B_NAS_HOST_MOUNT:-}"
+# Bind source on the **e2b host**. Use e2b GET /health nas.hostMountRoot.
+E2B_NAS_ROOT=""
 if [[ -z "${E2B_NAS_ROOT}" ]]; then
   E2B_NAS_ROOT="$(curl -sS -m 10 "${API_URL%/}/health" | python3 -c "import json,sys; print((json.load(sys.stdin).get('nas') or {}).get('hostMountRoot',''))")"
 fi
-[[ -n "${E2B_NAS_ROOT}" ]] || E2B_NAS_ROOT="/mnt/nas0"
+[[ -n "${E2B_NAS_ROOT}" ]] || fail "e2b GET /health missing nas.hostMountRoot — configure e2bserver [nas].host_mount_root"
 
 fail() { echo "verify-e2b-nas-inject: $*" >&2; exit 1; }
 

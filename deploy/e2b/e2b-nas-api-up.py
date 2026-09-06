@@ -136,7 +136,6 @@ def _e2b_host_mount_root(api_url: str, api_key: str, self_hosted: bool) -> str:
     from e2b_nas_bind_config import e2b_host_mount_root
 
     return e2b_host_mount_root(
-        env_get=_env,
         api_url=api_url,
         api_key=api_key,
         self_hosted=self_hosted,

@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 GW = os.environ.get("GW", "http://127.0.0.1:18088").rstrip("/")
 TOKEN = os.environ.get("CLAW_ADMIN_TOKEN", "").strip()
 KB_PROJ = int(os.environ.get("KB_PROJ", "99011"))
-NAS_HOST = os.environ.get("CLAW_E2B_NAS_HOST_MOUNT", "/home/sunmax/work/e2bserver/nas")
+# NAS host path for local kb apply (e2b [nas].host_mount_root on deploy host; not claw-code .env)
+NAS_HOST = os.environ.get("CLAW_KB_NAS_HOST", "/home/sunmax/work/e2bserver/nas")
 CLUSTER = os.environ.get("CLAW_CLUSTER_ID", "local-dev")
 SSH_HOST = os.environ.get("CLAW_E2B_NAS_SSH", "sunmax@10.22.28.94")
 

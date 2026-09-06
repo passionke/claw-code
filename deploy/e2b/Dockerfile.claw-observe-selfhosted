@@ -2,7 +2,7 @@
 # Local: podman build → push ACR → e2b Template.from_image
 ARG TAP_BASE_IMAGE=ghcr.io/passionke/claude-tap:v0.0.11
 ARG OBSERVE_LIVE_PORT=3000
-# CLAW_E2B_CN=1 → mirrors.aliyun.com; override with CLAW_E2B_DEBIAN_APT_MIRROR. Author: kejiqing
+# region=china → mirrors.aliyun.com apt in build scripts (e2b_template_registry.py). Author: kejiqing
 ARG DEBIAN_APT_MIRROR=
 FROM ${TAP_BASE_IMAGE}
 ARG OBSERVE_LIVE_PORT=3000

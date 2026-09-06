@@ -104,15 +104,14 @@ export interface ClawTapProbeResponse {
 
 export interface E2bNasSettings {
   readOnly: boolean;
-  nasHostMount: string;
-  e2bNasServer: string;
-  e2bNasExport: string;
-  configured: boolean;
-  gatewayWorkRoot: string;
-  nasRootResolved: string;
+  /** e2b GET /health → nas.hostMountRoot */
+  e2bHostMountRoot: string;
+  e2bNasReady: boolean;
+  sandboxInject?: string;
+  mountSource?: string;
+  nasApiEnabled: boolean;
   layoutActive: boolean;
-  pathExists: boolean;
-  hasProjTree?: boolean;
+  configured: boolean;
 }
 
 /** Session attachment OSS (CLAW_OSS_*; no secret). Author: kejiqing */
@@ -324,6 +323,46 @@ export interface ClusterBootstrapSnapshot {
   templateCommands: BootstrapCommand[];
   templateEntries: BootstrapTemplateEntry[];
   completedAtMs?: number;
+  singletons?: E2bSingletonsStatusResponse;
+  clawTap?: BootstrapClawTapSnapshot;
+}
+
+export interface BootstrapClawTapSnapshot {
+  clusterId?: string;
+  tapBaseUrl?: string;
+  consistency: "strict" | "unconfigured" | "cluster_mismatch";
+  reason?: string;
+  lastCheckMs?: number;
+  localClusterHash?: string;
+  tapClusterHash?: string;
+}
+
+export interface BootstrapEnvSnapshot {
+  clusterId: string;
+  gatewayDatabaseUrl: string;
+  deployProfile?: string;
+  e2bPlatform: E2bPlatformSettings;
+  repoRoot?: string;
+  deployEnvPath?: string;
+  deployEnvWritable: boolean;
+  repoRootPresent: boolean;
+  buildScriptPresent: boolean;
+  pgHostPort?: string;
+  pgRlsManaged: boolean;
+  values: Record<string, string>;
+}
+
+export interface BootstrapEnvValidation {
+  pgOk: boolean;
+  e2bOk: boolean;
+  message?: string;
+}
+
+export interface BootstrapApplyDeployEnvResponse {
+  applied: string[];
+  restartRequired: boolean;
+  envFile: string;
+  validation: BootstrapEnvValidation;
 }
 
 export interface BootstrapApplyLlmResponse {

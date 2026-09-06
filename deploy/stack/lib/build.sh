@@ -145,11 +145,8 @@ NODE_BASE_IMAGE="${REG}/library/node:20-alpine"
 OVS_BASE_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat-amd64}"
 echo "==> Rust locked: ${CLAW_RUST_VERSION} (image ${RUST_BASE_IMAGE})"
 
-cn_mirror_enabled() {
-  [[ "${GITHUB_ACTIONS:-}" == "true" ]] && return 1
-  [[ "${CLAW_USE_CN_CRATES_MIRROR:-0}" == "1" ]] || [[ "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]]
-}
-
+# shellcheck source=claw-region.sh
+source "${ROOT_DIR}/deploy/stack/lib/claw-region.sh"
 
 claw_build_ovs_image() {
   local container_cli="$1"
@@ -221,7 +218,7 @@ use_prebuilt_linux_path() {
 
 CONTAINER_CLI="$(claw_container_runtime_cli)" || exit 1
 CN_FLAG=0
-cn_mirror_enabled && CN_FLAG=1
+claw_cn_mirror_enabled && CN_FLAG=1
 
 if use_prebuilt_linux_path; then
   echo "==> config: linux-compile + prebuilt images (no cargo in image build)"
@@ -238,7 +235,7 @@ if use_prebuilt_linux_path; then
   "${ROOT_DIR}/deploy/stack/lib/package-claw-vscode-vsix.sh"
 
   APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
-  cn_mirror_enabled && APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
+  claw_cn_mirror_enabled && APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
 
   step "2/3 image ${IMAGE_NAME} (Containerfile.gateway-rs.prebuilt)"
   # shellcheck disable=SC2086
@@ -279,7 +276,7 @@ else
   RUSTUP_BUILD_ARGS=()
   CARGO_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_CRATES_MIRROR=0")
   APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
-  if cn_mirror_enabled; then
+  if claw_cn_mirror_enabled; then
     RUSTUP_BUILD_ARGS=(
       --build-arg "RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static"
       --build-arg "RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup"
