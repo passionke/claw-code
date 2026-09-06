@@ -128,7 +128,10 @@ pub fn pg_url_with_rls_cluster_id(url: &str, cluster_id: &str) -> Result<String,
     }
     let encoded = format!("-c%20app.cluster_id%3D{cluster_id}");
     if let Some((base, query)) = trimmed.split_once('?') {
-        Ok(format!("{base}?{}", upsert_url_query_param(query, "options", &encoded)))
+        Ok(format!(
+            "{base}?{}",
+            upsert_url_query_param(query, "options", &encoded)
+        ))
     } else {
         Ok(format!("{trimmed}?options={encoded}"))
     }
@@ -394,7 +397,8 @@ mod tests {
 
     #[test]
     fn pg_url_with_rls_cluster_id_replaces_options() {
-        let url = "postgres://u:p@10.8.0.1:5433/claw_gateway?options=-c%20app.cluster_id%3Dlocal-dev";
+        let url =
+            "postgres://u:p@10.8.0.1:5433/claw_gateway?options=-c%20app.cluster_id%3Dlocal-dev";
         let out = pg_url_with_rls_cluster_id(url, "workbox-20260828").unwrap();
         assert!(out.contains("app.cluster_id%3Dworkbox-20260828"));
         assert!(!out.contains("local-dev"));

@@ -821,9 +821,8 @@ fn collect_import_files_git(
         if rel_bytes.is_empty() {
             continue;
         }
-        let rel_str = std::str::from_utf8(rel_bytes).map_err(|e| {
-            ProjectGitSyncError::new(format!("git ls-files path not utf8: {e}"))
-        })?;
+        let rel_str = std::str::from_utf8(rel_bytes)
+            .map_err(|e| ProjectGitSyncError::new(format!("git ls-files path not utf8: {e}")))?;
         let rel = Path::new(rel_str);
         if is_home_rel_db_controlled(rel, excluded_home_relpaths) {
             continue;
@@ -919,10 +918,7 @@ pub async fn pack_git_import_tar_gz_from_repo(
             "git archive produced empty tar.gz",
         ));
     }
-    Ok(GitImportBundle {
-        tar_gz,
-        file_count,
-    })
+    Ok(GitImportBundle { tar_gz, file_count })
 }
 
 fn count_git_import_files(
@@ -946,9 +942,8 @@ fn count_git_import_files(
         if rel_bytes.is_empty() {
             continue;
         }
-        let rel_str = std::str::from_utf8(rel_bytes).map_err(|e| {
-            ProjectGitSyncError::new(format!("git ls-files path not utf8: {e}"))
-        })?;
+        let rel_str = std::str::from_utf8(rel_bytes)
+            .map_err(|e| ProjectGitSyncError::new(format!("git ls-files path not utf8: {e}")))?;
         if is_home_rel_db_controlled(Path::new(rel_str), excluded_home_relpaths) {
             continue;
         }
@@ -1326,7 +1321,15 @@ mod tests {
             .status()
             .expect("git add");
         std::process::Command::new("git")
-            .args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"])
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "init",
+            ])
             .current_dir(root)
             .status()
             .expect("git commit");
@@ -1390,10 +1393,7 @@ mod tests {
         assert_eq!(parts[0].len(), MAX_GIT_IMPORT_UPLOAD_PART_BYTES);
         assert_eq!(parts[1], vec![1u8]);
 
-        assert_eq!(
-            split_git_import_upload_parts(&[]),
-            vec![Vec::<u8>::new()]
-        );
+        assert_eq!(split_git_import_upload_parts(&[]), vec![Vec::<u8>::new()]);
     }
 
     #[tokio::test]
@@ -1416,7 +1416,15 @@ mod tests {
             .status()
             .expect("git add");
         std::process::Command::new("git")
-            .args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"])
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "init",
+            ])
             .current_dir(root)
             .status()
             .expect("git commit");

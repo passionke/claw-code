@@ -30,16 +30,15 @@ pub struct E2bNasSettingsPublic {
 #[must_use]
 pub fn e2b_nas_settings_public(platform: Option<&E2bNasPlatform>) -> E2bNasSettingsPublic {
     let nas_api_enabled = E2bNasApiSingleton::enabled_from_env();
-    let (e2b_host_mount_root, e2b_nas_ready, sandbox_inject, mount_source) =
-        match platform {
-            Some(p) => (
-                p.host_mount_root.clone().unwrap_or_default(),
-                p.ready && p.uses_host_bind_inject(),
-                p.sandbox_inject.clone(),
-                Some(p.mount_source.clone()),
-            ),
-            None => (String::new(), false, None, None),
-        };
+    let (e2b_host_mount_root, e2b_nas_ready, sandbox_inject, mount_source) = match platform {
+        Some(p) => (
+            p.host_mount_root.clone().unwrap_or_default(),
+            p.ready && p.uses_host_bind_inject(),
+            p.sandbox_inject.clone(),
+            Some(p.mount_source.clone()),
+        ),
+        None => (String::new(), false, None, None),
+    };
     let layout_active = nas_api_enabled && e2b_nas_ready;
     E2bNasSettingsPublic {
         read_only: true,

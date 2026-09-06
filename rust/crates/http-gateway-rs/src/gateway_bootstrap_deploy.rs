@@ -1,7 +1,7 @@
 //! Bootstrap deploy env write (wizard step 1). Template builds run on deploy host via shell. Author: kejiqing
 
-use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use utoipa::ToSchema;
 
 use crate::gateway_e2b_platform_settings::{self, E2bPlatformSettingsPublic};
@@ -117,8 +117,7 @@ pub fn resolve_bootstrap_repo_root() -> Option<PathBuf> {
             return Some(PathBuf::from(p));
         }
     }
-    resolve_deploy_env_file()
-        .and_then(|f| f.parent().map(Path::to_path_buf))
+    resolve_deploy_env_file().and_then(|f| f.parent().map(Path::to_path_buf))
 }
 
 fn read_deploy_env_values(path: &Path) -> std::collections::BTreeMap<String, String> {
@@ -149,7 +148,8 @@ fn read_deploy_env_values(path: &Path) -> std::collections::BTreeMap<String, Str
 }
 
 pub fn bootstrap_env_snapshot(db: &GatewaySessionDb) -> BootstrapEnvSnapshot {
-    let cluster_id = crate::cluster_identity::gateway_cluster_id().unwrap_or_else(|_| String::new());
+    let cluster_id =
+        crate::cluster_identity::gateway_cluster_id().unwrap_or_else(|_| String::new());
     let deploy_path = resolve_deploy_env_file();
     let repo_root = resolve_bootstrap_repo_root();
     let mut values = deploy_path
@@ -210,12 +210,7 @@ async fn probe_pg_url(url: &str) -> bool {
         .connect(url)
         .await
     {
-        Ok(pool) => {
-            sqlx::query("SELECT 1")
-                .execute(&pool)
-                .await
-                .is_ok()
-        }
+        Ok(pool) => sqlx::query("SELECT 1").execute(&pool).await.is_ok(),
         Err(_) => false,
     }
 }
@@ -238,8 +233,9 @@ pub async fn apply_deploy_env(
     _db: &GatewaySessionDb,
     input: BootstrapApplyDeployEnvInput,
 ) -> Result<BootstrapApplyDeployEnvResponse, String> {
-    let path = resolve_deploy_env_file()
-        .ok_or_else(|| "deploy .env not found (mount /run/claw/deploy.env or set CLAW_REPO_ROOT)".to_string())?;
+    let path = resolve_deploy_env_file().ok_or_else(|| {
+        "deploy .env not found (mount /run/claw/deploy.env or set CLAW_REPO_ROOT)".to_string()
+    })?;
     if !path.is_file() {
         std::fs::write(&path, "# claw gateway deploy env — bootstrap wizard\n")
             .map_err(|e| format!("create {}: {e}", path.display()))?;
@@ -273,10 +269,10 @@ pub async fn apply_deploy_env(
             .cloned()
             .or_else(|| env_trim("CLAW_GATEWAY_DATABASE_URL"))
             .ok_or_else(|| {
-                "deploy .env 缺少 CLAW_GATEWAY_DATABASE_URL（运维预置共用 PG 连接，向导不填写）".to_string()
+                "deploy .env 缺少 CLAW_GATEWAY_DATABASE_URL（运维预置共用 PG 连接，向导不填写）"
+                    .to_string()
             })?;
-        let synced =
-            crate::cluster_identity::pg_url_with_rls_cluster_id(&pg_base, &cluster_id)?;
+        let synced = crate::cluster_identity::pg_url_with_rls_cluster_id(&pg_base, &cluster_id)?;
         upsert_dotenv_kv(&path, "CLAW_GATEWAY_DATABASE_URL", &synced)?;
         synced_pg_url = Some(synced);
         if !applied.iter().any(|k| k == "CLAW_GATEWAY_DATABASE_URL") {

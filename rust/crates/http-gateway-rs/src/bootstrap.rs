@@ -87,11 +87,8 @@ pub async fn run() {
     }
     let nas_api = Arc::new(pool::E2bNasApiSingleton::new());
     let nas_layout = pool::NasLayoutBackend::new(Arc::clone(&nas_api));
-    let pool_clients = pool::PoolClients::from_env(
-        Arc::clone(&live_report_hub),
-        e2b_client.clone(),
-        nas_layout,
-    );
+    let pool_clients =
+        pool::PoolClients::from_env(Arc::clone(&live_report_hub), e2b_client.clone(), nas_layout);
     let co_located_pool_id = Some(pool_clients.pool_id().to_string());
     tracing::info!(
         target: "claw_live_report",

@@ -7,12 +7,14 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-use crate::claw_tap_cluster_state::{self, ClawTapClusterHandle, ClawTapClusterSnapshot, TapConsistency};
-use crate::gateway_e2b_core_readiness::{load_core_readiness_snapshot, observe_component_ready};
-use crate::gateway_e2b_singleton_api::{self, E2bSingletonsStatusResponse};
+use crate::claw_tap_cluster_state::{
+    self, ClawTapClusterHandle, ClawTapClusterSnapshot, TapConsistency,
+};
 use crate::cluster_identity::gateway_cluster_id;
+use crate::gateway_e2b_core_readiness::{load_core_readiness_snapshot, observe_component_ready};
 use crate::gateway_e2b_nas_api_settings::E2bNasApiSettings;
 use crate::gateway_e2b_observe_settings::E2bObserveSettings;
+use crate::gateway_e2b_singleton_api::{self, E2bSingletonsStatusResponse};
 use crate::gateway_e2b_worker_settings::E2bWorkerSettings;
 use crate::gateway_global_settings::{
     self, get_gateway_global_settings, put_active_llm_config, PutActiveLlmConfigInput,
