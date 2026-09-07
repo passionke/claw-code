@@ -156,7 +156,8 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::openai_compat::responses,
         crate::routes::openai_compat::list_model_api_keys,
         crate::routes::openai_compat::issue_model_api_key,
-        crate::routes::openai_compat::revoke_model_api_key
+        crate::routes::openai_compat::revoke_model_api_key,
+        crate::routes::ag_ui::get_ag_ui_run
     ),
     components(schemas(
         crate::gateway_cluster_bootstrap::BootstrapPhaseId,

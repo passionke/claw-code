@@ -14,14 +14,18 @@ use crate::app_state::AppState;
 use crate::gateway_owner_proxy;
 use crate::pool;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[allow(clippy::struct_field_names)] // query wire names: sessionId / turnId / projId
+#[into_params(parameter_in = Query)]
 pub(crate) struct AgUiRunQuery {
     #[serde(rename = "sessionId")]
+    #[param(rename = "sessionId")]
     session_id: String,
     #[serde(rename = "turnId")]
+    #[param(rename = "turnId")]
     turn_id: String,
     #[serde(rename = "projId")]
+    #[param(rename = "projId")]
     proj_id: i64,
 }
 
@@ -31,6 +35,19 @@ pub(crate) fn router() -> Router<AppState> {
 
 /// Live AG-UI SSE for process disclosure (tools / A2UI). Report body stays on biz.report.
 /// Author: kejiqing
+#[utoipa::path(
+    get,
+    path = "/v1/ag-ui/runs",
+    tag = "Sessions",
+    operation_id = "get_ag_ui_run",
+    params(AgUiRunQuery),
+    responses(
+        (status = 200, description = "AG-UI SSE process disclosure stream", content_type = "text/event-stream"),
+        (status = 400, description = "Missing sessionId or turnId"),
+        (status = 502, description = "Owner gateway proxy failed"),
+        (status = 503, description = "Owner resolution unavailable")
+    )
+)]
 pub(crate) async fn get_ag_ui_run(
     State(state): State<AppState>,
     Query(query): Query<AgUiRunQuery>,
