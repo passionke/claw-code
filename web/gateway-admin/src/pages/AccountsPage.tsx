@@ -33,7 +33,7 @@ function labelForProj(
   return `#${id}`;
 }
 
-/** System admin: manage accounts and space membership. Author: kejiqing */
+/** System admin only (under 全局配置): create accounts and space membership. Author: kejiqing */
 export default function AccountsPage() {
   const { gatewayBase, projects } = useApp();
   const [rows, setRows] = useState<AdminAccountRow[]>([]);

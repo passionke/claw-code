@@ -36,6 +36,7 @@ const GLOBAL_MENU_CHILDREN = [
   { key: "/global/strict-landlock", label: "Strict Landlock" },
   { key: "/global/pats", label: "PAT 配置" },
   { key: "/global/admin-mcp", label: "Admin MCP Token" },
+  { key: "/global/accounts", label: "账号管理" },
 ];
 
 function buildTabItems(systemAdmin: boolean): MenuProps["items"] {
@@ -57,11 +58,6 @@ function buildTabItems(systemAdmin: boolean): MenuProps["items"] {
     { key: "/my-mcp-tokens", icon: <ApiOutlined />, label: "我的 MCP Token" },
   ];
   if (systemAdmin) {
-    items.push({
-      key: "/accounts",
-      icon: <UserOutlined />,
-      label: "账号管理",
-    });
     items.push({
       key: "global",
       icon: <GlobalOutlined />,
@@ -131,9 +127,6 @@ export default function AdminLayout() {
 
   useEffect(() => {
     if (!systemAdmin && loc.pathname.startsWith("/global")) {
-      nav("/project-config", { replace: true });
-    }
-    if (!systemAdmin && loc.pathname.startsWith("/accounts")) {
       nav("/project-config", { replace: true });
     }
   }, [systemAdmin, loc.pathname, nav]);

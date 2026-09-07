@@ -88,7 +88,8 @@ export default function App() {
               <Route path="global/pats" element={<GitPatsPage />} />
               <Route path="global/admin-mcp" element={<AdminMcpTokensPage />} />
               <Route path="global/pools" element={<Navigate to="/global/e2b-platform" replace />} />
-              <Route path="accounts" element={<AccountsPage />} />
+              <Route path="global/accounts" element={<AccountsPage />} />
+              <Route path="accounts" element={<Navigate to="/global/accounts" replace />} />
               <Route path="my-mcp-tokens" element={<MyMcpTokensPage />} />
             </Route>
           </Route>

@@ -25,7 +25,7 @@ Author: kejiqing
 
 ## 关键 API
 
-- `GET/POST /v1/admin/accounts` — 仅 system_admin
+- `GET/POST /v1/admin/accounts` — 仅 system_admin（Admin UI：**全局配置 → 账号管理**）
 - `PUT/DELETE /v1/admin/accounts/{id}/projects/{projId}` — 设定/移除空间管理员
 - `GET /v1/admin/auth/me` — 当前身份与 `projectIds`
 - `GET/POST/DELETE /v1/admin/me/mcp-tokens` — 我的 token
