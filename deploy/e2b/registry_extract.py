@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract a single file from a registry image (no local podman/docker). Author: kejiqing"""
+"""Extract files/trees from a registry image (no local podman/docker). Author: kejiqing"""
 from __future__ import annotations
 
 import base64
@@ -12,6 +12,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Literal, Tuple, Union
+
+# Staged entry: file bytes, symlink target, or directory marker. Author: kejiqing
+_Entry = Union[
+    Tuple[Literal["file"], bytes, int],
+    Tuple[Literal["lnk"], str],
+    Tuple[Literal["dir"]],
+]
 
 
 def _env(name: str, default: str = "") -> str:
@@ -197,6 +205,74 @@ def _ungzip_if_needed(blob: bytes) -> bytes:
     return blob
 
 
+def _normalize_tar_name(name: str) -> str:
+    return name.lstrip("./").lstrip("/")
+
+
+def _iter_image_layers(
+    image_ref: str,
+    *,
+    platform: str = "linux/amd64",
+) -> tuple[str, str, str, dict[str, str], list[dict]]:
+    registry, repository, tag = parse_image_ref(image_ref)
+    headers = _auth_headers(registry, repository)
+    manifest = _manifest_for_image(registry, repository, tag, platform, headers)
+    layers = list(manifest.get("layers") or [])
+    if not layers:
+        raise RuntimeError(f"manifest has no layers for {image_ref!r}")
+    return registry, repository, tag, headers, layers
+
+
+def _rel_under_prefix(norm: str, prefix: str) -> str | None:
+    if not prefix:
+        return norm
+    if norm == prefix:
+        return ""
+    if norm.startswith(prefix + "/"):
+        return norm[len(prefix) + 1 :]
+    return None
+
+
+def _drop_entry_tree(entries: dict[str, _Entry], rel: str) -> None:
+    """Remove rel and any children from a staged tree. Author: kejiqing"""
+    if rel == "":
+        entries.clear()
+        return
+    entries.pop(rel, None)
+    child = rel + "/"
+    for key in list(entries):
+        if key.startswith(child):
+            del entries[key]
+
+
+def _apply_whiteout_to_tree(entries: dict[str, _Entry], prefix: str, norm: str) -> bool:
+    """Apply AUFS whiteout into staged tree keyed by paths relative to prefix. Author: kejiqing"""
+    base = Path(norm).name
+    if not base.startswith(".wh."):
+        return False
+    parent_norm = str(Path(norm).parent).replace("\\", "/")
+    if parent_norm in (".", ""):
+        parent_norm = ""
+    parent_rel = _rel_under_prefix(parent_norm, prefix) if parent_norm else (
+        "" if not prefix else None
+    )
+    # Whiteout file itself must live under prefix (parent is under or is prefix).
+    if parent_rel is None:
+        if parent_norm == prefix:
+            parent_rel = ""
+        else:
+            return False
+
+    if base == ".wh..wh..opq":
+        _drop_entry_tree(entries, parent_rel)
+        return True
+
+    deleted = base[len(".wh.") :]
+    target_rel = deleted if parent_rel == "" else f"{parent_rel}/{deleted}"
+    _drop_entry_tree(entries, target_rel)
+    return True
+
+
 def extract_file_from_image(
     image_ref: str,
     container_path: str,
@@ -205,18 +281,15 @@ def extract_file_from_image(
     platform: str = "linux/amd64",
 ) -> Path:
     """Download layers until container_path is found; write to dest. Author: kejiqing"""
-    registry, repository, tag = parse_image_ref(image_ref)
-    headers = _auth_headers(registry, repository)
+    registry, repository, tag, headers, layers = _iter_image_layers(
+        image_ref, platform=platform
+    )
     print(
         f"==> registry extract {container_path!r} from {registry}/{repository}:{tag} ({platform})",
         flush=True,
     )
-    manifest = _manifest_for_image(registry, repository, tag, platform, headers)
-    layers = list(manifest.get("layers") or [])
-    if not layers:
-        raise RuntimeError(f"manifest has no layers for {image_ref!r}")
 
-    target = container_path.lstrip("/")
+    target = _normalize_tar_name(container_path)
     found: bytes | None = None
     for layer in layers:
         digest = layer.get("digest")
@@ -230,10 +303,9 @@ def extract_file_from_image(
                 try:
                     member = tar.getmember(target)
                 except KeyError:
-                    # whiteout / alternate path forms
                     alt = None
                     for name in tar.getnames():
-                        if name.lstrip("./") == target:
+                        if _normalize_tar_name(name) == target:
                             alt = name
                             break
                     if alt is None:
@@ -258,13 +330,136 @@ def extract_file_from_image(
     return dest
 
 
+def extract_paths_from_image(
+    image_ref: str,
+    path_map: dict[str, Path],
+    *,
+    platform: str = "linux/amd64",
+    required_prefixes: set[str] | None = None,
+) -> dict[str, int]:
+    """Extract one or more directory trees from image layers into dest dirs.
+
+    path_map keys are absolute container paths (e.g. /home/.openvscode-server).
+    Later layers override earlier; AUFS whiteouts are applied. Author: kejiqing
+    """
+    import shutil
+
+    if not path_map:
+        raise ValueError("path_map is empty")
+    registry, repository, tag, headers, layers = _iter_image_layers(
+        image_ref, platform=platform
+    )
+    prefixes = {src.strip("/"): dest for src, dest in path_map.items()}
+    print(
+        f"==> registry extract trees {sorted(prefixes)} from "
+        f"{registry}/{repository}:{tag} ({platform})",
+        flush=True,
+    )
+
+    trees: dict[str, dict[str, _Entry]] = {p: {} for p in prefixes}
+
+    for layer in layers:
+        digest = layer.get("digest")
+        if not digest:
+            continue
+        blob_url = f"https://{registry}/v2/{repository}/blobs/{digest}"
+        raw = _http_bytes(blob_url, headers)
+        data = _ungzip_if_needed(raw)
+        try:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tar:
+                for member in tar.getmembers():
+                    norm = _normalize_tar_name(member.name)
+                    if not norm:
+                        continue
+                    for prefix, entries in trees.items():
+                        if Path(norm).name.startswith(".wh."):
+                            _apply_whiteout_to_tree(entries, prefix, norm)
+                            continue
+                        rel = _rel_under_prefix(norm, prefix)
+                        if rel is None:
+                            continue
+                        if member.isdir():
+                            if rel:
+                                entries[rel] = ("dir",)
+                            continue
+                        if member.issym():
+                            entries[rel] = ("lnk", member.linkname)
+                            continue
+                        if member.islnk() or not member.isfile():
+                            continue
+                        extracted = tar.extractfile(member)
+                        if extracted is None:
+                            continue
+                        mode = member.mode & 0o777 if member.mode else 0o644
+                        entries[rel] = ("file", extracted.read(), mode)
+        except tarfile.TarError as exc:
+            print(f"warn: skip corrupt layer {digest}: {exc}", flush=True)
+            continue
+
+    must = required_prefixes if required_prefixes is not None else set(prefixes)
+    counts: dict[str, int] = {}
+    for prefix, dest in prefixes.items():
+        entries = trees[prefix]
+        file_count = sum(1 for v in entries.values() if v[0] == "file")
+        counts[prefix] = file_count
+        if prefix in must and file_count == 0:
+            raise RuntimeError(
+                f"tree {prefix!r} not found (or empty) in {image_ref!r}"
+            )
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.mkdir(parents=True, exist_ok=True)
+        for rel in sorted(entries.keys(), key=lambda s: (s.count("/"), s)):
+            entry = entries[rel]
+            path = dest / rel if rel else dest
+            if entry[0] == "dir":
+                path.mkdir(parents=True, exist_ok=True)
+            elif entry[0] == "lnk":
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if path.exists() or path.is_symlink():
+                    path.unlink()
+                path.symlink_to(entry[1])
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(entry[1])
+                path.chmod(entry[2] or 0o644)
+        print(
+            f"==> wrote tree {prefix!r} → {dest} ({file_count} files)",
+            flush=True,
+        )
+    return counts
+
+
+def extract_tree_from_image(
+    image_ref: str,
+    container_dir: str,
+    dest: Path,
+    *,
+    platform: str = "linux/amd64",
+    required: bool = True,
+) -> Path:
+    """Extract a directory tree from image into dest. Author: kejiqing"""
+    prefix = container_dir.strip("/")
+    extract_paths_from_image(
+        image_ref,
+        {container_dir: dest},
+        platform=platform,
+        required_prefixes={prefix} if required else set(),
+    )
+    return dest
+
+
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) != 4:
+    if len(sys.argv) == 4:
+        extract_file_from_image(sys.argv[1], sys.argv[2], Path(sys.argv[3]))
+    elif len(sys.argv) == 5 and sys.argv[1] == "--tree":
+        extract_tree_from_image(sys.argv[2], sys.argv[3], Path(sys.argv[4]))
+    else:
         print(
-            f"usage: {sys.argv[0]} <image> <container-path> <dest-file>",
+            f"usage: {sys.argv[0]} <image> <container-path> <dest-file>\n"
+            f"       {sys.argv[0]} --tree <image> <container-dir> <dest-dir>",
             file=sys.stderr,
         )
         raise SystemExit(2)
-    extract_file_from_image(sys.argv[1], sys.argv[2], Path(sys.argv[3]))

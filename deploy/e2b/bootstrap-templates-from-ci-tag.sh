@@ -39,7 +39,9 @@ export HOME="${CLAW_BOOTSTRAP_HOME:-${ART_ROOT}/home}"
 mkdir -p "${HOME}"
 
 # e2bserver rejects claw-gateway-worker / claw-tap as "non-Debian" bases; scripts switch to
-# debian:bookworm-slim + COPY binary (registry HTTP extract, no nested podman). Author: kejiqing
+# debian:bookworm-slim + COPY binary (registry HTTP extract, no nested podman).
+# relaxed additionally registry-extracts openvscode tree + packs OVS bundle (same bake as host).
+# Author: kejiqing
 export CLAW_E2B_TEMPLATE_BUILD_STRATEGY=from_image
 export CLAW_E2B_WORKER_IMAGE="${WORKER_IMAGE}"
 export CLAW_E2B_TEMPLATE_FROM_IMAGE="${WORKER_IMAGE}"
@@ -50,6 +52,9 @@ export CLAUDE_TAP_IMAGE="${TAP_IMAGE}"
 export CLAW_E2B_OBSERVE_SKIP_LOCAL_BUILD=1
 export CLAW_E2B_TEMPLATE_SKIP_VERIFY="${CLAW_E2B_TEMPLATE_SKIP_VERIFY:-1}"
 export CLAW_IMAGE_RELEASE_TAG="${TAG}"
+# OVS upstream for relaxed bake (override with CLAW_OVS_IMAGE if needed). Author: kejiqing
+export CLAW_OVS_UPSTREAM_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-${CLAW_OVS_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat-amd64}}"
+export CLAW_OVS_IMAGE="${CLAW_OVS_IMAGE:-${CLAW_OVS_UPSTREAM_IMAGE}}"
 
 export E2B_API_KEY="${E2B_API_KEY:-${CLAW_E2B_API_KEY:-}}"
 export E2B_API_URL="${E2B_API_URL:-${CLAW_E2B_API_URL:-}}"
@@ -79,9 +84,10 @@ ensure_venv() {
 ensure_venv
 
 PLATFORM="${CLAW_E2B_TEMPLATE_PLATFORM:-linux/amd64}"
+OVS_IMAGE="${CLAW_OVS_IMAGE:-${CLAW_OVS_UPSTREAM_IMAGE}}"
 echo "==> bootstrap templates from CI tag=${TAG}" >&2
 echo "    worker_image=${WORKER_IMAGE} → debian+COPY claw (no nested podman)" >&2
-echo "    relaxed_image=${RELAXED_IMAGE} → debian+COPY claw (no OVS bake)" >&2
+echo "    relaxed_image=${RELAXED_IMAGE} → debian+COPY claw + OVS bake from ${OVS_IMAGE}" >&2
 echo "    tap_image=${TAP_IMAGE} → debian+COPY claude-tap" >&2
 echo "    e2b=${E2B_API_URL} platform=${PLATFORM}" >&2
 
@@ -106,4 +112,4 @@ esac
 
 echo "" >&2
 echo "OK: bootstrap templates published for tag=${TAG} on ${E2B_API_URL}" >&2
-echo "note: relaxed from CI claw may lack built-in OVS; full OVS bake still needs host e2b-worker-deploy" >&2
+echo "note: claw-worker-relaxed includes built-in OVS (registry-extracted openvscode + extension install)" >&2

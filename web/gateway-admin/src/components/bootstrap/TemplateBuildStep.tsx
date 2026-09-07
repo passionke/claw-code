@@ -13,7 +13,13 @@ import type {
 type Props = {
   snap: ClusterBootstrapSnapshot;
   onRefresh: () => Promise<ClusterBootstrapSnapshot | null>;
-  onNext: () => void;
+  /** Wizard only: advance when templates phase is complete. Author: kejiqing */
+  onNext?: () => void;
+  /**
+   * wizard — cluster init step (shows「下一步」).
+   * ops — post-init Admin：gateway 不变时用 ACR tag 重打 e2b 模板（CLI 升级）。
+   */
+  mode?: "wizard" | "ops";
 };
 
 function publishLogLines(job: BootstrapPublishJob | undefined): string[] {
@@ -23,12 +29,15 @@ function publishLogLines(job: BootstrapPublishJob | undefined): string[] {
 }
 
 /**
- * Step 3 — async publish only:
- *   POST /publish-templates  → accept job (seconds)
- *   GET  /bootstrap/status   → poll phase / logTail / templateEntries
- * Never wait on one long HTTP for e2b Template.build. Author: kejiqing
+ * Same product path as bootstrap init: async publish from ACR/CI tag.
+ * Used in wizard and on e2b 平台 for later CLI/template upgrades. Author: kejiqing
  */
-export default function TemplateBuildStep({ snap, onRefresh, onNext }: Props) {
+export default function TemplateBuildStep({
+  snap,
+  onRefresh,
+  onNext,
+  mode = "wizard",
+}: Props) {
   const { gatewayBase } = useApp();
   const [form] = Form.useForm<{ imageTag: string }>();
   const [accepting, setAccepting] = useState(false);
@@ -81,7 +90,7 @@ export default function TemplateBuildStep({ snap, onRefresh, onNext }: Props) {
     void loadTags();
   }, [loadTags]);
 
-  // Progress is polled via useClusterBootstrap (status). Extra tick while job runs. Author: kejiqing
+  // Progress is polled via parent refresh; extra tick while job runs. Author: kejiqing
   useEffect(() => {
     if (!jobRunning) return;
     const t = window.setInterval(() => {
@@ -95,7 +104,6 @@ export default function TemplateBuildStep({ snap, onRefresh, onNext }: Props) {
     const { imageTag } = await form.validateFields();
     setAccepting(true);
     try {
-      // Accept-only: must return before e2b build finishes (gateway tokio::spawn).
       const resp = await proxyHttp<BootstrapPublishTemplatesResponse>(
         gatewayBase,
         "POST",
@@ -124,10 +132,19 @@ export default function TemplateBuildStep({ snap, onRefresh, onNext }: Props) {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-      <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-        契约：<Typography.Text code>POST</Typography.Text> 只受理任务并立刻返回；进度靠{" "}
-        <Typography.Text code>GET /bootstrap/status</Typography.Text> 轮询（约 3s），不走同步长连接。
-      </Typography.Paragraph>
+      {mode === "ops" ? (
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+          Gateway 镜像不变时，选新的 CI/ACR tag（含升级后的{" "}
+          <Typography.Text code>claw</Typography.Text>
+          ）重打 e2b 核心模板（worker / relaxed+OVS / observe / nas-api）。与集群
+          Init 里「制作模板」同一条 API；新 build 需项目 worker reset 或沙箱失活后才会换上。
+        </Typography.Paragraph>
+      ) : (
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+          契约：<Typography.Text code>POST</Typography.Text> 只受理任务并立刻返回；进度靠{" "}
+          <Typography.Text code>GET /bootstrap/status</Typography.Text> 轮询（约 3s），不走同步长连接。
+        </Typography.Paragraph>
+      )}
 
       {tagsMeta ? (
         <Typography.Text type="secondary">
@@ -168,13 +185,13 @@ export default function TemplateBuildStep({ snap, onRefresh, onNext }: Props) {
             disabled={jobRunning}
             onClick={() => void publish()}
           >
-            {jobRunning ? "发布中…" : "发布模板"}
+            {jobRunning ? "发布中…" : mode === "ops" ? "制作 / 升级模板" : "发布模板"}
           </Button>
         </Form.Item>
         <Form.Item>
           <Button onClick={() => void onRefresh()}>刷新状态</Button>
         </Form.Item>
-        {templatesOk ? (
+        {mode === "wizard" && templatesOk && onNext ? (
           <Form.Item>
             <Button type="primary" onClick={onNext}>
               下一步
