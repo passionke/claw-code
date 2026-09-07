@@ -685,12 +685,18 @@ mod tests {
 
     #[test]
     fn keeps_existing_max_token_heuristic() {
+        // Hold env_lock: parallel CLAW_CODE_MAX_TOKENS tests otherwise race this. Author: kejiqing
+        let _lock = env_lock();
+        let _clear = EnvVarGuard::set("CLAW_CODE_MAX_TOKENS", None);
         assert_eq!(max_tokens_for_model("opus"), 32_000);
         assert_eq!(max_tokens_for_model("grok-3"), 64_000);
     }
 
     #[test]
     fn plugin_config_max_output_tokens_overrides_model_default() {
+        // Hold env_lock: parallel CLAW_CODE_MAX_TOKENS tests otherwise race this. Author: kejiqing
+        let _lock = env_lock();
+        let _clear = EnvVarGuard::set("CLAW_CODE_MAX_TOKENS", None);
         // given
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -728,6 +734,9 @@ mod tests {
 
     #[test]
     fn max_tokens_for_model_with_override_falls_back_when_plugin_unset() {
+        // Hold env_lock: parallel CLAW_CODE_MAX_TOKENS=2048 otherwise caps to 2048. Author: kejiqing
+        let _lock = env_lock();
+        let _clear = EnvVarGuard::set("CLAW_CODE_MAX_TOKENS", None);
         // given
         let plugin_override: Option<u32> = None;
 
