@@ -507,6 +507,23 @@ claw_podman_load_compose_args() {
     fi
   fi
   export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
+  # Stage under deploy/stack/.host-secrets: podman machine cannot bind ~/.docker (statfs).
+  # Use cmp+cp — macOS `cp` same-file exits 1 and aborts set -e. Author: kejiqing
+  {
+    local _docker_cfg_src="${CLAW_HOST_DOCKER_CONFIG:-${HOME}/.docker/config.json}"
+    local _docker_cfg_repo="${script_dir}/.host-secrets/docker-config.json"
+    mkdir -p "${script_dir}/.host-secrets"
+    if [[ -f "${_docker_cfg_src}" ]]; then
+      if [[ "${_docker_cfg_src}" != "${_docker_cfg_repo}" ]]; then
+        cp "${_docker_cfg_src}" "${_docker_cfg_repo}"
+      fi
+    elif [[ -f "${HOME}/.docker/config.json" && "${HOME}/.docker/config.json" != "${_docker_cfg_repo}" ]]; then
+      cp "${HOME}/.docker/config.json" "${_docker_cfg_repo}"
+    elif [[ ! -f "${_docker_cfg_repo}" ]]; then
+      printf '%s\n' '{}' >"${_docker_cfg_repo}"
+    fi
+    export CLAW_HOST_DOCKER_CONFIG="${_docker_cfg_repo}"
+  }
   export CLAW_COMPOSE_ROOT_ENV_REL="../../.env"
   if [[ -f "${env_file}" ]]; then
     local env_bn

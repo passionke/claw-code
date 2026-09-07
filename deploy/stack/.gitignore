@@ -24,6 +24,8 @@ worker-openai.env
 
 .env
 
+.host-secrets/
+
 claw-workspace/
 claw-workspace-*/
 claw-logs/
