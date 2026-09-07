@@ -95,8 +95,9 @@ pub use extra_session_bizdate::{
     EXTRA_SESSION_BIZDATE_KEY,
 };
 pub use gateway_stdout::{
-    emit_raw_json, emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
-    reset_delegate_stdout_state, GATEWAY_STDOUT_LINE_PREFIX,
+    emit_raw_json, emit_report_delta, emit_solve_done, emit_solve_error, emit_tool_end,
+    emit_tool_start, parse_stdout_line, reset_delegate_stdout_state, tool_process_kind,
+    GATEWAY_STDOUT_LINE_PREFIX,
 };
 pub use landlock_dsl::{
     default_landlock_dsl, expand_landlock_dsl, landlock_from_global_settings,
@@ -802,7 +803,37 @@ impl DirectToolExecutorInner {
     }
 
     fn execute_impl(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
-        self.execute_impl_inner(tool_name, input)
+        // AskUser / report_progress have their own stdout events; skip tool.* noise. Author: kejiqing
+        let skip_tool_ev = tool_name == ASK_USER_QUESTION_TOOL_NAME
+            || tool_name == REPORT_PROGRESS_TOOL_NAME;
+        if skip_tool_ev {
+            return self.execute_impl_inner(tool_name, input);
+        }
+        let tool_call_id = format!(
+            "tc_{}_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            tool_name
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .take(24)
+                .collect::<String>()
+        );
+        let started = Instant::now();
+        let _ = emit_tool_start(&tool_call_id, tool_name, input);
+        let result = self.execute_impl_inner(tool_name, input);
+        let duration_ms = started.elapsed().as_millis() as u64;
+        match &result {
+            Ok(out) => {
+                let _ = emit_tool_end(&tool_call_id, tool_name, true, duration_ms, out);
+            }
+            Err(e) => {
+                let _ = emit_tool_end(&tool_call_id, tool_name, false, duration_ms, &e.to_string());
+            }
+        }
+        result
     }
 
     fn execute_impl_inner(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
@@ -1014,12 +1045,32 @@ impl RuntimeToolExecutor for DirectToolExecutor {
 
     fn execute_outcome(&mut self, tool_name: &str, input: &str) -> Result<ToolOutcome, ToolError> {
         if tool_name == DELEGATE_PROJECT_TOOL_NAME {
+            let tool_call_id = format!(
+                "tc_{}_delegate",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            );
+            let started = Instant::now();
+            let _ = emit_tool_start(&tool_call_id, tool_name, input);
             let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
-            let output = run_delegate_project(&self.inner.mcp_context, &parsed)?;
-            return Ok(tool_outcome_for_delegate_success(
-                output,
-                &self.inner.allowed_tools,
-            ));
+            let result = run_delegate_project(&self.inner.mcp_context, &parsed);
+            let duration_ms = started.elapsed().as_millis() as u64;
+            match &result {
+                Ok(output) => {
+                    let _ = emit_tool_end(&tool_call_id, tool_name, true, duration_ms, output);
+                    return Ok(tool_outcome_for_delegate_success(
+                        output.clone(),
+                        &self.inner.allowed_tools,
+                    ));
+                }
+                Err(e) => {
+                    let _ =
+                        emit_tool_end(&tool_call_id, tool_name, false, duration_ms, &e.to_string());
+                    return Err(e.clone());
+                }
+            }
         }
         if tool_name == COMPLETE_ROUTER_TURN_TOOL_NAME {
             let output = run_complete_router_turn(&self.inner.mcp_context)?;

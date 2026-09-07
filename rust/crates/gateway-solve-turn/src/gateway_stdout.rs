@@ -153,6 +153,158 @@ pub fn emit_raw_json(value: &Value) -> io::Result<()> {
     io::stdout().flush()
 }
 
+const TOOL_SUMMARY_MAX: usize = 240;
+
+fn truncate_summary(s: &str) -> String {
+    let t = s.trim();
+    if t.chars().count() <= TOOL_SUMMARY_MAX {
+        return t.to_string();
+    }
+    format!(
+        "{}…",
+        t.chars().take(TOOL_SUMMARY_MAX.saturating_sub(1)).collect::<String>()
+    )
+}
+
+/// Map tool name → process disclosure kind. Author: kejiqing
+#[must_use]
+pub fn tool_process_kind(tool_name: &str) -> &'static str {
+    let n = tool_name.to_ascii_lowercase();
+    if n.contains("grep") || n.contains("search") || n.contains("glob") {
+        "search"
+    } else if n.contains("read") {
+        "read"
+    } else if n.contains("write") || n.contains("edit") {
+        "edit"
+    } else if n == "bash" || n.contains("shell") {
+        "shell"
+    } else if n.contains("mcp") || n == "mcp" {
+        "mcp"
+    } else if n.contains("delegate") {
+        "delegate"
+    } else {
+        "tool"
+    }
+}
+
+fn tool_title(tool_name: &str, args_summary: &str) -> String {
+    let kind = tool_process_kind(tool_name);
+    match kind {
+        "search" => {
+            if args_summary.is_empty() {
+                format!("Searching ({tool_name})")
+            } else {
+                format!("Searching {args_summary}")
+            }
+        }
+        "read" => {
+            if args_summary.is_empty() {
+                format!("Reading ({tool_name})")
+            } else {
+                format!("Reading {args_summary}")
+            }
+        }
+        "edit" => {
+            if args_summary.is_empty() {
+                format!("Editing ({tool_name})")
+            } else {
+                format!("Editing {args_summary}")
+            }
+        }
+        "shell" => {
+            if args_summary.is_empty() {
+                "Bash".into()
+            } else {
+                format!("Bash: {args_summary}")
+            }
+        }
+        "mcp" => {
+            if args_summary.is_empty() {
+                format!("MCP {tool_name}")
+            } else {
+                format!("MCP {tool_name}: {args_summary}")
+            }
+        }
+        "delegate" => format!("Delegate → {args_summary}"),
+        _ => {
+            if args_summary.is_empty() {
+                tool_name.to_string()
+            } else {
+                format!("{tool_name}: {args_summary}")
+            }
+        }
+    }
+}
+
+fn args_summary_from_input(tool_name: &str, input: &str) -> String {
+    let Ok(v) = serde_json::from_str::<Value>(input) else {
+        return truncate_summary(input);
+    };
+    let n = tool_name.to_ascii_lowercase();
+    let pick = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| v.get(*k).and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    if n == "bash" || n.contains("shell") {
+        return truncate_summary(&pick(&["command", "cmd"]).unwrap_or_default());
+    }
+    if n.contains("grep") || n.contains("search") {
+        return truncate_summary(
+            &pick(&["pattern", "query", "q", "keyword"]).unwrap_or_default(),
+        );
+    }
+    if n.contains("read") || n.contains("write") || n.contains("edit") || n.contains("glob") {
+        return truncate_summary(&pick(&["path", "file_path", "file", "target"]).unwrap_or_default());
+    }
+    if let Some(obj) = v.as_object() {
+        if let Some(s) = obj
+            .values()
+            .find_map(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return truncate_summary(s);
+        }
+    }
+    truncate_summary(&v.to_string())
+}
+
+/// Emit `tool.start` for AG-UI / process disclosure. Author: kejiqing
+pub fn emit_tool_start(tool_call_id: &str, tool_name: &str, input: &str) -> io::Result<()> {
+    let args_summary = args_summary_from_input(tool_name, input);
+    let title = tool_title(tool_name, &args_summary);
+    emit_raw_json(&serde_json::json!({
+        "ev": "tool.start",
+        "toolCallId": tool_call_id,
+        "name": tool_name,
+        "kind": tool_process_kind(tool_name),
+        "title": title,
+        "argsSummary": args_summary,
+    }))
+}
+
+/// Emit `tool.end` for AG-UI / process disclosure. Author: kejiqing
+pub fn emit_tool_end(
+    tool_call_id: &str,
+    tool_name: &str,
+    ok: bool,
+    duration_ms: u64,
+    result: &str,
+) -> io::Result<()> {
+    emit_raw_json(&serde_json::json!({
+        "ev": "tool.end",
+        "toolCallId": tool_call_id,
+        "name": tool_name,
+        "kind": tool_process_kind(tool_name),
+        "status": if ok { "ok" } else { "error" },
+        "durationMs": duration_ms,
+        "resultSummary": truncate_summary(result),
+    }))
+}
+
 /// Parse one stdout line; returns `Some(event)` when prefixed.
 #[must_use]
 pub fn parse_stdout_line(line: &str) -> Option<Value> {

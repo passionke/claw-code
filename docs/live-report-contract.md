@@ -6,6 +6,8 @@ Author: kejiqing
 
 运行中 BOSS 报告增量流的权威说明。实现与排障以本文为准。
 
+**过程披露（tools / 时序 / HITL surface）** 另见 [`ag-ui-contract.md`](ag-ui-contract.md)（AG-UI + A2UI）。本文的 `biz.report.*` **只负责报告正文**，协议不因 AG-UI 而改动。
+
 ---
 
 ## 1. 架构（三条路径）
@@ -126,4 +128,4 @@ rg -n 'stdout-event|forward_claw_stdout|turn_stdout_live_sse' rust deploy script
 | 2026-05-23 | stdout-v1-pool-sse：hub/SSE 下沉 pool；gateway DB 快照 + 代理；拆除 gateway ingest |
 | 2026-07-20 | Multi-gateway：turn owner 反代 live SSE；`gateway_id`/`gateway_base` 入队；错机禁止空 Hub |
 | 2026-05-23 | Gateway 入队预写 `pool_id`（`CLAW_POOL_ID`），排队期 live SSE 可走 `claw_pool_join` |
-| 2026-05-23 | 禁用 `CLAW_POOL_HTTP_BASE` fallback；无 JOIN → 503 + `pool_proxy_sse_denied` |
+| 2026-09-07 | 交叉引用 [`ag-ui-contract.md`](ag-ui-contract.md)：过程披露走 AG-UI；`biz.report` 仍只管报告正文 |

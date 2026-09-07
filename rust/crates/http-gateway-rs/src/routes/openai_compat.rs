@@ -18,10 +18,14 @@ use crate::agent_completion::{
     AgentCompletionRequest, ChatCompletionsRequest, OpenAiErrorBody, ResponsesRequest,
 };
 use crate::api_error::ApiError;
-use crate::app_state::{AppState, SolveRequest};
+use crate::app_state::{AppState, HttpRequestId, SolveRequest};
+use crate::client_origin;
 use crate::gateway_admin_mcp_token::extract_bearer_token;
 use crate::project_model_api_key::ProjectModelApiKeyRow;
-use crate::routes::app::{admin_mcp_run_solve_sync, validate_solve_request};
+use crate::responses_hub_stream::responses_hub_sse_response;
+use crate::routes::app::{
+    admin_mcp_run_solve_sync, enqueue_solve_async, validate_solve_request,
+};
 use crate::session_merge;
 
 pub(crate) fn router() -> Router<AppState> {
@@ -355,6 +359,75 @@ pub(crate) async fn responses(
         Err(r) => return r,
     };
     let stream = norm.stream;
+    let conversation_key = norm.conversation_key.clone();
+
+    if stream {
+        // True stream: open SSE, enqueue async solve, pump LiveReportHub. Author: kejiqing
+        let session_hint = norm.session_id.clone();
+        let mut solve_req = SolveRequest {
+            proj_id: key.proj_id,
+            user_prompt: norm.user_prompt,
+            session_id: session_hint.clone(),
+            model: None,
+            timeout_seconds: norm.timeout_seconds,
+            extra_session: norm.extra_session,
+            allowed_tools: None,
+            max_iterations: None,
+            attachments: None,
+            interaction_mode: None,
+            sealed_plan_id: None,
+            sealed_plan_markdown: None,
+            force_single_turn: None,
+        };
+        if session_hint.is_none() {
+            solve_req.session_id = None;
+        }
+        if let Err(e) = validate_solve_request(&state.session_db, &solve_req).await {
+            return openai_err_response(
+                e.status,
+                openai_error(e.message, "invalid_request", "invalid_request_error"),
+            );
+        }
+        let async_resp = match enqueue_solve_async(
+            state.clone(),
+            HttpRequestId(Uuid::new_v4().to_string()),
+            session_merge::HttpRequestIdKind::Generated,
+            solve_req,
+            "/v1/responses",
+            Some(client_origin::CLIENT_ORIGIN_OPENAI_COMPAT.to_string()),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                return openai_err_response(
+                    e.status,
+                    openai_error(e.message, "server_error", "server_error"),
+                );
+            }
+        };
+        let session_id = async_resp.session_id.clone();
+        let turn_id = async_resp.turn_id.clone();
+        if let Some(conv) = conversation_key.as_ref() {
+            let _ = state
+                .session_db
+                .upsert_openai_conversation(&key.id, key.proj_id, conv, &session_id)
+                .await;
+        }
+        let _ = state
+            .session_db
+            .insert_openai_response(&turn_id, &key.id, key.proj_id, &session_id, &turn_id)
+            .await;
+        let resp = responses_hub_sse_response(
+            std::sync::Arc::clone(&state.live_report_hub),
+            model,
+            session_id.clone(),
+            turn_id,
+            std::sync::Arc::clone(&state.session_db),
+        );
+        return with_session_header(resp, &session_id);
+    }
+
     let (session_id, turn_id, content) = match run_agent_completion(&state, &key, norm).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -364,28 +437,6 @@ pub(crate) async fn responses(
         .list_model_usage_for_turn(&turn_id)
         .await
         .unwrap_or_default();
-    if stream {
-        let created = responses_api_response(
-            &model,
-            &turn_id,
-            &session_id,
-            &content,
-            now_ms(),
-            &usage_rows,
-        );
-        let events = vec![
-            Ok::<Event, Infallible>(
-                Event::default()
-                    .event("response.completed")
-                    .data(created.to_string()),
-            ),
-            Ok(Event::default().event("done").data("[DONE]")),
-        ];
-        let resp = Sse::new(stream::iter(events))
-            .keep_alive(KeepAlive::default())
-            .into_response();
-        return with_session_header(resp, &session_id);
-    }
     let body = responses_api_response(
         &model,
         &turn_id,

@@ -1,4 +1,5 @@
-//! In-memory hub for worker stdout report deltas (pool-local ingest + live SSE). Author: kejiqing
+//! In-memory hub for worker stdout report + process events (pool-local ingest + live SSE).
+//! Author: kejiqing
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -25,9 +26,17 @@ pub struct AskUserPending {
     pub a2ui: Value,
 }
 
+/// Process disclosure event (`tool.*` / `progress`) for AG-UI projection. Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct ProcessEvent {
+    pub ev: String,
+    pub payload: Value,
+}
+
 #[derive(Debug, Clone)]
 pub enum HubMsg {
     Delta(HubDeltaChunk),
+    Process(ProcessEvent),
     AskUser(AskUserPending),
     AskUserCleared,
     SolveDone,
@@ -37,6 +46,7 @@ pub enum HubMsg {
 struct TurnStdoutState {
     text: String,
     chunks: Vec<HubDeltaChunk>,
+    process_events: Vec<ProcessEvent>,
     has_report: bool,
     solve_done: bool,
     first_report_at_ms: Option<i64>,
@@ -48,6 +58,7 @@ fn empty_turn_state() -> TurnStdoutState {
     TurnStdoutState {
         text: String::new(),
         chunks: Vec::new(),
+        process_events: Vec::new(),
         has_report: false,
         solve_done: false,
         first_report_at_ms: None,
@@ -129,6 +140,14 @@ impl LiveReportHub {
                 let _ = state.tx.send(HubMsg::Delta(delta));
                 api::sse_burst_trace::log_pool_ingest(turn_id, chunk, emit_seq);
                 crate::biz_report_sse_log::log_stdout_ingest(turn_id, chunk.len());
+            }
+            "tool.start" | "tool.end" | "progress" => {
+                let pe = ProcessEvent {
+                    ev: ev.to_string(),
+                    payload: value.clone(),
+                };
+                state.process_events.push(pe.clone());
+                let _ = state.tx.send(HubMsg::Process(pe));
             }
             "ask.user" => {
                 let Some(pending) = parse_ask_pending(value) else {
@@ -260,6 +279,30 @@ impl LiveReportHub {
         (rx, snapshot)
     }
 
+    /// Subscribe with report + process event snapshots for AG-UI. Author: kejiqing
+    #[must_use]
+    pub fn subscribe_with_process_snapshot(
+        &self,
+        turn_id: &str,
+    ) -> (
+        broadcast::Receiver<HubMsg>,
+        Vec<HubDeltaChunk>,
+        Vec<ProcessEvent>,
+        Option<AskUserPending>,
+    ) {
+        let mut guard = self.inner.lock().expect("live_report_hub lock");
+        let state = guard
+            .entry(turn_id.to_string())
+            .or_insert_with(empty_turn_state);
+        let rx = state.tx.subscribe();
+        (
+            rx,
+            state.chunks.clone(),
+            state.process_events.clone(),
+            state.pending_ask.clone(),
+        )
+    }
+
     /// Drop hub state when solve finished and no SSE subscribers remain.
     pub fn try_remove_turn(&self, turn_id: &str) {
         let mut guard = self.inner.lock().expect("live_report_hub lock");
@@ -309,7 +352,9 @@ mod tests {
             match rx.recv().await {
                 Ok(HubMsg::Delta(delta)) => return delta.text,
                 Ok(HubMsg::SolveDone) => panic!("unexpected SolveDone"),
-                Ok(HubMsg::AskUser(_)) | Ok(HubMsg::AskUserCleared) => continue,
+                Ok(HubMsg::AskUser(_))
+                | Ok(HubMsg::AskUserCleared)
+                | Ok(HubMsg::Process(_)) => continue,
                 Err(_) => continue,
             }
         }
@@ -334,6 +379,27 @@ mod tests {
         assert_eq!(pending.question, "选哪个？");
         hub.clear_pending_ask(turn);
         assert!(hub.pending_ask_for_turn(turn).is_none());
+    }
+
+    #[tokio::test]
+    async fn tool_process_event_ingested() {
+        let hub = LiveReportHub::default();
+        let turn = "T_tool";
+        let (mut rx, _, _, _) = hub.subscribe_with_process_snapshot(turn);
+        hub.ingest_json(
+            turn,
+            &json!({
+                "ev": "tool.start",
+                "toolCallId": "tc_1",
+                "name": "Bash",
+                "kind": "shell",
+                "title": "Bash: ls"
+            }),
+        );
+        match rx.recv().await {
+            Ok(HubMsg::Process(pe)) => assert_eq!(pe.ev, "tool.start"),
+            other => panic!("expected Process, got {other:?}"),
+        }
     }
 
     #[tokio::test]

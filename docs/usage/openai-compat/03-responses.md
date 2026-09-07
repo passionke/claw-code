@@ -106,12 +106,15 @@ curl -sS -X POST "$GATEWAY/v1/responses" \
 
 ## 流式（`stream: true`）
 
-同样是：先同步跑完 Agent，再发 SSE：
+**真流（灌 LiveReportHub）**：先开 SSE，再异步入队 Agent；过程中推送：
 
-1. 事件名 `response.completed`，data 为完整 response JSON  
-2. 事件名 `done`，data 为 `[DONE]`
+1. `response.created` — 开始  
+2. `response.output_text.delta` — 报告正文增量（同源 `report.delta`）  
+3. `response.output_item.added` — 工具开始（若有 `tool.start`）  
+4. `response.completed` — 完整 response JSON  
+5. `done` / `[DONE]`
 
-不要期望 token 级增量。
+过程 UI 另见 [`ag-ui-contract.md`](../../ag-ui-contract.md)；报告产品面仍可用 `biz.report.*`。
 
 ## 与 Chat Completions 怎么选
 

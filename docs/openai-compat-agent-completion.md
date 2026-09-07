@@ -32,8 +32,10 @@ Gateway 在历史 **`/v1/solve`**（常称 resolve）与 **`/v1/solve_async`**�
 3. Chat 的 `user` 或 Responses 的 `conversation` → 稳定会话键 → gateway `sessionId`。
 4. 响应 `id` = gateway `turnId`；头 `x-nerogate-session-id` = session。
 5. 非空 OpenAI `tools` → `400 unsupported_feature`（Agent 工具只在网关侧）。
-6. `stream=true`：先同步跑完，再发最终 content（或 `response.completed`）与 `[DONE]`，**不是** token 流。
+6. `stream=true`（Responses）：先开 SSE 再跑 Agent，从 LiveReportHub 推中间事件与终态；详见 [`03-responses.md`](usage/openai-compat/03-responses.md)。Chat Completions 的 stream 仍可能是事后整包（兼容壳）。
 7. `usage`：本轮在 claw-tap 落库的 token 合计（`gateway_model_usage` SUM）；无行则 `null`。按模型见 `nerogate.usageByModel`。
+
+过程披露（tools / A2UI）：[`ag-ui-contract.md`](ag-ui-contract.md)。
 
 ## 签发 Key（一行）
 

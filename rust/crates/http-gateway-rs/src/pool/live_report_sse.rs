@@ -116,7 +116,7 @@ async fn follow_turn_deltas(
                             return FollowEnd::HubDone;
                         }
                     }
-                    Ok(HubMsg::AskUser(_) | HubMsg::AskUserCleared) => {}
+                    Ok(HubMsg::AskUser(_) | HubMsg::AskUserCleared | HubMsg::Process(_)) => {}
                     Ok(HubMsg::SolveDone) | Err(RecvError::Closed) => {
                         return FollowEnd::HubDone;
                     }

@@ -3,6 +3,7 @@ import { Button, Collapse, Popconfirm, Space, Tag, Tooltip, Typography, message 
 import { useCallback, useEffect, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useBizReportStream } from "../../hooks/useBizReportStream";
+import { useAgUiStream } from "../../hooks/useAgUiStream";
 import type {
   BizAdviceReportResponse,
   ProgressEvent,
@@ -16,6 +17,7 @@ import { extractSolveReportMessage } from "../../utils/solveReportBody";
 import { isAdminOrigin } from "../../utils/clientOrigin";
 import ReportMarkdown from "./ReportMarkdown";
 import AskUserA2ui from "./AskUserA2ui";
+import ProcessStepsA2ui from "./ProcessStepsA2ui";
 import TurnFeedbackButtons from "./TurnFeedbackButtons";
 import TurnToolsDrawer from "./TurnToolsDrawer";
 import TurnTimelineDrawer from "./TurnTimelineDrawer";
@@ -190,6 +192,15 @@ export default function ChatTurnCard({
     waitForSettled,
     reconcileReport,
   } = useBizReportStream(gatewayBase, sessionId, turnId, projId);
+
+  const agUiEnabled = shouldConnectLiveReportSse(viewMode, turnStatus);
+  const { steps: processSteps } = useAgUiStream(
+    gatewayBase,
+    sessionId,
+    turnId,
+    projId,
+    agUiEnabled
+  );
 
   // Live: connect report SSE on mount; do not wait for poll → running (user sees stream earlier).
   useEffect(() => {
@@ -579,6 +590,8 @@ export default function ChatTurnCard({
           </Space>
         </div>
       </div>
+
+      {processSteps.length > 0 ? <ProcessStepsA2ui steps={processSteps} /> : null}
 
       {task.status === "awaiting_user" && task.askUserQuestionId && !historyMode ? (
         <AskUserA2ui

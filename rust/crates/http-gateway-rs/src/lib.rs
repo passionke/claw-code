@@ -21,6 +21,7 @@ pub const ROUTE_FRAGMENT_CONTRACT_VERSION: u32 = 1;
 
 pub mod admin_mcp_http;
 pub mod admin_mcp_solve;
+pub mod ag_ui_projector;
 pub mod agent_completion;
 pub mod biz_advice_report;
 pub mod biz_report_sse_log;
@@ -77,6 +78,7 @@ pub mod pool_consumer_resolve;
 pub mod pool_registry;
 pub mod pool_worker_runtime_sync;
 pub mod preflight_plugin_api;
+pub mod responses_hub_stream;
 pub mod project_config_apply;
 pub mod project_config_draft;
 pub mod project_config_version;

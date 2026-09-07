@@ -12,7 +12,7 @@ Gateway 对外有三条常用入口。外部有时把前两条叫 **resolve** / 
 |------|------|--------------|----------|--------|
 | 同步 solve | `POST /v1/solve` | 内网 / Admin 等既有约定 | HTTP 一直等到本轮结束 | 自建 BFF、已熟悉 `projId` + `userPrompt` 的调用方 |
 | 异步 solve | `POST /v1/solve_async` + `GET /v1/tasks/{taskId}` | 同上 | 立即返回 `taskId`，再轮询 | 长任务、要进度/取消、要 live 报告的产品侧 |
-| OpenAI 兼容 | `POST /v1/chat/completions` 或 `POST /v1/responses` | Bearer `ngmk_…` 项目模型 Key | **同步**跑完 Agent 再返回（`stream=true` 也是先跑完再推一条 SSE） | 已有 OpenAI 客户端、不想学 solve 契约的集成方 |
+| OpenAI 兼容 | `POST /v1/chat/completions` 或 `POST /v1/responses` | Bearer `ngmk_…` 项目模型 Key | Responses `stream=true`：**真流**（Hub）；Chat Completions stream 仍可能事后整包；非 stream 同步跑完 | 已有 OpenAI 客户端、不想学 solve 契约的集成方 |
 
 三条路底层都进**同一套 Agent solve kernel**（项目配置、技能、MCP、沙箱工具）。差别主要在：**请求形状、鉴权、会话续聊字段、是否支持异步轮询**。
 
