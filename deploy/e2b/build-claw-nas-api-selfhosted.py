@@ -16,6 +16,7 @@ _E2B_DIR = Path(__file__).resolve().parent
 if str(_E2B_DIR) not in sys.path:
     sys.path.insert(0, str(_E2B_DIR))
 from e2b_pg_settings import merge_settings_json_key
+from e2b_template_build import build_template_with_retry
 from e2b_template_registry import (
     load_repo_dotenv,
     log_debian_base_resolution,
@@ -160,8 +161,10 @@ def main() -> int:
         print(f"==> template startCmd=claw-nas-api :{nas_port}")
         headers = _build_headers()
         skip_cache = _env("CLAW_E2B_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no")
-        build = Template.build(
-            template,
+        build = build_template_with_retry(
+            Template.build,
+            label=alias,
+            template=template,
             name=alias,
             alias=alias,
             skip_cache=skip_cache,

@@ -33,6 +33,7 @@ pub mod delegate_router;
 pub mod deploy_image;
 pub mod gateway_admin_mcp_token;
 pub mod gateway_bootstrap_deploy;
+pub mod gateway_bootstrap_publish;
 pub mod gateway_claw_tap_lifecycle;
 pub mod gateway_claw_tap_settings;
 pub mod gateway_cluster_bootstrap;

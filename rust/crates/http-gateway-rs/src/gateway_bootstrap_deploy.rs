@@ -1,4 +1,4 @@
-//! Bootstrap deploy env write (wizard step 1). Template builds run on deploy host via shell. Author: kejiqing
+//! Bootstrap deploy env write (wizard step 1). Template publish: Admin → publish-templates API. Author: kejiqing
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -78,6 +78,9 @@ pub struct BootstrapApplyDeployEnvResponse {
     #[serde(rename = "envFile")]
     pub env_file: String,
     pub validation: BootstrapEnvValidation,
+    /// True when e2b API/domain/sandbox URL changed — PG template pins cleared. Author: kejiqing
+    #[serde(rename = "templatesInvalidated", default)]
+    pub templates_invalidated: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
@@ -167,10 +170,14 @@ pub fn bootstrap_env_snapshot(db: &GatewaySessionDb) -> BootstrapEnvSnapshot {
             }
         }
     }
-    let build_script = repo_root
-        .as_ref()
-        .map(|r| r.join("deploy/e2b/build-selfhosted-templates.sh"))
-        .filter(|p| p.is_file());
+    let build_script = repo_root.as_ref().and_then(|r| {
+        let publish = r.join("deploy/e2b/bootstrap-templates-from-ci-tag.sh");
+        if publish.is_file() {
+            return Some(publish);
+        }
+        let legacy = r.join("deploy/e2b/build-selfhosted-templates.sh");
+        legacy.is_file().then_some(legacy)
+    });
     let deploy_writable = deploy_path
         .as_ref()
         .and_then(|p| std::fs::OpenOptions::new().append(true).open(p).ok())
@@ -229,6 +236,28 @@ async fn probe_e2b_api() -> bool {
     client.get(health).send().await.is_ok()
 }
 
+/// Keys that bootstrap can hot-apply via process env + e2b client replace. Author: kejiqing
+fn deploy_env_runtime_hot_key(key: &str) -> bool {
+    matches!(
+        key,
+        "CLAW_E2B_API_URL"
+            | "CLAW_E2B_SANDBOX_URL"
+            | "CLAW_E2B_API_KEY"
+            | "ALIYUN_E2B_TOKEN"
+            | "CLAW_E2B_DOMAIN"
+            | "CLAW_DEPLOY_PROFILE"
+    )
+}
+
+/// Keys that identify which e2b *cluster* we talk to (not just credentials). Author: kejiqing
+fn e2b_endpoint_key(key: &str) -> bool {
+    matches!(
+        key,
+        "CLAW_E2B_API_URL" | "CLAW_E2B_SANDBOX_URL" | "CLAW_E2B_DOMAIN"
+    )
+}
+
+/// Write whitelist keys, `set_var` so the running process sees them, then probe. Author: kejiqing
 pub async fn apply_deploy_env(
     _db: &GatewaySessionDb,
     input: BootstrapApplyDeployEnvInput,
@@ -242,7 +271,9 @@ pub async fn apply_deploy_env(
     }
     let existing = read_deploy_env_values(&path);
     let mut applied = Vec::new();
+    let mut applied_pairs: Vec<(String, String)> = Vec::new();
     let mut new_cluster_id: Option<String> = None;
+    let mut e2b_endpoint_changed = false;
     for (key, value) in &input.values {
         let key = key.trim();
         if key.is_empty() || !DEPLOY_ENV_WHITELIST.contains(&key) {
@@ -257,10 +288,31 @@ pub async fn apply_deploy_env(
         }
         if key == "CLAW_CLUSTER_ID" {
             crate::cluster_identity::validate_cluster_id(value)?;
-            new_cluster_id = Some(value.to_string());
+            let prev_env = env_trim(key);
+            let prev = existing
+                .get(key)
+                .map(|s| s.as_str())
+                .or(prev_env.as_deref());
+            if prev != Some(value) {
+                new_cluster_id = Some(value.to_string());
+            }
+        }
+        if e2b_endpoint_key(key) {
+            let prev_env = env_trim(key);
+            let prev = existing
+                .get(key)
+                .map(|s| s.as_str())
+                .or(prev_env.as_deref());
+            if prev != Some(value) {
+                e2b_endpoint_changed = true;
+            }
         }
         upsert_dotenv_kv(&path, key, value)?;
-        applied.push(key.to_string());
+        // Process env must match form so runtime replace sees the new .env. Author: kejiqing
+        applied_pairs.push((key.to_string(), value.to_string()));
+        if !applied.iter().any(|k| k == key) {
+            applied.push(key.to_string());
+        }
     }
     let mut synced_pg_url: Option<String> = None;
     if let Some(cluster_id) = new_cluster_id {
@@ -274,11 +326,21 @@ pub async fn apply_deploy_env(
             })?;
         let synced = crate::cluster_identity::pg_url_with_rls_cluster_id(&pg_base, &cluster_id)?;
         upsert_dotenv_kv(&path, "CLAW_GATEWAY_DATABASE_URL", &synced)?;
-        synced_pg_url = Some(synced);
+        synced_pg_url = Some(synced.clone());
+        applied_pairs.push(("CLAW_GATEWAY_DATABASE_URL".into(), synced));
         if !applied.iter().any(|k| k == "CLAW_GATEWAY_DATABASE_URL") {
             applied.push("CLAW_GATEWAY_DATABASE_URL".into());
         }
     }
+    for (key, value) in &applied_pairs {
+        // Bootstrap init: process must observe the same values as deploy .env. Author: kejiqing
+        std::env::set_var(key, value);
+    }
+    // e2b / profile: runtime-replaceable. ClusterId / PG URL: session_db bound at connect. Author: kejiqing
+    let restart_required = synced_pg_url.is_some()
+        || applied
+            .iter()
+            .any(|k| !deploy_env_runtime_hot_key(k) && k != "CLAW_CLUSTER_ID");
     let validation = {
         let pg_url = synced_pg_url
             .or_else(|| env_trim("CLAW_GATEWAY_DATABASE_URL"))
@@ -299,10 +361,29 @@ pub async fn apply_deploy_env(
     };
     Ok(BootstrapApplyDeployEnvResponse {
         applied,
-        restart_required: true,
+        restart_required,
         env_file: path.display().to_string(),
         validation,
+        templates_invalidated: e2b_endpoint_changed,
     })
+}
+
+/// Re-read e2b settings from process env into the live client (init / apply-deploy-env). Author: kejiqing
+pub fn runtime_replace_e2b_from_env(
+    client: &claw_e2b_sandbox_client::E2bSandboxClient,
+) -> Result<(), String> {
+    let next = claw_e2b_sandbox_client::E2bSandboxConfig::from_env().ok_or_else(|| {
+        "CLAW_E2B_API_KEY (or ALIYUN_E2B_TOKEN) missing after apply; cannot replace e2b client"
+            .to_string()
+    })?;
+    tracing::info!(
+        target: "gateway_bootstrap",
+        api_url = %next.api_url,
+        domain = %next.domain,
+        "e2b client runtime-replaced from process env"
+    );
+    client.reconfigure(next);
+    Ok(())
 }
 
 #[cfg(test)]

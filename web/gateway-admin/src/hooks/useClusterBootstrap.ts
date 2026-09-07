@@ -4,6 +4,7 @@ import { useApp } from "../context/AppContext";
 import type { ClusterBootstrapSnapshot } from "../types/globalSettings";
 
 const POLL_MS = 30_000;
+const PUBLISH_POLL_MS = 3_000;
 
 /** Cluster first-run gate — fetch + silent poll while bootstrap incomplete. Author: kejiqing */
 export function useClusterBootstrap() {
@@ -41,16 +42,25 @@ export function useClusterBootstrap() {
     const poll = async (silent: boolean) => {
       const data = await refresh(silent);
       setReady(true);
-      if (data && !data.needsBootstrap) {
+      // Keep polling while wizard is open (infra done ≠ operator acked). Author: kejiqing
+      const wizardOpen =
+        data == null ||
+        data.needsBootstrap === true ||
+        data.completedAtMs == null;
+      if (data && !wizardOpen) {
         if (timer !== undefined) {
           clearInterval(timer);
           timer = undefined;
         }
         return;
       }
-      if (timer === undefined) {
-        timer = window.setInterval(() => void poll(true), POLL_MS);
+      const interval =
+        data?.publishJob?.phase === "running" ? PUBLISH_POLL_MS : POLL_MS;
+      if (timer !== undefined) {
+        clearInterval(timer);
+        timer = undefined;
       }
+      timer = window.setInterval(() => void poll(true), interval);
     };
 
     void poll(false);
@@ -63,7 +73,9 @@ export function useClusterBootstrap() {
     snap,
     ready,
     refreshing,
-    needsBootstrap: snap?.needsBootstrap === true,
+    // Infra incomplete OR user has not clicked「进入 Admin」yet. Author: kejiqing
+    needsBootstrap:
+      snap?.needsBootstrap === true || (snap != null && snap.completedAtMs == null),
     refresh,
   };
 }

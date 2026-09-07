@@ -14,8 +14,8 @@ type Props = {
   onNext: () => void;
 };
 
-/** Step 1: clusterId, PG, e2b connection — write deploy .env. Author: kejiqing */
-export default function FoundationStep({ snap, onRefresh, onNext }: Props) {
+/** Step 1: 下一步 = 写 .env + 运行时替换 e2b。Author: kejiqing */
+export default function FoundationStep({ snap: _snap, onRefresh, onNext }: Props) {
   const { gatewayBase } = useApp();
   const [form] = Form.useForm();
   const [envSnap, setEnvSnap] = useState<BootstrapEnvSnapshot | null>(null);
@@ -50,7 +50,7 @@ export default function FoundationStep({ snap, onRefresh, onNext }: Props) {
     void loadEnv();
   }, [loadEnv]);
 
-  const save = async () => {
+  const next = async () => {
     if (!gatewayBase) return;
     const values = await form.validateFields();
     const payload: Record<string, string> = {};
@@ -67,24 +67,29 @@ export default function FoundationStep({ snap, onRefresh, onNext }: Props) {
       );
       setLastValidation(resp.validation);
       setNeedsRestart(resp.restartRequired);
-      message.success(`已写入 ${resp.applied.length} 项到 ${resp.envFile}`);
-      if (resp.restartRequired) {
-        message.info("请在 deploy host 执行 ./deploy/stack/gateway.sh up");
-      }
       await onRefresh();
+      await loadEnv();
+      if (resp.restartRequired) {
+        message.warning("已写入 .env 且 e2b 已热替换；cluster/PG 变更需重启 Gateway 后再继续");
+        return;
+      }
+      if (resp.templatesInvalidated) {
+        message.warning("e2b 端点已变更：旧模板 buildId 已清空，请重新「发布模板」");
+      } else {
+        message.success("已写入 .env 并生效");
+      }
+      onNext();
     } catch (e) {
-      message.error(e instanceof Error ? e.message : "保存失败");
+      message.error(e instanceof Error ? e.message : "写入失败");
     } finally {
       setSaving(false);
     }
   };
 
-  const identityOk = snap.phases.find((p) => p.phase === "cluster_identity")?.complete;
-
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <Typography.Paragraph type="secondary">
-        填写集群 ID 与 e2b 连接；保存后系统自动写入 PostgreSQL 租户隔离（RLS），无需填写数据库连接串。
+        填写集群 ID 与 e2b 连接；点「下一步」自动写入 deploy .env，并立即替换进程内 e2b 连接。
       </Typography.Paragraph>
 
       {envSnap?.pgHostPort ? (
@@ -92,7 +97,7 @@ export default function FoundationStep({ snap, onRefresh, onNext }: Props) {
           type="info"
           showIcon
           message={`PostgreSQL：${envSnap.pgHostPort}（共用库，系统托管）`}
-          description="运维已在 .env 预置 PG 连接；你只需设 CLAW_CLUSTER_ID，保存时自动同步 RLS。"
+          description="运维已在 .env 预置 PG 连接；你只需设 CLAW_CLUSTER_ID，下一步时自动同步 RLS。"
         />
       ) : null}
 
@@ -139,29 +144,29 @@ export default function FoundationStep({ snap, onRefresh, onNext }: Props) {
 
       {needsRestart ? (
         <Alert
-          type="info"
+          type="warning"
           showIcon
-          message="需重启 Gateway"
-          description="环境变量已写入 .env，请在 deploy host SSH 执行：./deploy/stack/gateway.sh up"
+          message="需重启 Gateway（cluster / PG 绑定）"
+          description="e2b 已热替换；CLAW_CLUSTER_ID 变更同步了 PG RLS URL 时，请在 deploy host 执行：./deploy/stack/gateway.sh up，再点下一步。"
         />
       ) : null}
 
       <Space wrap>
-        <Button type="primary" loading={saving} onClick={() => void save()}>
-          保存到 .env
+        <Button
+          type="primary"
+          loading={saving}
+          disabled={!envSnap?.deployEnvWritable}
+          onClick={() => void next()}
+        >
+          下一步
         </Button>
         <Button onClick={() => void loadEnv()}>重新加载</Button>
         <Button onClick={() => void onRefresh()}>重新检测</Button>
-        {identityOk ? (
-          <Button type="primary" onClick={onNext}>
-            下一步
-          </Button>
-        ) : null}
       </Space>
 
       <Typography.Text type="secondary">
         当前 PG（进程内）: <code>{envSnap?.gatewayDatabaseUrl ?? "—"}</code>
-        {envSnap?.pgRlsManaged ? " · RLS 由保存 clusterId 时自动维护" : null}
+        {envSnap?.pgRlsManaged ? " · RLS 由下一步写 clusterId 时自动维护" : null}
       </Typography.Text>
     </Space>
   );

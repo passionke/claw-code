@@ -60,6 +60,18 @@ pub(crate) async fn post_gateway_bootstrap_apply_deploy_env_handler(
     let resp = gateway_bootstrap_deploy::apply_deploy_env(&state.session_db, body)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    // Init: .env written + set_var; replace live e2b connection (no SSH restart for URL/key). Author: kejiqing
+    if let Some(client) = state.pool_clients.e2b_sandbox_client() {
+        gateway_bootstrap_deploy::runtime_replace_e2b_from_env(client.as_ref())
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    }
+    // Switching e2b host invalidates PG buildId pins written against the old cluster. Author: kejiqing
+    if resp.templates_invalidated {
+        gateway_cluster_bootstrap::invalidate_e2b_template_pins(&state.session_db)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+        let _ = gateway_cluster_bootstrap::reopen_cluster_bootstrap_wizard(&state.session_db).await;
+    }
     Ok(Json(resp))
 }
 
@@ -105,5 +117,122 @@ pub(crate) async fn post_gateway_bootstrap_ensure_core_handler(
     )
     .await
     .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(resp))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/gateway/bootstrap/complete",
+    tag = "Gateway Bootstrap",
+    operation_id = "post_gateway_bootstrap_complete_handler",
+    summary = "User finished Admin wizard (验收/可选); dismiss bootstrap gate",
+    responses(
+        (status = 200, description = "Wizard acknowledged", body = gateway_cluster_bootstrap::BootstrapEnsureCoreResponse),
+        (status = 400, description = "Phases still incomplete"),
+    )
+)]
+pub(crate) async fn post_gateway_bootstrap_complete_handler(
+    State(state): State<AppState>,
+) -> Result<Json<gateway_cluster_bootstrap::BootstrapEnsureCoreResponse>, ApiError> {
+    let client = state.pool_clients.e2b_sandbox_client().map(|v| &**v);
+    let resp = gateway_cluster_bootstrap::complete_cluster_bootstrap_wizard(
+        &state.session_db,
+        client,
+        Some(&state.claw_tap_cluster),
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(resp))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/gateway/bootstrap/reopen",
+    tag = "Gateway Bootstrap",
+    operation_id = "post_gateway_bootstrap_reopen_handler",
+    summary = "Clear wizard ack so Admin shows the bootstrap guide again",
+    responses(
+        (status = 200, description = "Wizard reopened"),
+    )
+)]
+pub(crate) async fn post_gateway_bootstrap_reopen_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    gateway_cluster_bootstrap::reopen_cluster_bootstrap_wizard(&state.session_db)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(serde_json::json!({ "reopened": true })))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/gateway/bootstrap/reset",
+    tag = "Gateway Bootstrap",
+    operation_id = "post_gateway_bootstrap_reset_handler",
+    summary = "Clear local bootstrap pins + wizard ack for a fresh Admin init",
+    responses(
+        (status = 200, description = "Bootstrap reset"),
+    )
+)]
+pub(crate) async fn post_gateway_bootstrap_reset_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    gateway_cluster_bootstrap::reset_bootstrap_for_rerun(&state.session_db)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(serde_json::json!({ "reset": true })))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/gateway/bootstrap/publish-templates",
+    tag = "Gateway Bootstrap",
+    operation_id = "post_gateway_bootstrap_publish_templates_handler",
+    summary = "Accept async publish of e2b core templates from an ACR/CI image tag (returns immediately; poll GET status / publish-templates)",
+    request_body = gateway_bootstrap_publish::BootstrapPublishTemplatesInput,
+    responses(
+        (status = 200, description = "Publish accepted or already running", body = gateway_bootstrap_publish::BootstrapPublishTemplatesResponse),
+        (status = 400, description = "Invalid tag or missing script"),
+    )
+)]
+pub(crate) async fn post_gateway_bootstrap_publish_templates_handler(
+    Json(body): Json<gateway_bootstrap_publish::BootstrapPublishTemplatesInput>,
+) -> Result<Json<gateway_bootstrap_publish::BootstrapPublishTemplatesResponse>, ApiError> {
+    let resp = gateway_bootstrap_publish::start_publish_templates(&body)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(resp))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/gateway/bootstrap/publish-templates",
+    tag = "Gateway Bootstrap",
+    operation_id = "get_gateway_bootstrap_publish_templates_handler",
+    summary = "Current async publish job (poll this or GET /bootstrap/status; do not use a long sync POST)",
+    responses(
+        (status = 200, description = "Current publish job", body = gateway_bootstrap_publish::BootstrapPublishJob),
+    )
+)]
+pub(crate) async fn get_gateway_bootstrap_publish_templates_handler(
+) -> Json<gateway_bootstrap_publish::BootstrapPublishJob> {
+    Json(gateway_bootstrap_publish::current_publish_job())
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/gateway/bootstrap/ci-image-tags",
+    tag = "Gateway Bootstrap",
+    operation_id = "get_gateway_bootstrap_ci_image_tags_handler",
+    summary = "List ACR/CI claw-gateway-worker tags for bootstrap dropdown",
+    responses(
+        (status = 200, description = "Tag list", body = gateway_bootstrap_publish::BootstrapCiImageTagsResponse),
+        (status = 400, description = "Registry auth or list failed"),
+    )
+)]
+pub(crate) async fn get_gateway_bootstrap_ci_image_tags_handler(
+) -> Result<Json<gateway_bootstrap_publish::BootstrapCiImageTagsResponse>, ApiError> {
+    let resp = gateway_bootstrap_publish::list_ci_image_tags()
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     Ok(Json(resp))
 }

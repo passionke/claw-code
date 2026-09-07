@@ -11,6 +11,7 @@ use crate::claw_tap_cluster_state::{
     self, ClawTapClusterHandle, ClawTapClusterSnapshot, TapConsistency,
 };
 use crate::cluster_identity::gateway_cluster_id;
+use crate::gateway_bootstrap_publish::{self, BootstrapPublishJob};
 use crate::gateway_e2b_core_readiness::{load_core_readiness_snapshot, observe_component_ready};
 use crate::gateway_e2b_nas_api_settings::E2bNasApiSettings;
 use crate::gateway_e2b_observe_settings::E2bObserveSettings;
@@ -83,6 +84,14 @@ pub struct ClusterBootstrapSnapshot {
     pub template_commands: Vec<BootstrapCommand>,
     #[serde(rename = "templateEntries")]
     pub template_entries: Vec<BootstrapTemplateEntry>,
+    /// Suggested ACR/CI tag for Admin publish (other pipelines produce the image). Author: kejiqing
+    #[serde(
+        rename = "suggestedCiImageTag",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub suggested_ci_image_tag: Option<String>,
+    #[serde(rename = "publishJob", skip_serializing_if = "Option::is_none")]
+    pub publish_job: Option<BootstrapPublishJob>,
     #[serde(rename = "completedAtMs", skip_serializing_if = "Option::is_none")]
     pub completed_at_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -201,16 +210,18 @@ fn template_entries_from_settings(
 pub fn template_build_commands(cluster_id: &str) -> Vec<BootstrapCommand> {
     let cid = cluster_id.trim();
     let label = if nas_api_bootstrap_required() {
-        "deploy host：构建四个核心 e2b 模板"
+        "Admin：选用 ACR/CI 镜像 tag 发布四个核心 e2b 模板"
     } else {
-        "deploy host：构建核心 e2b 模板（无 NAS，跳过 claw-nas-api）"
+        "Admin：选用 ACR/CI 镜像 tag 发布核心 e2b 模板（无 NAS）"
     };
     vec![BootstrapCommand {
         label: label.into(),
-        command: "./deploy/e2b/build-selfhosted-templates.sh".into(),
+        command: "POST /v1/gateway/bootstrap/publish-templates {\"imageTag\":\"release-vX.Y.Z\"}"
+            .into(),
         hint: Some(format!(
-            "在 claw-code 仓库根目录、deploy host 上执行（已 source .env；CLAW_CLUSTER_ID={cid}）。\
-             无 NAS 时在 .env 设 CLAW_E2B_NAS_API=0。"
+            "在引导页填写 CI/ACR 已有 tag（如 release-v1.8.11），点「发布模板」。\
+             Gateway 会调 e2b Template.build（worker from_image + relaxed/nas-api；observe 用已推送的 ACR 镜像）。\
+             CLAW_CLUSTER_ID={cid}。镜像构建由其他链路负责。"
         )),
     }]
 }
@@ -280,6 +291,8 @@ pub async fn cluster_bootstrap_status(
             env_llm_available: env_llm_available(),
             template_commands: vec![],
             template_entries: vec![],
+            suggested_ci_image_tag: gateway_bootstrap_publish::suggested_ci_image_tag(),
+            publish_job: Some(gateway_bootstrap_publish::current_publish_job()),
             completed_at_ms: None,
             singletons: None,
             claw_tap: None,
@@ -299,7 +312,25 @@ pub async fn cluster_bootstrap_status(
         &settings.e2b_worker,
         &settings.e2b_worker_relaxed,
     );
-    let templates_ok = template_entries.iter().all(|e| e.ready);
+    let publish_job = gateway_bootstrap_publish::current_publish_job();
+    // While Admin publish is running, surface rows as pending so UI does not keep
+    // stale buildId/ready from the previous tag. PG is updated as each template finishes.
+    // Author: kejiqing
+    let template_entries =
+        if publish_job.phase == gateway_bootstrap_publish::BootstrapPublishPhase::Running {
+            template_entries
+                .into_iter()
+                .map(|mut e| {
+                    e.build_id = None;
+                    e.ready = false;
+                    e
+                })
+                .collect()
+        } else {
+            template_entries
+        };
+    let templates_ok = template_entries.iter().all(|e| e.ready)
+        && publish_job.phase != gateway_bootstrap_publish::BootstrapPublishPhase::Running;
 
     let mut singletons_ok = false;
     let mut singletons_detail: Option<String> = None;
@@ -426,6 +457,8 @@ pub async fn cluster_bootstrap_status(
         env_llm_available: env_llm_available(),
         template_commands: template_build_commands(&cluster_id),
         template_entries,
+        suggested_ci_image_tag: gateway_bootstrap_publish::suggested_ci_image_tag(),
+        publish_job: Some(publish_job),
         completed_at_ms: bootstrap_meta.completed_at_ms,
         singletons,
         claw_tap,
@@ -494,7 +527,9 @@ pub async fn ensure_bootstrap_core(
         .await
         .map_err(|e| e.to_string())?
     {
-        return Err("e2b templates not ready — build on dev machine first".into());
+        return Err(
+            "e2b templates not ready — publish from ACR/CI tag in Admin bootstrap step 3".into(),
+        );
     }
     if !llm_phase_complete(db).await.map_err(|e| e.to_string())? {
         return Err("active LLM not configured — apply from env or Admin".into());
@@ -515,11 +550,8 @@ pub async fn ensure_bootstrap_core(
     let snap = cluster_bootstrap_status(db, Some(client.as_ref()), Some(claw_tap_cluster))
         .await
         .map_err(|e| e.to_string())?;
-    if !snap.needs_bootstrap {
-        mark_cluster_bootstrap_completed(db)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
+    // Do NOT mark wizard complete here — Admin must keep the 验收/可选 steps until the
+    // user explicitly POST /bootstrap/complete. Author: kejiqing
     Ok(BootstrapEnsureCoreResponse {
         ok: !snap.needs_bootstrap,
         message: snap.blocking_reason,
@@ -538,6 +570,132 @@ pub async fn mark_cluster_bootstrap_completed(db: &GatewaySessionDb) -> Result<(
         &serde_json::json!({ "completedAtMs": now_ms }),
     )
     .await
+}
+
+/// User finished the Admin wizard (验收/可选). Requires infra phases complete. Author: kejiqing
+pub async fn complete_cluster_bootstrap_wizard(
+    db: &GatewaySessionDb,
+    client: Option<&E2bSandboxClient>,
+    claw_tap_cluster: Option<&ClawTapClusterHandle>,
+) -> Result<BootstrapEnsureCoreResponse, String> {
+    let snap = cluster_bootstrap_status(db, client, claw_tap_cluster)
+        .await
+        .map_err(|e| e.to_string())?;
+    if snap.needs_bootstrap {
+        return Err(snap
+            .blocking_reason
+            .unwrap_or_else(|| "bootstrap phases incomplete".into()));
+    }
+    mark_cluster_bootstrap_completed(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(BootstrapEnsureCoreResponse {
+        ok: true,
+        message: None,
+        needs_bootstrap: false,
+    })
+}
+
+/// Clear wizard ack so Admin shows the guide again (ops / after accidental skip). Author: kejiqing
+pub async fn reopen_cluster_bootstrap_wizard(db: &GatewaySessionDb) -> Result<(), String> {
+    db.merge_gateway_global_settings_json(
+        &["clusterBootstrap", "completedAtMs"],
+        &serde_json::Value::Null,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Clear PG template pins + singleton runtime after e2b endpoint move. Author: kejiqing
+pub async fn invalidate_e2b_template_pins(db: &GatewaySessionDb) -> Result<(), String> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0);
+    // Field-level clears — do not replace whole e2bWorker (keeps poolSize). Author: kejiqing
+    for (section, fields) in [
+        ("e2bWorker", &["templateId", "buildId", "alias"][..]),
+        ("e2bWorkerRelaxed", &["templateId", "buildId", "alias"][..]),
+        (
+            "e2bNasApi",
+            &[
+                "templateId",
+                "buildId",
+                "appliedBuildId",
+                "baseUrl",
+                "sandboxId",
+            ][..],
+        ),
+        (
+            "e2bObserve",
+            &[
+                "templateId",
+                "buildId",
+                "appliedBuildId",
+                "baseUrl",
+                "sandboxId",
+            ][..],
+        ),
+    ] {
+        for field in fields {
+            db.merge_gateway_global_settings_json(&[section, field], &serde_json::Value::Null)
+                .await
+                .map_err(|e| format!("clear {section}.{field}: {e}"))?;
+        }
+        db.merge_gateway_global_settings_json(
+            &[section, "updatedAtMs"],
+            &serde_json::json!(now_ms),
+        )
+        .await
+        .map_err(|e| format!("touch {section}.updatedAtMs: {e}"))?;
+    }
+    // Option URL fields: JSON null is fine. `host` is a String — write "" (null poisons
+    // whole settings_json parse via unwrap_or_default). Author: kejiqing
+    for field in [
+        "e2bObserveSandboxId",
+        "proxyBaseUrl",
+        "liveBaseUrl",
+        "liveSessionUrlTemplate",
+    ] {
+        db.merge_gateway_global_settings_json(&["clawTap", field], &serde_json::Value::Null)
+            .await
+            .map_err(|e| format!("clear clawTap.{field}: {e}"))?;
+    }
+    db.merge_gateway_global_settings_json(&["clawTap", "host"], &serde_json::json!(""))
+        .await
+        .map_err(|e| format!("clear clawTap.host: {e}"))?;
+    info!(
+        target: "claw_gateway_bootstrap",
+        "invalidated e2b template pins + singleton runtime (endpoint change or reset)"
+    );
+    Ok(())
+}
+
+/// Drop wizard ack + template pins + active LLM so Admin init can be run again end-to-end.
+/// Keeps LLM model catalog/keys; only clears the active pointer. Author: kejiqing
+pub async fn reset_bootstrap_for_rerun(db: &GatewaySessionDb) -> Result<(), String> {
+    invalidate_e2b_template_pins(db).await?;
+    clear_active_llm_for_bootstrap_reset(db).await?;
+    reopen_cluster_bootstrap_wizard(db).await?;
+    Ok(())
+}
+
+async fn clear_active_llm_for_bootstrap_reset(db: &GatewaySessionDb) -> Result<(), String> {
+    let cluster_id = gateway_cluster_id().map_err(|e| e.clone())?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0);
+    db.save_llm_cluster_state(&cluster_id, "", "", None, now_ms)
+        .await
+        .map_err(|e| format!("clear active LLM: {e}"))?;
+    info!(
+        target: "claw_gateway_bootstrap",
+        "cleared active LLM pointer for bootstrap reset (catalog kept)"
+    );
+    Ok(())
 }
 
 pub fn spawn_bootstrap_reconcile_loop(
@@ -625,7 +783,7 @@ mod tests {
     fn template_commands_include_cluster_id() {
         let cmds = template_build_commands("workbox-20260828");
         assert_eq!(cmds.len(), 1);
-        assert!(cmds[0].command.contains("build-selfhosted-templates.sh"));
+        assert!(cmds[0].command.contains("publish-templates"));
         assert!(cmds[0]
             .hint
             .as_deref()

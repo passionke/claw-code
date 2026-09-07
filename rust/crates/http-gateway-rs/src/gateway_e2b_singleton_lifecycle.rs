@@ -20,8 +20,8 @@ use crate::gateway_e2b_lifecycle_decision::{
     decide_lifecycle_action, lifecycle_probe_registry, probe_verdict_from_bools,
     singleton_probe_key, LifecycleAction, LifecycleDecisionInput, ProbeVerdict, PROBE_MAX_ATTEMPTS,
 };
-use crate::gateway_e2b_nas_api_settings::load_e2b_nas_api_template_id;
-use crate::gateway_e2b_observe_settings::load_e2b_observe_template_id;
+use crate::gateway_e2b_nas_api_settings::e2b_nas_api_template_from_env;
+use crate::gateway_e2b_observe_settings::e2b_observe_template_from_env;
 use crate::gateway_e2b_ovs_settings::load_e2b_ovs_template_id;
 use crate::gateway_e2b_worker_settings::e2b_project_worker_renew_interval_secs_from_env;
 use crate::gateway_global_settings::get_gateway_global_settings;
@@ -436,6 +436,22 @@ async fn persist_nas_api(
         .await
 }
 
+/// Drop runtime endpoint fields so Admin does not show a dead sandbox as "running". Author: kejiqing
+async fn clear_nas_api_runtime(db: &GatewaySessionDb) -> Result<(), sqlx::Error> {
+    let now = now_ms();
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    let value = serde_json::json!({
+        "templateId": settings.e2b_nas_api.template_id,
+        "buildId": settings.e2b_nas_api.build_id,
+        "appliedBuildId": serde_json::Value::Null,
+        "baseUrl": serde_json::Value::Null,
+        "sandboxId": serde_json::Value::Null,
+        "updatedAtMs": now,
+    });
+    db.merge_gateway_global_settings_json(&["e2bNasApi"], &value)
+        .await
+}
+
 #[allow(dead_code)]
 async fn persist_ovs(
     db: &GatewaySessionDb,
@@ -556,9 +572,8 @@ async fn ensure_nas_api(
     }
     let cluster_id = gateway_cluster_id()?;
     let port = nas_api_port();
-    let template = load_e2b_nas_api_template_id(db)
-        .await
-        .map_err(|e| format!("load nas-api template: {e}"))?;
+    // Create by alias on the *current* e2b cluster; PG tpl_* drifts after host moves. Author: kejiqing
+    let template = e2b_nas_api_template_from_env();
     let (settings, _, _) = get_gateway_global_settings(db)
         .await
         .map_err(|e| format!("load settings for nas-api: {e}"))?;
@@ -637,9 +652,16 @@ async fn ensure_nas_api(
         cluster_id = %cluster_id,
         "create nas-api singleton"
     );
-    let handle = client
+    let handle = match client
         .create_nas_api_singleton(&template, &cluster_id)
-        .await?;
+        .await
+    {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = clear_nas_api_runtime(db).await;
+            return Err(e);
+        }
+    };
     let base_url = service_base_url(client, port, &handle.sandbox_id, &handle.sandbox_domain);
     let health_url = format!("{}/healthz", base_url.trim_end_matches('/'));
     let traffic_reachable = wait_http_ok(&health_url, "nas-api healthz", 60).await;
@@ -676,9 +698,8 @@ async fn ensure_observe(
         });
     }
     let cluster_id = gateway_cluster_id()?;
-    let template = load_e2b_observe_template_id(db)
-        .await
-        .map_err(|e| format!("load observe template: {e}"))?;
+    // Create by alias on current e2b; ignore stale PG tpl_*. Author: kejiqing
+    let template = e2b_observe_template_from_env();
     let sandbox_db_url = sandbox_database_url()?;
     let live_port = observe_live_port();
     let (settings, _, _) = get_gateway_global_settings(db)

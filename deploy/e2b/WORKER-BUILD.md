@@ -24,9 +24,17 @@ Author: kejiqing
 ./deploy/stack/gateway.sh e2b-worker-deploy
 ```
 
-**Mac arm64（用 CI 镜像里的 amd64 claw，勿走 qemu 编译）：**
+**Mac arm64（Admin 选 ACR/CI tag，勿走 qemu 编译）：**
+
+在 Gateway Admin 引导「e2b 模板」步填写 tag（如 `release-v1.8.11`）→ **发布模板**。
+
+等价 API / 脚本：
 
 ```bash
+# Admin 触发的同一条脚本（deploy host / Gateway 进程可执行）
+./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-v1.8.19
+
+# 或仅 worker+relaxed：
 ./deploy/stack/gateway.sh e2b-worker-deploy --from-ci-image release-v1.7.19
 ```
 

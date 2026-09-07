@@ -23,6 +23,8 @@ from e2b_template_registry import (
     template_debian_base_image,
     template_gateway_worker_image,
 )
+from e2b_template_build import build_template_with_retry
+from registry_extract import extract_file_from_image
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
@@ -95,6 +97,22 @@ def _elf_arch_ok(probe: str, arch: str) -> bool:
     return False
 
 
+def _elf_probe(path: Path) -> str:
+    """Describe ELF arch; works without the `file` binary (gateway image). Author: kejiqing"""
+    if shutil.which("file"):
+        return subprocess.check_output(["file", "-b", str(path)], text=True).strip()
+    data = path.read_bytes()[:20]
+    if len(data) < 20 or data[:4] != b"\x7fELF":
+        return "not ELF"
+    # e_machine at offset 18 (little-endian)
+    machine = int.from_bytes(data[18:20], "little")
+    if machine == 0x3E:
+        return "ELF 64-bit LSB pie executable, x86-64"
+    if machine == 0xB7:
+        return "ELF 64-bit LSB pie executable, ARM aarch64"
+    return f"ELF machine=0x{machine:x}"
+
+
 def _acr_registry_host(image_ref: str) -> str:
     if "/" not in image_ref:
         return ""
@@ -161,6 +179,21 @@ def _build_e2b_worker_image(worker_image: str) -> str:
         print(f"==> {rt} push {e2b_image!r}")
         subprocess.check_call([rt, "push", e2b_image])
     return e2b_image
+
+
+def _worker_runtime_install_run() -> str:
+    """Same packages/scripts as Dockerfile.claw-worker-selfhosted (runs on e2b build host)."""
+    apt = template_apt_prepare_prefix()
+    return (
+        f"{apt}apt-get update && apt-get install -y --no-install-recommends "
+        "nfs-common ca-certificates sudo "
+        "&& echo 'user ALL=(ALL) NOPASSWD: /bin/mount, /bin/umount, /usr/bin/mountpoint, /bin/mkdir, /bin/chown' "
+        "> /etc/sudoers.d/claw-nfs && chmod 440 /etc/sudoers.d/claw-nfs "
+        "&& rm -rf /var/lib/apt/lists/* "
+        "&& printf '%s\\n' '#!/bin/sh' 'set -eu' 'exec sleep infinity' > /usr/local/bin/claw-worker-start "
+        "&& printf '%s\\n' '#!/bin/sh' 'command -v claw >/dev/null 2>&1' > /usr/local/bin/claw-worker-ready "
+        "&& chmod +x /usr/local/bin/claw-worker-start /usr/local/bin/claw-worker-ready"
+    )
 
 
 def _worker_start_ready_install() -> str:
@@ -256,56 +289,80 @@ def main() -> int:
 
     skip_cache = _env("CLAW_E2B_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no")
 
+    # e2bserver rejects custom ACR apps (claw-gateway-worker) as "must be Debian-based"
+    # even when the image IS bookworm. Bootstrap therefore uses debian: + COPY claw.
+    # Author: kejiqing
+    skip_local = _env("CLAW_E2B_WORKER_SKIP_LOCAL_BUILD") in ("1", "true", "yes")
+    if skip_local and strategy == "from_image":
+        print(
+            "==> SKIP_LOCAL_BUILD: switch from_image(CI worker) → debian + COPY claw "
+            "(e2b rejects claw-gateway-worker as non-Debian base)",
+            file=sys.stderr,
+        )
+        strategy = "copy"
+
     if strategy == "from_image":
         worker_image = _worker_base_image()
         e2b_image = _build_e2b_worker_image(worker_image)
         print(f"==> e2b Template.build from_image={e2b_image!r} (e2b host pulls from registry)")
-        template = (
-            Template()
-            .from_image(e2b_image)
-            .set_start_cmd(WORKER_START_CMD, WORKER_READY_CMD)
-        )
+        template = Template().from_image(e2b_image)
+        template = template.set_start_cmd(WORKER_START_CMD, WORKER_READY_CMD)
         apply_template_skip_cache_force(template, skip_cache)
+        build = build_template_with_retry(
+            Template.build,
+            label=alias,
+            template=template,
+            alias=alias,
+            skip_cache=skip_cache,
+            on_build_logs=default_build_logger(),
+            **opts,
+        )
     elif strategy == "copy":
         with tempfile.TemporaryDirectory(prefix="claw-e2b-tpl-") as tmp:
             staging = Path(tmp)
             copy_dir = _env("CLAW_E2B_TEMPLATE_COPY_DIR")
-            if not copy_dir:
-                print(
-                    "error: CLAW_E2B_TEMPLATE_BUILD_STRATEGY=copy requires "
-                    "CLAW_E2B_TEMPLATE_COPY_DIR with claw.",
-                    file=sys.stderr,
-                )
-                return 1
-            src = Path(copy_dir)
-            for name in ("claw",):
-                if not (src / name).is_file():
-                    print(f"error: missing {src / name}", file=sys.stderr)
-                    return 1
-            # Upload as *.bin so e2b artifact cache keys differ from legacy blobs.
-            upload_names = {"claw": "claw.bin"}
-            for name in ("claw",):
-                upload = upload_names[name]
-                (staging / upload).write_bytes((src / name).read_bytes())
-                (staging / upload).chmod(0o755)
+            claw_bin = staging / "claw.bin"
+            if copy_dir and (Path(copy_dir) / "claw").is_file():
+                src = Path(copy_dir) / "claw"
+                claw_bin.write_bytes(src.read_bytes())
+                claw_bin.chmod(0o755)
+                print(f"==> copy build ctx from COPY_DIR {src}")
+            else:
+                worker_image = _worker_base_image()
+                # Prefer registry HTTP extract (works inside gateway; no nested podman). Author: kejiqing
+                try:
+                    extract_file_from_image(
+                        worker_image,
+                        "/usr/local/bin/claw",
+                        claw_bin,
+                        platform=_template_platform(),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"warn: registry extract failed ({exc}); falling back to podman stage",
+                        file=sys.stderr,
+                    )
+                    _stage_from_worker_tag(staging, worker_image)
+                    claw_bin.write_bytes((staging / "claw").read_bytes())
+                    claw_bin.chmod(0o755)
             arch = _linux_arch_from_platform(_template_platform())
-            for name in ("claw",):
-                upload = upload_names[name]
-                probe = subprocess.check_output(["file", "-b", str(staging / upload)], text=True).strip()
-                print(f"  {name}: {probe}")
-                if not _elf_arch_ok(probe, arch):
-                    raise SystemExit(f"error: {name} is not linux/{arch} ({probe})")
+            probe = _elf_probe(claw_bin)
+            print(f"  claw: {probe}")
+            if not _elf_arch_ok(probe, arch):
+                raise SystemExit(f"error: claw is not linux/{arch} ({probe})")
             dockerfile_path = staging / "Dockerfile"
             dockerfile_path.write_text(_dockerfile_debian_copy(), encoding="utf-8")
-            print(f"==> copy build ctx={staging} (from {copy_dir})")
+            print(f"==> e2b Template.build debian+COPY claw (base={template_debian_base_image()!r})")
             template = (
                 Template(file_context_path=str(staging))
                 .from_dockerfile(str(dockerfile_path))
                 .set_start_cmd(WORKER_START_CMD, WORKER_READY_CMD)
             )
             apply_template_skip_cache_force(template, skip_cache)
-            build = Template.build(
-                template,
+            build = build_template_with_retry(
+                Template.build,
+                label=alias,
+                template=template,
                 alias=alias,
                 skip_cache=skip_cache,
                 on_build_logs=default_build_logger(),
@@ -314,15 +371,6 @@ def main() -> int:
     else:
         print(f"unknown CLAW_E2B_TEMPLATE_BUILD_STRATEGY={strategy!r}", file=sys.stderr)
         return 1
-
-    if strategy == "from_image":
-        build = Template.build(
-            template,
-            alias=alias,
-            skip_cache=skip_cache,
-            on_build_logs=default_build_logger(),
-            **opts,
-        )
 
     now_ms = int(time.time() * 1000)
     print(f"template_id: {build.template_id}")

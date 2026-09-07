@@ -55,6 +55,8 @@ services:
       CLAW_GATEWAY_IMAGE_REF: ${GATEWAY_IMAGE:-claw-gateway-rs:local}
       CLAW_REPO_ROOT: /run/claw/repo
       CLAW_DEPLOY_ENV_FILE: /run/claw/deploy.env
+      # Host docker/podman auth for ACR tag listing (bootstrap dropdown). Author: kejiqing
+      CLAW_DOCKER_CONFIG: /run/claw/docker-config.json
       CLAW_HTTP_ADDR: 0.0.0.0:8080
       CLAW_BIN: /usr/local/bin/claw
       CLAW_WORK_ROOT: /var/lib/claw/workspace
@@ -94,6 +96,8 @@ services:
       - ../../.env:/run/claw/deploy.env:rw
       - ../../:/run/claw/repo:ro
       - ../../.claw:/run/claw/claw:rw
+      # Optional: host registry login for GET /v1/gateway/bootstrap/ci-image-tags. Author: kejiqing
+      - ${CLAW_HOST_DOCKER_CONFIG:-${HOME}/.docker/config.json}:/run/claw/docker-config.json:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz | grep -q '\"ok\":true'"]
       interval: 10s

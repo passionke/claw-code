@@ -3,6 +3,7 @@
 mod client;
 mod config;
 mod e2b_platform;
+mod e2b_schedule_error;
 mod nas_paths;
 mod types;
 
@@ -13,6 +14,7 @@ pub use client::{
 };
 pub use config::E2bSandboxConfig;
 pub use e2b_platform::{nas_mount_source_addr, E2bNasPlatform, E2bTemplateEntry};
+pub use e2b_schedule_error::format_create_sandbox_error;
 pub use nas_paths::{
     export_root_rel, guest_path_from_nas_proj_rel, guest_path_under_claw_ds, guest_session_root,
     guest_session_work_dir, guest_worker_work_dir, ovs_folder_url, ovs_workspace_folder,

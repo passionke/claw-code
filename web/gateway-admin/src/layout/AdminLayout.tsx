@@ -18,7 +18,7 @@ import type { MenuProps } from "antd";
 import { Avatar, Button, Dropdown, Layout, Menu, Select, Space, Spin, Tag, Typography } from "antd";
 import { useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
-import { adminLogout, fetchAdminMe } from "../api/client";
+import { adminLogout, fetchAdminMe, proxyHttp } from "../api/client";
 import CreateProjectModal from "../components/CreateProjectModal";
 import { useApp } from "../context/AppContext";
 import { useClusterBootstrap } from "../hooks/useClusterBootstrap";
@@ -156,6 +156,12 @@ export default function AdminLayout() {
         snap={snap}
         onRefresh={() => refresh(false)}
         onComplete={async () => {
+          if (!gatewayBase) return;
+          try {
+            await proxyHttp(gatewayBase, "POST", "/v1/gateway/bootstrap/complete", {});
+          } catch {
+            // Fall through — refresh still decides whether gate stays open.
+          }
           await refresh(false);
         }}
       />

@@ -21,7 +21,9 @@ from e2b_template_registry import (
     template_debian_base_image,
     template_gateway_worker_image,
 )
+from e2b_template_build import build_template_with_retry
 from ovs_bundle import ovs_port, pack_ovs_bundle, relaxed_worker_ovs_install_runfile, stage_ovs_tree
+from registry_extract import extract_file_from_image
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
@@ -138,7 +140,6 @@ def main() -> int:
     log_debian_base_resolution(api_url=opts["api_url"])
     alias = _env("CLAW_E2B_WORKER_RELAXED_ALIAS") or "claw-worker-relaxed"
     port = ovs_port()
-    rt = _container_runtime()
 
     os.environ.setdefault("E2B_API_KEY", opts["api_key"])
     os.environ.setdefault("E2B_API_URL", opts["api_url"])
@@ -150,6 +151,98 @@ def main() -> int:
 
     from e2b import Template, default_build_logger
 
+    # Gateway bootstrap: e2b rejects claw-gateway-worker-relaxed as non-Debian base;
+    # use debian + COPY claw (no OVS bake). Author: kejiqing
+    if _env("CLAW_E2B_WORKER_RELAXED_FROM_IMAGE") in ("1", "true", "yes") or _env(
+        "CLAW_E2B_WORKER_SKIP_LOCAL_BUILD"
+    ) in ("1", "true", "yes"):
+        image = _env("CLAW_E2B_WORKER_RELAXED_IMAGE") or _worker_base_image()
+        print(
+            f"==> bootstrap relaxed: debian + COPY claw from {image!r} "
+            "(skip OVS bake; e2b rejects CI relaxed as non-Debian base)",
+            file=sys.stderr,
+        )
+        skip_cache = _env("CLAW_E2B_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no")
+        apt = template_apt_prepare_prefix()
+        debian = template_debian_base_image()
+        with tempfile.TemporaryDirectory(prefix="claw-e2b-relaxed-boot-") as tmp:
+            staging = Path(tmp)
+            claw_bin = staging / "claw.bin"
+            extract_file_from_image(
+                image,
+                "/usr/local/bin/claw",
+                claw_bin,
+                platform=_env("CLAW_E2B_TEMPLATE_PLATFORM", "linux/amd64"),
+            )
+            dockerfile = staging / "Dockerfile"
+            dockerfile.write_text(
+                (
+                    f"FROM {debian}\n"
+                    f"RUN {apt}apt-get update && apt-get install -y --no-install-recommends \\\n"
+                    "    nfs-common ca-certificates sudo curl git python3 python3-pip \\\n"
+                    "    && ln -sf /usr/bin/pip3 /usr/local/bin/pip \\\n"
+                    "    && echo 'user ALL=(ALL) NOPASSWD: /bin/mount, /bin/umount, "
+                    "/usr/bin/mountpoint, /bin/mkdir, /bin/chown' > /etc/sudoers.d/claw-nfs \\\n"
+                    "    && chmod 440 /etc/sudoers.d/claw-nfs \\\n"
+                    "    && rm -rf /var/lib/apt/lists/*\n"
+                    "COPY claw.bin /usr/local/bin/claw\n"
+                    "RUN chmod +x /usr/local/bin/claw \\\n"
+                    "    && printf '%s\\n' '#!/bin/sh' 'set -eu' 'exec sleep infinity' "
+                    "> /usr/local/bin/claw-worker-relaxed-start \\\n"
+                    "    && printf '%s\\n' '#!/bin/sh' 'command -v claw >/dev/null 2>&1' "
+                    "> /usr/local/bin/claw-worker-relaxed-ready \\\n"
+                    "    && chmod +x /usr/local/bin/claw-worker-relaxed-start "
+                    "/usr/local/bin/claw-worker-relaxed-ready\n"
+                ),
+                encoding="utf-8",
+            )
+            template = (
+                Template(file_context_path=str(staging))
+                .from_dockerfile(str(dockerfile))
+                .set_start_cmd(
+                    "/usr/local/bin/claw-worker-relaxed-start",
+                    "/usr/local/bin/claw-worker-relaxed-ready",
+                )
+            )
+            apply_template_skip_cache_force(template, skip_cache)
+            build = build_template_with_retry(
+                Template.build,
+                label=alias,
+                template=template,
+                alias=alias,
+                skip_cache=skip_cache,
+                on_build_logs=default_build_logger(),
+                **opts,
+            )
+        print(f"template_id: {build.template_id}")
+        print(f"build_id: {build.build_id}")
+        now_ms = int(time.time() * 1000)
+        try:
+            from e2b_pg_settings import merge_settings_json_key
+
+            merge_settings_json_key(
+                "e2bWorkerRelaxed",
+                {
+                    "templateId": build.template_id,
+                    "buildId": build.build_id,
+                    "alias": alias,
+                    "updatedAtMs": now_ms,
+                },
+                now_ms=now_ms,
+            )
+            print(
+                f"==> persisted e2bWorkerRelaxed.templateId={build.template_id!r} "
+                f"buildId={build.build_id!r} to PG"
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"warn: skip PG e2bWorkerRelaxed.templateId persist: {exc}", file=sys.stderr)
+        print(
+            f"OK: relaxed worker template {alias!r} ({build.template_id}) "
+            "from CI claw binary (OVS not baked)"
+        )
+        return 0
+
+    rt = _container_runtime()
     with tempfile.TemporaryDirectory(prefix="claw-e2b-relaxed-") as tmp:
         staging = Path(tmp)
         _stage_claw_into(staging)
@@ -173,7 +266,14 @@ def main() -> int:
             template,
             _env("CLAW_E2B_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no"),
         )
-        build = Template.build(template, alias=alias, on_build_logs=default_build_logger(), **opts)
+        build = build_template_with_retry(
+            Template.build,
+            label=alias,
+            template=template,
+            alias=alias,
+            on_build_logs=default_build_logger(),
+            **opts,
+        )
 
     print(f"template_id: {build.template_id}")
     print(f"build_id: {build.build_id}")
