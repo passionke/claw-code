@@ -804,8 +804,8 @@ impl DirectToolExecutorInner {
 
     fn execute_impl(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
         // AskUser / report_progress have their own stdout events; skip tool.* noise. Author: kejiqing
-        let skip_tool_ev = tool_name == ASK_USER_QUESTION_TOOL_NAME
-            || tool_name == REPORT_PROGRESS_TOOL_NAME;
+        let skip_tool_ev =
+            tool_name == ASK_USER_QUESTION_TOOL_NAME || tool_name == REPORT_PROGRESS_TOOL_NAME;
         if skip_tool_ev {
             return self.execute_impl_inner(tool_name, input);
         }

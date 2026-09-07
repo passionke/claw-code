@@ -244,11 +244,7 @@ pub fn ag_ui_from_ask_user(pending: &AskUserPending) -> Value {
 }
 
 /// Map one HubMsg to zero or more AG-UI JSON events (excluding RUN_*). Author: kejiqing
-pub fn project_hub_msg(
-    turn_id: &str,
-    msg: &HubMsg,
-    steps: &mut Vec<ProcessStep>,
-) -> Vec<Value> {
+pub fn project_hub_msg(turn_id: &str, msg: &HubMsg, steps: &mut Vec<ProcessStep>) -> Vec<Value> {
     match msg {
         HubMsg::Delta(_) => Vec::new(),
         HubMsg::Process(pe) => {

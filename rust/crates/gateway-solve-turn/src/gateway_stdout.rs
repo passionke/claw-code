@@ -162,7 +162,9 @@ fn truncate_summary(s: &str) -> String {
     }
     format!(
         "{}…",
-        t.chars().take(TOOL_SUMMARY_MAX.saturating_sub(1)).collect::<String>()
+        t.chars()
+            .take(TOOL_SUMMARY_MAX.saturating_sub(1))
+            .collect::<String>()
     )
 }
 
@@ -252,12 +254,12 @@ fn args_summary_from_input(tool_name: &str, input: &str) -> String {
         return truncate_summary(&pick(&["command", "cmd"]).unwrap_or_default());
     }
     if n.contains("grep") || n.contains("search") {
-        return truncate_summary(
-            &pick(&["pattern", "query", "q", "keyword"]).unwrap_or_default(),
-        );
+        return truncate_summary(&pick(&["pattern", "query", "q", "keyword"]).unwrap_or_default());
     }
     if n.contains("read") || n.contains("write") || n.contains("edit") || n.contains("glob") {
-        return truncate_summary(&pick(&["path", "file_path", "file", "target"]).unwrap_or_default());
+        return truncate_summary(
+            &pick(&["path", "file_path", "file", "target"]).unwrap_or_default(),
+        );
     }
     if let Some(obj) = v.as_object() {
         if let Some(s) = obj

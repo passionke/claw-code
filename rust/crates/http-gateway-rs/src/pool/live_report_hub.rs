@@ -352,9 +352,9 @@ mod tests {
             match rx.recv().await {
                 Ok(HubMsg::Delta(delta)) => return delta.text,
                 Ok(HubMsg::SolveDone) => panic!("unexpected SolveDone"),
-                Ok(HubMsg::AskUser(_))
-                | Ok(HubMsg::AskUserCleared)
-                | Ok(HubMsg::Process(_)) => continue,
+                Ok(HubMsg::AskUser(_)) | Ok(HubMsg::AskUserCleared) | Ok(HubMsg::Process(_)) => {
+                    continue
+                }
                 Err(_) => continue,
             }
         }

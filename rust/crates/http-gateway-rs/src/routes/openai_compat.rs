@@ -23,9 +23,7 @@ use crate::client_origin;
 use crate::gateway_admin_mcp_token::extract_bearer_token;
 use crate::project_model_api_key::ProjectModelApiKeyRow;
 use crate::responses_hub_stream::responses_hub_sse_response;
-use crate::routes::app::{
-    admin_mcp_run_solve_sync, enqueue_solve_async, validate_solve_request,
-};
+use crate::routes::app::{admin_mcp_run_solve_sync, enqueue_solve_async, validate_solve_request};
 use crate::session_merge;
 
 pub(crate) fn router() -> Router<AppState> {
