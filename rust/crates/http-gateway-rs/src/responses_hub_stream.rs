@@ -98,9 +98,7 @@ pub fn responses_hub_sse_response(
                             .to_string(),
                         ));
                     }
-                    Ok(HubMsg::Process(_))
-                    | Ok(HubMsg::AskUser(_))
-                    | Ok(HubMsg::AskUserCleared) => {}
+                    Ok(HubMsg::Process(_) | HubMsg::AskUser(_) | HubMsg::AskUserCleared) => {}
                     Ok(HubMsg::SolveDone) | Err(RecvError::Closed) => {
                         done = true;
                         break;

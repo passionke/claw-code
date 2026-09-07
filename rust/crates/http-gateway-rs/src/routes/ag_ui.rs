@@ -15,6 +15,7 @@ use crate::gateway_owner_proxy;
 use crate::pool;
 
 #[derive(Debug, Deserialize)]
+#[allow(clippy::struct_field_names)] // query wire names: sessionId / turnId / projId
 pub(crate) struct AgUiRunQuery {
     #[serde(rename = "sessionId")]
     session_id: String,
