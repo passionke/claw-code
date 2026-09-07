@@ -8,10 +8,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::admin_auth::store::{
+    get_account_by_id, principal_from_account, resolve_session_principal, SESSION_TOKEN_PREFIX,
+};
+use crate::admin_auth::{
+    admin_mcp_tool_is_cross_project_without_id, authorize_admin_mcp_tool, filter_project_ids,
+    proj_id_from_tool_args, AuthPrincipal,
+};
 use crate::admin_mcp_solve::{
     parse_solve_tool_args, solve_tools_schema, validate_admin_mcp_solve_input, AdminMcpSolveBackend,
 };
-use crate::gateway_admin_mcp_token::{extract_bearer_token, verify_admin_mcp_token};
+use crate::gateway_admin_mcp_token::{extract_bearer_token, verify_admin_mcp_token, TOKEN_PREFIX};
 use crate::gateway_global_settings;
 use crate::pool::{
     validate_worker_env_json, validate_worker_profile_json, NasLayoutBackend, PoolClients,
@@ -104,9 +111,10 @@ pub async fn handle_admin_mcp_post<B: AdminMcpSolveBackend>(
     let Some(token) = extract_bearer_token(bearer) else {
         return mcp_auth_error_response("missing Authorization: Bearer <admin-mcp-token>");
     };
-    if let Err(msg) = verify_admin_mcp_token(db, &token).await {
-        return mcp_auth_error_response(&msg);
-    }
+    let principal = match resolve_admin_mcp_principal(db, &token).await {
+        Ok(p) => p,
+        Err(msg) => return mcp_auth_error_response(&msg),
+    };
 
     let request: JsonRpcRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
@@ -138,6 +146,7 @@ pub async fn handle_admin_mcp_post<B: AdminMcpSolveBackend>(
                 solve_backend,
                 nas_layout,
                 pool_clients,
+                &principal,
                 request.params,
             )
             .await
@@ -162,6 +171,26 @@ pub async fn handle_admin_mcp_post<B: AdminMcpSolveBackend>(
         Ok(value) => json_rpc_ok_response(id, value, &session_id),
         Err(e) => json_rpc_error_response(id, -32603, e, StatusCode::OK),
     }
+}
+
+async fn resolve_admin_mcp_principal(
+    db: &GatewaySessionDb,
+    token: &str,
+) -> Result<AuthPrincipal, String> {
+    if token.starts_with(SESSION_TOKEN_PREFIX) {
+        return resolve_session_principal(db, token).await;
+    }
+    if !token.starts_with(TOKEN_PREFIX) {
+        return Err("invalid admin MCP token".into());
+    }
+    let entry = verify_admin_mcp_token(db, token).await?;
+    if let Some(account_id) = entry.account_id.as_deref().filter(|s| !s.is_empty()) {
+        let acc = get_account_by_id(db, account_id)
+            .await?
+            .ok_or_else(|| "admin MCP token account not found".to_string())?;
+        return principal_from_account(db, &acc).await;
+    }
+    Ok(AuthPrincipal::legacy_camt_system_admin())
 }
 
 fn handle_initialize(params: Option<&Value>) -> Value {
@@ -540,6 +569,7 @@ async fn handle_tools_call<B: AdminMcpSolveBackend>(
     solve_backend: &B,
     nas_layout: &NasLayoutBackend,
     pool_clients: &PoolClients,
+    principal: &AuthPrincipal,
     params: Option<Value>,
 ) -> Result<Value, String> {
     let params = params.ok_or_else(|| "params required".to_string())?;
@@ -552,8 +582,12 @@ async fn handle_tools_call<B: AdminMcpSolveBackend>(
         .cloned()
         .unwrap_or_else(|| json!({}));
 
+    let proj_id = proj_id_from_tool_args(&args);
+    let cross = admin_mcp_tool_is_cross_project_without_id(name);
+    authorize_admin_mcp_tool(principal, name, proj_id, cross && proj_id.is_none())?;
+
     match name {
-        "project_list" => handle_project_list(db).await,
+        "project_list" => handle_project_list(db, principal).await,
         "project_extra_session_fields_get" => {
             let proj_id = args
                 .get("projId")
@@ -563,12 +597,14 @@ async fn handle_tools_call<B: AdminMcpSolveBackend>(
         }
         "gateway_solve" => {
             let input = parse_solve_tool_args(&args)?;
+            authorize_admin_mcp_tool(principal, name, Some(input.proj_id), false)?;
             validate_admin_mcp_solve_input(db, &input).await?;
             let value = solve_backend.gateway_solve_sync(input).await?;
             Ok(tool_text_result(&value))
         }
         "gateway_solve_async" => {
             let input = parse_solve_tool_args(&args)?;
+            authorize_admin_mcp_tool(principal, name, Some(input.proj_id), false)?;
             validate_admin_mcp_solve_input(db, &input).await?;
             let value = solve_backend.gateway_solve_async(input).await?;
             Ok(tool_text_result(&value))
@@ -587,11 +623,15 @@ async fn handle_tools_call<B: AdminMcpSolveBackend>(
     }
 }
 
-async fn handle_project_list(db: &GatewaySessionDb) -> Result<Value, String> {
+async fn handle_project_list(
+    db: &GatewaySessionDb,
+    principal: &AuthPrincipal,
+) -> Result<Value, String> {
     let proj_ids = db
         .list_project_config_proj_ids()
         .await
         .map_err(|e| e.to_string())?;
+    let proj_ids = filter_project_ids(principal, &proj_ids);
     let mut projects = Vec::with_capacity(proj_ids.len());
     for proj_id in proj_ids {
         let row = db

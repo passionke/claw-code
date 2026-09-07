@@ -276,6 +276,7 @@ export interface AdminMcpTokenRow {
   expiresAtMs?: number;
   revokedAtMs?: number;
   lastUsedAtMs?: number;
+  accountId?: string;
   active: boolean;
   expired: boolean;
 }

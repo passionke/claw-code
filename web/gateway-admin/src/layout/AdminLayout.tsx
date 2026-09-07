@@ -38,28 +38,39 @@ const GLOBAL_MENU_CHILDREN = [
   { key: "/global/admin-mcp", label: "Admin MCP Token" },
 ];
 
-const TAB_ITEMS: MenuProps["items"] = [
-  { key: "/project-config", icon: <AppstoreOutlined />, label: "项目配置" },
-  { key: "/git-import", icon: <CloudDownloadOutlined />, label: "Git 导入" },
-  { key: "/project-role", icon: <SettingOutlined />, label: "项目角色" },
-  { key: "/skills", icon: <SettingOutlined />, label: "Skills" },
-  { key: "/mcp", icon: <ApiOutlined />, label: "MCP" },
-  { key: "/claude", icon: <FileTextOutlined />, label: "CLAUDE.md" },
-  { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
-  { key: "/preflight", icon: <SettingOutlined />, label: "Preflight" },
-  { key: "/worker-profile", icon: <SettingOutlined />, label: "Worker profile" },
-  { key: "/env", icon: <CodeOutlined />, label: "环境变量" },
-  { key: "/inference", icon: <ThunderboltOutlined />, label: "项目推理" },
-  { key: "/prompt", icon: <FileTextOutlined />, label: "系统提示词" },
-  { key: "/tools", icon: <ToolOutlined />, label: "Tools" },
-  { key: "/extra-session", icon: <FormOutlined />, label: "extraSession" },
-  {
-    key: "global",
-    icon: <GlobalOutlined />,
-    label: "全局配置",
-    children: GLOBAL_MENU_CHILDREN,
-  },
-];
+function buildTabItems(systemAdmin: boolean): MenuProps["items"] {
+  const items: MenuProps["items"] = [
+    { key: "/project-config", icon: <AppstoreOutlined />, label: "项目配置" },
+    { key: "/git-import", icon: <CloudDownloadOutlined />, label: "Git 导入" },
+    { key: "/project-role", icon: <SettingOutlined />, label: "项目角色" },
+    { key: "/skills", icon: <SettingOutlined />, label: "Skills" },
+    { key: "/mcp", icon: <ApiOutlined />, label: "MCP" },
+    { key: "/claude", icon: <FileTextOutlined />, label: "CLAUDE.md" },
+    { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
+    { key: "/preflight", icon: <SettingOutlined />, label: "Preflight" },
+    { key: "/worker-profile", icon: <SettingOutlined />, label: "Worker profile" },
+    { key: "/env", icon: <CodeOutlined />, label: "环境变量" },
+    { key: "/inference", icon: <ThunderboltOutlined />, label: "项目推理" },
+    { key: "/prompt", icon: <FileTextOutlined />, label: "系统提示词" },
+    { key: "/tools", icon: <ToolOutlined />, label: "Tools" },
+    { key: "/extra-session", icon: <FormOutlined />, label: "extraSession" },
+    { key: "/my-mcp-tokens", icon: <ApiOutlined />, label: "我的 MCP Token" },
+  ];
+  if (systemAdmin) {
+    items.push({
+      key: "/accounts",
+      icon: <UserOutlined />,
+      label: "账号管理",
+    });
+    items.push({
+      key: "global",
+      icon: <GlobalOutlined />,
+      label: "全局配置",
+      children: GLOBAL_MENU_CHILDREN,
+    });
+  }
+  return items;
+}
 
 export default function AdminLayout() {
   const {
@@ -75,8 +86,10 @@ export default function AdminLayout() {
   const loc = useLocation();
   const nav = useNavigate();
   const [adminUser, setAdminUser] = useState("");
+  const [systemAdmin, setSystemAdmin] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [openKeys, setOpenKeys] = useState<string[]>([]);
+  const tabItems = buildTabItems(systemAdmin);
   const selectedKey = (() => {
     if (loc.pathname.startsWith("/global")) {
       return (
@@ -84,7 +97,7 @@ export default function AdminLayout() {
         "/global/inference"
       );
     }
-    for (const t of TAB_ITEMS ?? []) {
+    for (const t of tabItems ?? []) {
       if (!t || typeof t !== "object" || !("key" in t)) continue;
       const k = String(t.key);
       if (k === "global") continue;
@@ -103,9 +116,27 @@ export default function AdminLayout() {
     fetchAdminMe()
       .then((r) => {
         if (r.ok && r.user) setAdminUser(r.user);
+        if (r.ok) {
+          if (typeof r.systemAdmin === "boolean") {
+            setSystemAdmin(r.systemAdmin);
+          } else if (r.systemRole) {
+            setSystemAdmin(r.systemRole === "system_admin");
+          } else {
+            setSystemAdmin(true);
+          }
+        }
       })
       .catch(() => setAdminUser(""));
   }, []);
+
+  useEffect(() => {
+    if (!systemAdmin && loc.pathname.startsWith("/global")) {
+      nav("/project-config", { replace: true });
+    }
+    if (!systemAdmin && loc.pathname.startsWith("/accounts")) {
+      nav("/project-config", { replace: true });
+    }
+  }, [systemAdmin, loc.pathname, nav]);
 
   useEffect(() => {
     if (selectedKey === "/project-config") {
@@ -119,6 +150,11 @@ export default function AdminLayout() {
       key: "chat",
       icon: <CommentOutlined />,
       label: "对话",
+    },
+    {
+      key: "my-mcp",
+      icon: <ApiOutlined />,
+      label: "我的 MCP Token",
     },
     { type: "divider" },
     {
@@ -198,9 +234,11 @@ export default function AdminLayout() {
         ) : null}
         <div style={{ flex: 1 }} />
         <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-            新建项目
-          </Button>
+          {systemAdmin ? (
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+              新建项目
+            </Button>
+          ) : null}
           <CreateProjectModal
             open={createOpen}
             gatewayBase={gatewayBase}
@@ -216,6 +254,10 @@ export default function AdminLayout() {
               onClick: async ({ key }) => {
                 if (key === "chat") {
                   nav("/chat");
+                  return;
+                }
+                if (key === "my-mcp") {
+                  nav("/my-mcp-tokens");
                   return;
                 }
                 if (key === "logout") {
@@ -242,7 +284,7 @@ export default function AdminLayout() {
             selectedKeys={[selectedKey]}
             openKeys={openKeys}
             onOpenChange={(keys) => setOpenKeys(keys)}
-            items={TAB_ITEMS}
+            items={tabItems}
             onClick={({ key }) => {
               if (key === "global") return;
               nav(key);

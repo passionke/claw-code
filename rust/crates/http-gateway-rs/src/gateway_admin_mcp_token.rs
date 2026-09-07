@@ -38,6 +38,9 @@ pub struct AdminMcpTokenEntry {
     pub revoked_at_ms: Option<i64>,
     #[serde(rename = "lastUsedAtMs", skip_serializing_if = "Option::is_none")]
     pub last_used_at_ms: Option<i64>,
+    /// Owning human account; absent on legacy tokens (treated as system_admin scope).
+    #[serde(default, rename = "accountId", skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -55,6 +58,8 @@ pub struct AdminMcpTokenPublic {
     pub revoked_at_ms: Option<i64>,
     #[serde(rename = "lastUsedAtMs", skip_serializing_if = "Option::is_none")]
     pub last_used_at_ms: Option<i64>,
+    #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
     pub active: bool,
     pub expired: bool,
 }
@@ -65,6 +70,9 @@ pub struct IssueAdminMcpTokenInput {
     pub kind: AdminMcpTokenKind,
     #[serde(default)]
     pub note: Option<String>,
+    /// When set, token is bound to this account for ACL. Author: kejiqing
+    #[serde(default, rename = "accountId")]
+    pub account_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -156,6 +164,7 @@ pub fn to_public(entry: &AdminMcpTokenEntry, now: i64) -> AdminMcpTokenPublic {
         expires_at_ms: entry.expires_at_ms,
         revoked_at_ms: entry.revoked_at_ms,
         last_used_at_ms: entry.last_used_at_ms,
+        account_id: entry.account_id.clone(),
         active: entry_is_active(entry, now),
         expired: entry_is_expired(entry, now),
     }
@@ -170,6 +179,20 @@ pub fn admin_mcp_tokens_public(settings: &GatewayGlobalSettingsStore) -> Vec<Adm
         .collect()
 }
 
+/// Public tokens owned by `account_id` (excludes legacy unbound). Author: kejiqing
+pub fn admin_mcp_tokens_public_for_account(
+    settings: &GatewayGlobalSettingsStore,
+    account_id: &str,
+) -> Vec<AdminMcpTokenPublic> {
+    let now = now_ms();
+    settings
+        .admin_mcp_tokens
+        .iter()
+        .filter(|e| e.account_id.as_deref() == Some(account_id))
+        .map(|e| to_public(e, now))
+        .collect()
+}
+
 pub async fn issue_admin_mcp_token(
     db: &GatewaySessionDb,
     input: IssueAdminMcpTokenInput,
@@ -180,6 +203,10 @@ pub async fn issue_admin_mcp_token(
     }
     let note = input
         .note
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let account_id = input
+        .account_id
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let (mut settings, tokens, _) = get_gateway_global_settings(db)
@@ -203,6 +230,7 @@ pub async fn issue_admin_mcp_token(
         expires_at_ms,
         revoked_at_ms: None,
         last_used_at_ms: None,
+        account_id,
     };
     settings.admin_mcp_tokens.push(entry.clone());
     save_gateway_global_settings(db, &settings, &tokens, now)
@@ -224,6 +252,30 @@ pub async fn revoke_admin_mcp_token(db: &GatewaySessionDb, token_id: &str) -> Re
     let Some(idx) = settings.admin_mcp_tokens.iter().position(|e| e.id == id) else {
         return Ok(false);
     };
+    let now = now_ms();
+    settings.admin_mcp_tokens[idx].revoked_at_ms = Some(now);
+    save_gateway_global_settings(db, &settings, &tokens, now)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Revoke only if token belongs to `account_id`. Author: kejiqing
+pub async fn revoke_admin_mcp_token_for_account(
+    db: &GatewaySessionDb,
+    token_id: &str,
+    account_id: &str,
+) -> Result<bool, String> {
+    let id = normalize_token_id(token_id).ok_or_else(|| "invalid token id".to_string())?;
+    let (mut settings, tokens, _) = get_gateway_global_settings(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(idx) = settings.admin_mcp_tokens.iter().position(|e| e.id == id) else {
+        return Ok(false);
+    };
+    if settings.admin_mcp_tokens[idx].account_id.as_deref() != Some(account_id) {
+        return Err("forbidden: token not owned by this account".into());
+    }
     let now = now_ms();
     settings.admin_mcp_tokens[idx].revoked_at_ms = Some(now);
     save_gateway_global_settings(db, &settings, &tokens, now)
@@ -299,6 +351,7 @@ mod tests {
             expires_at_ms: Some(now + TEMPORARY_TTL_MS),
             revoked_at_ms: None,
             last_used_at_ms: None,
+            account_id: None,
         };
         assert!(entry_is_active(&entry, now));
         assert!(!entry_is_active(&entry, now + TEMPORARY_TTL_MS));
@@ -310,5 +363,53 @@ mod tests {
             extract_bearer_token(Some("Bearer camt_x_y")).as_deref(),
             Some("camt_x_y")
         );
+    }
+
+    #[test]
+    fn public_for_account_filters_owner() {
+        let now = 1_000_000_i64;
+        let mut settings = GatewayGlobalSettingsStore::default();
+        settings.admin_mcp_tokens = vec![
+            AdminMcpTokenEntry {
+                id: "a".into(),
+                name: "mine".into(),
+                note: None,
+                kind: AdminMcpTokenKind::Permanent,
+                token_hash: "h1".into(),
+                created_at_ms: now,
+                expires_at_ms: None,
+                revoked_at_ms: None,
+                last_used_at_ms: None,
+                account_id: Some("acc-1".into()),
+            },
+            AdminMcpTokenEntry {
+                id: "b".into(),
+                name: "other".into(),
+                note: None,
+                kind: AdminMcpTokenKind::Permanent,
+                token_hash: "h2".into(),
+                created_at_ms: now,
+                expires_at_ms: None,
+                revoked_at_ms: None,
+                last_used_at_ms: None,
+                account_id: Some("acc-2".into()),
+            },
+            AdminMcpTokenEntry {
+                id: "c".into(),
+                name: "legacy".into(),
+                note: None,
+                kind: AdminMcpTokenKind::Permanent,
+                token_hash: "h3".into(),
+                created_at_ms: now,
+                expires_at_ms: None,
+                revoked_at_ms: None,
+                last_used_at_ms: None,
+                account_id: None,
+            },
+        ];
+        let mine = admin_mcp_tokens_public_for_account(&settings, "acc-1");
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].id, "a");
+        assert_eq!(mine[0].account_id.as_deref(), Some("acc-1"));
     }
 }

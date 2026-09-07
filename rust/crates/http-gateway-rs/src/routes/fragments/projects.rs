@@ -1171,6 +1171,7 @@ pub(crate) async fn projects_git_remove_proj_tree(
 )]
 pub(crate) async fn list_projects(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<ProjectListResponse>, ApiError> {
     let summaries = state
         .session_db
@@ -1182,6 +1183,11 @@ pub(crate) async fn list_projects(
         projects.push(build_project_list_entry(&state, s).await);
     }
     projects.sort_by_key(|p| p.proj_id);
+    if let Some(principal) =
+        crate::admin_auth::resolve_optional_principal(&state.session_db, &headers).await?
+    {
+        projects = crate::admin_auth::filter_projects_for(&principal, projects, |p| p.proj_id);
+    }
     Ok(Json(ProjectListResponse {
         projects,
         listed_at_ms: now_ms(),
@@ -1202,8 +1208,12 @@ pub(crate) async fn list_projects(
 )]
 pub(crate) async fn pull_project_git(
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxumPath(proj_id): AxumPath<i64>,
 ) -> Result<Json<ProjectGitPullResponse>, ApiError> {
+    let _ =
+        crate::admin_auth::require_project_access_or_open(&state.session_db, &headers, proj_id)
+            .await?;
     if proj_id < 1 {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -1242,8 +1252,10 @@ pub(crate) async fn pull_project_git(
 )]
 pub(crate) async fn create_project(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<Json<InitResponse>, ApiError> {
+    let _ = crate::admin_auth::require_create_project_or_open(&state.session_db, &headers).await?;
     let project_code = normalize_project_code(&req.project_code)?;
     let project_description = normalize_project_description(req.project_description.as_deref())?;
     ensure_project_code_available(&state, &project_code, None).await?;
@@ -1408,9 +1420,11 @@ pub(crate) async fn patch_project(
 )]
 pub(crate) async fn delete_project(
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxumPath(proj_id): AxumPath<i64>,
     Query(query): Query<DeleteProjectQuery>,
 ) -> Result<Json<DeleteProjectResponse>, ApiError> {
+    let _ = crate::admin_auth::require_create_project_or_open(&state.session_db, &headers).await?;
     if proj_id < 1 {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,

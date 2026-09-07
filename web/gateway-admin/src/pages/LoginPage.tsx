@@ -61,7 +61,8 @@ export default function LoginPage() {
     >
       <Card style={{ width: 380 }} title="项目管理登录">
         <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-          对话页（/admin/chat）无需登录；项目管理需账号密码（服务端 <code>PLAYGROUND_ADMIN_*</code>）
+          对话页（/admin/chat）无需登录。项目管理支持多账号：首次用{" "}
+          <code>PLAYGROUND_ADMIN_*</code> seed 的 system_admin；空间管理员仅见自己的项目。
         </Typography.Paragraph>
         <Form layout="vertical" onFinish={onFinish} autoComplete="on">
           <Form.Item name="user" label="账号" rules={[{ required: true }]}>

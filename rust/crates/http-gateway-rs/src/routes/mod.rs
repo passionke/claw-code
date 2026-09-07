@@ -1,4 +1,5 @@
 //! HTTP routes. Author: kejiqing
+pub(crate) mod admin_auth;
 pub(crate) mod admin_mcp;
 pub(crate) mod ag_ui;
 pub(crate) mod app;
@@ -32,6 +33,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
     Router::new()
         .merge(health::router())
         .merge(meta::router())
+        .merge(admin_auth::router())
         .merge(projects::router())
         .merge(project_inference::router())
         .merge(solve::router())

@@ -823,8 +823,12 @@ pub(crate) fn validate_project_config_payload(req: &UpsertProjectConfigRequest) 
 )]
 pub(crate) async fn get_project_config(
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxumPath(proj_id): AxumPath<i64>,
 ) -> Result<Json<ProjectConfigResponse>, ApiError> {
+    let _ =
+        crate::admin_auth::require_project_access_or_open(&state.session_db, &headers, proj_id)
+            .await?;
     if proj_id < 1 {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -1066,9 +1070,13 @@ pub(crate) async fn activate_project_config_version(
 )]
 pub(crate) async fn put_project_config(
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxumPath(proj_id): AxumPath<i64>,
     Json(req): Json<UpsertProjectConfigRequest>,
 ) -> Result<Json<PutProjectConfigResponse>, ApiError> {
+    let _ =
+        crate::admin_auth::require_project_access_or_open(&state.session_db, &headers, proj_id)
+            .await?;
     if proj_id < 1 {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
