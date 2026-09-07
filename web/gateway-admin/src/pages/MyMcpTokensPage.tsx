@@ -16,17 +16,17 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useState } from "react";
-import { proxyHttp } from "../../api/client";
-import { useApp } from "../../context/AppContext";
+import { proxyHttp } from "../api/client";
+import { useApp } from "../context/AppContext";
 import type {
   AdminMcpTokenIssueResponse,
   AdminMcpTokenRow,
-} from "../../types/globalSettings";
+} from "../types/globalSettings";
 import {
   buildAdminMcpServersJson,
   slugAdminMcpServerName,
-} from "../../utils/adminMcpConfig";
-import { copyToClipboard } from "../../utils/copyToClipboard";
+} from "../utils/adminMcpConfig";
+import { copyToClipboard } from "../utils/copyToClipboard";
 
 function formatMs(ms?: number | null): string {
   if (!ms) return "—";
