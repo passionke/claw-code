@@ -9,6 +9,7 @@ mod e2b_orchestrated_pool;
 mod e2b_proj_worker_registry;
 mod e2b_worker_llm_material;
 pub mod interactive_backend;
+mod live_ag_ui_sse;
 mod live_report_hub;
 mod live_report_sse;
 mod result;
@@ -48,7 +49,8 @@ pub use interactive_backend::{
     E2bInteractiveBackend, E2bNasApiSingleton, InteractiveBackendKind, InteractiveLease,
     InteractiveSandboxBackend, InteractiveSessionSpec, E2B_WORKER_TAP_PLACEHOLDER_API_KEY,
 };
-pub use live_report_hub::{AskUserPending, HubMsg, LiveReportHub};
+pub use live_ag_ui_sse::live_ag_ui_sse_response;
+pub use live_report_hub::{AskUserPending, HubMsg, LiveReportHub, ProcessEvent};
 pub use live_report_sse::live_report_sse_response;
 #[allow(unused_imports)]
 pub use result::parse_gateway_solve_exec_stdout;

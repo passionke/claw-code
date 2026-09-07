@@ -4,6 +4,7 @@ GET	/healthz	healthz
 GET	/openapi.json	openapi
 GET	/readyz	readyz
 POST	/v1/admin/mcp	admin_mcp_http_handler
+GET	/v1/ag-ui/runs	get_ag_ui_run
 GET	/v1/agent/feedback	get_agent_feedback
 POST	/v1/agent/feedback	post_agent_feedback
 GET	/v1/biz_advice_report	get_biz_advice_report

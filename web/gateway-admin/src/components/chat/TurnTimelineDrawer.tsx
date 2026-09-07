@@ -532,7 +532,7 @@ export interface TurnTimelineDrawerProps {
   taskStatus?: string;
 }
 
-/** 本轮 solve 耗时泳道图（横向时间轴）。Author: kejiqing */
+/** 本轮 solve 耗时泳道图（终态/按需；跑中过程见 AG-UI）。Author: kejiqing */
 export default function TurnTimelineDrawer({
   sessionId,
   turnId,

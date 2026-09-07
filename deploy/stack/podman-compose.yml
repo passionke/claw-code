@@ -96,8 +96,9 @@ services:
       - ../../.env:/run/claw/deploy.env:rw
       - ../../:/run/claw/repo:ro
       - ../../.claw:/run/claw/claw:rw
-      # Optional: host registry login for GET /v1/gateway/bootstrap/ci-image-tags. Author: kejiqing
-      - ${CLAW_HOST_DOCKER_CONFIG:-${HOME}/.docker/config.json}:/run/claw/docker-config.json:ro
+      # Optional: host registry login for GET /v1/gateway/bootstrap/ci-image-tags.
+      # Default path is set in claw_podman_load_compose_args (podman-compose breaks nested ${HOME}). Author: kejiqing
+      - ./.host-secrets/docker-config.json:/run/claw/docker-config.json:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz | grep -q '\"ok\":true'"]
       interval: 10s

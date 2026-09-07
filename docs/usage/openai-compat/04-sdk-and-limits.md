@@ -92,11 +92,13 @@ curl -sS -X POST "$GATEWAY/v1/responses" \
 1. **不是模型代理**：`model` 不是任意上游模型 id；项目推理模型由网关/项目配置决定。  
 2. **禁止客户端 `tools`**：非空 → `unsupported_feature`。工具在 Agent / 项目侧执行。  
 3. **无异步 task 轮询**：没有 `taskId`；要进度请用 `/v1/solve_async`。  
-4. **stream ≠ token 流**：先整轮 solve，再推最终内容（或 `response.completed`）。  
+4. **Responses `stream=true`**：从 LiveReportHub 真流（`output_text.delta` 等）；Chat Completions 的 stream 仍可能是事后整包。过程 UI 见 AG-UI。  
 5. **无本路径 attachments / allowedTools**：需要附件或收紧工具白名单时走原生 solve。  
 6. **Key 绑定项目**：换项目 = 换 Key，不能靠 body 改 `projId`。  
 7. **明文 token 只出现一次**：创建响应里的 `token` 须自行保管；列表接口只返回前缀与元数据。  
 8. **`usage` 按 turn 合计**：来自 observe tap 写入的 `gateway_model_usage`（须出站带 `claw-turn-id`）。表空则为 `null`，不要把 worker 内部 `TokenUsage` 或 Live HTML 当账单。多模型看 `nerogate.usageByModel`。
+
+过程披露：[`ag-ui-contract.md`](../../ag-ui-contract.md)。报告正文：[`live-report-contract.md`](../../live-report-contract.md)。
 
 ## 与原生 solve 字段对照
 

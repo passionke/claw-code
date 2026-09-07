@@ -42,7 +42,7 @@ export interface TurnToolsDrawerProps {
   gatewayBase: string;
 }
 
-/** 查看本轮 tool 入参 / 返回。Author: kejiqing */
+/** 查看本轮 tool 入参 / 返回（终态归档补拉；跑中过程见 AG-UI）。 Author: kejiqing */
 export default function TurnToolsDrawer({
   sessionId,
   turnId,
