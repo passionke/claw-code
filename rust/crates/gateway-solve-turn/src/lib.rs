@@ -824,7 +824,7 @@ impl DirectToolExecutorInner {
         let started = Instant::now();
         let _ = emit_tool_start(&tool_call_id, tool_name, input);
         let result = self.execute_impl_inner(tool_name, input);
-        let duration_ms = started.elapsed().as_millis() as u64;
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         match &result {
             Ok(out) => {
                 let _ = emit_tool_end(&tool_call_id, tool_name, true, duration_ms, out);
@@ -1056,7 +1056,7 @@ impl RuntimeToolExecutor for DirectToolExecutor {
             let _ = emit_tool_start(&tool_call_id, tool_name, input);
             let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
             let result = run_delegate_project(&self.inner.mcp_context, &parsed);
-            let duration_ms = started.elapsed().as_millis() as u64;
+            let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             match &result {
                 Ok(output) => {
                     let _ = emit_tool_end(&tool_call_id, tool_name, true, duration_ms, output);
