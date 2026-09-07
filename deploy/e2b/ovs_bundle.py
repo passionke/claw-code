@@ -46,8 +46,20 @@ def _container_platform_args() -> list[str]:
     return ["--platform", plat] if plat else []
 
 
+def _finalize_ovs_staging(staging: Path) -> str:
+    """Ensure vsix + machine settings after OVS trees are present. Author: kejiqing"""
+    claw_ovs = staging / "claw-ovs"
+    claw_ovs.mkdir(parents=True, exist_ok=True)
+    (staging / "claw-extensions").mkdir(parents=True, exist_ok=True)
+    ext_ver = ensure_claw_vscode_vsix(claw_ovs)
+    if not OVS_MACHINE_SETTINGS.is_file():
+        raise FileNotFoundError(f"missing {OVS_MACHINE_SETTINGS}")
+    shutil.copy2(OVS_MACHINE_SETTINGS, staging / "openvscode-settings.json")
+    return ext_ver
+
+
 def stage_ovs_tree(staging: Path, container_runtime: str, ovs_image: str) -> str:
-    """Stage OVS tree + machine settings; returns claw-vscode extension version."""
+    """Stage OVS tree via local podman/docker; returns claw-vscode extension version."""
     rt = container_runtime
     plat_args = _container_platform_args()
     if (
@@ -67,13 +79,31 @@ def stage_ovs_tree(staging: Path, container_runtime: str, ovs_image: str) -> str
             ("/opt/claw-ovs", staging / "claw-ovs"),
         ):
             subprocess.check_call([rt, "cp", f"{cid}:{src}", str(dst)])
-        ext_ver = ensure_claw_vscode_vsix(staging / "claw-ovs")
     finally:
         subprocess.call([rt, "rm", "-f", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if not OVS_MACHINE_SETTINGS.is_file():
-        raise FileNotFoundError(f"missing {OVS_MACHINE_SETTINGS}")
-    shutil.copy2(OVS_MACHINE_SETTINGS, staging / "openvscode-settings.json")
-    return ext_ver
+    return _finalize_ovs_staging(staging)
+
+
+def stage_ovs_tree_from_registry(staging: Path, ovs_image: str) -> str:
+    """Stage OVS tree via registry HTTP (no nested podman). Author: kejiqing"""
+    import os
+
+    from registry_extract import extract_paths_from_image
+
+    platform = os.environ.get("CLAW_E2B_TEMPLATE_PLATFORM", "linux/amd64").strip() or "linux/amd64"
+    print(f"==> staging OVS tree from registry {ovs_image!r} ({platform})")
+    # openvscode-server is required; extensions/ovs dirs may be empty on bare upstream. Author: kejiqing
+    extract_paths_from_image(
+        ovs_image,
+        {
+            "/home/.openvscode-server": staging / "openvscode-server",
+            "/opt/claw-extensions": staging / "claw-extensions",
+            "/opt/claw-ovs": staging / "claw-ovs",
+        },
+        platform=platform,
+        required_prefixes={"home/.openvscode-server"},
+    )
+    return _finalize_ovs_staging(staging)
 
 
 def pack_ovs_bundle(staging: Path) -> Path:

@@ -21,6 +21,10 @@ import TurnToolsDrawer from "./TurnToolsDrawer";
 import TurnTimelineDrawer from "./TurnTimelineDrawer";
 import TurnExtraSessionDrawer from "./TurnExtraSessionDrawer";
 import { formatDurationMs } from "../../utils/formatDuration";
+import {
+  ListSessionPlansResponse,
+  planPhaseFromPlanStatus,
+} from "../../utils/planConfirm";
 import { isEffectiveHistoryTurnView, isTerminalTurnStatus } from "../../utils/turnViewMode";
 import {
   deriveTurnCardReportView,
@@ -265,6 +269,41 @@ export default function ChatTurnCard({
     initialHistoricalReport,
     prefilledFailure,
   ]);
+
+  // History / terminal: turns list has no plan fields; hydrate from plans API so「确认执行」可见。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await proxyHttp<ListSessionPlansResponse>(
+          gatewayBase,
+          "GET",
+          `/v1/sessions/${encodeURIComponent(sessionId)}/plans?proj_id=${encodeURIComponent(String(projId))}`
+        );
+        if (cancelled) return;
+        const plan = (res.plans ?? []).find((p) => p.planTurnId === turnId);
+        if (!plan) return;
+        setTask((prev) => ({
+          ...prev,
+          planId: plan.planId,
+          planTitle: plan.title ?? prev.planTitle,
+          planMarkdown: plan.bodyMarkdown ?? prev.planMarkdown,
+          planPhase: planPhaseFromPlanStatus(plan.status),
+          planTurnId: plan.planTurnId ?? turnId,
+          interactionMode: prev.interactionMode ?? "plan",
+          currentTaskDesc:
+            plan.status === "awaiting_confirm"
+              ? "方案待确认"
+              : prev.currentTaskDesc,
+        }));
+      } catch {
+        /* non-fatal: confirm button stays hidden if plans unavailable */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [gatewayBase, sessionId, turnId, projId]);
 
   useEffect(() => {
     if (historyMode) return;
@@ -594,7 +633,7 @@ export default function ChatTurnCard({
               <ReportMarkdown text={task.planMarkdown} />
             </div>
           ) : null}
-          {task.planPhase === "awaiting_confirm" && task.planId && !historyMode ? (
+          {task.planPhase === "awaiting_confirm" && task.planId ? (
             <div className={styles.planConfirmRow}>
               <Button
                 type="primary"

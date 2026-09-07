@@ -314,6 +314,31 @@ export interface BootstrapCommand {
   hint?: string;
 }
 
+export type BootstrapPublishPhase = "idle" | "running" | "succeeded" | "failed";
+
+export interface BootstrapPublishJob {
+  phase: BootstrapPublishPhase;
+  imageTag?: string;
+  startedAtMs?: number;
+  finishedAtMs?: number;
+  message?: string;
+  logTail?: string[];
+}
+
+export interface BootstrapPublishTemplatesResponse {
+  accepted: boolean;
+  job: BootstrapPublishJob;
+  message?: string;
+}
+
+export interface BootstrapCiImageTagsResponse {
+  registryHost: string;
+  repository: string;
+  tags: string[];
+  suggestedTag?: string;
+  message?: string;
+}
+
 export interface ClusterBootstrapSnapshot {
   needsBootstrap: boolean;
   clusterId: string;
@@ -322,6 +347,8 @@ export interface ClusterBootstrapSnapshot {
   envLlmAvailable: boolean;
   templateCommands: BootstrapCommand[];
   templateEntries: BootstrapTemplateEntry[];
+  suggestedCiImageTag?: string;
+  publishJob?: BootstrapPublishJob;
   completedAtMs?: number;
   singletons?: E2bSingletonsStatusResponse;
   clawTap?: BootstrapClawTapSnapshot;
@@ -363,6 +390,8 @@ export interface BootstrapApplyDeployEnvResponse {
   restartRequired: boolean;
   envFile: string;
   validation: BootstrapEnvValidation;
+  /** e2b API/domain/sandbox URL changed — PG template pins cleared */
+  templatesInvalidated?: boolean;
 }
 
 export interface BootstrapApplyLlmResponse {

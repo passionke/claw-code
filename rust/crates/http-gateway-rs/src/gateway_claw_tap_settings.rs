@@ -38,11 +38,22 @@ pub enum ClawTapMode {
     Remote,
 }
 
+/// JSON `null` → `T::default()` so PG clears (`null`) do not poison whole settings parse.
+/// Author: kejiqing
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClawTapSettings {
     #[serde(default)]
     pub mode: ClawTapMode,
-    #[serde(default)]
+    /// Prefer `""` when clearing; tolerate PG `null` from field-level invalidate. Author: kejiqing
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub host: String,
     #[serde(rename = "proxyPort", default = "default_proxy_port")]
     pub proxy_port: u16,
@@ -628,6 +639,16 @@ mod tests {
             normalize_claw_tap_host("http://10.0.0.5:8080/path").as_deref(),
             Some("10.0.0.5")
         );
+    }
+
+    #[test]
+    fn claw_tap_host_null_deserializes_as_empty() {
+        let s: ClawTapSettings = serde_json::from_str(
+            r#"{"mode":"remote","host":null,"proxyPort":8080,"livePort":3000,"updatedAtMs":1}"#,
+        )
+        .expect("null host must not fail");
+        assert_eq!(s.host, "");
+        assert_eq!(s.mode, ClawTapMode::Remote);
     }
 
     #[test]

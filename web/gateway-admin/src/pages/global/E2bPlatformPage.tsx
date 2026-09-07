@@ -2,17 +2,27 @@ import { ApiOutlined, ReloadOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Descriptions, Space, Tag, Typography } from "antd";
 import { useCallback, useEffect, useState } from "react";
 import { proxyHttp } from "../../api/client";
+import TemplateBuildStep from "../../components/bootstrap/TemplateBuildStep";
 import { useApp } from "../../context/AppContext";
-import type { E2bPlatformSettings, E2bWorkerSettings, GlobalSettingsResponse } from "../../types/globalSettings";
+import type {
+  ClusterBootstrapSnapshot,
+  E2bPlatformSettings,
+  E2bWorkerSettings,
+  GlobalSettingsResponse,
+} from "../../types/globalSettings";
 
-/** Admin read-only e2b platform view (source: repo `.env`, restart gateway to apply). Author: kejiqing */
+/**
+ * e2b 平台：只读连接信息 + 与 Init 相同的「制作/升级模板」能力。
+ * CLI 升级、gateway 不变时在此重打模板。Author: kejiqing
+ */
 export default function E2bPlatformPage() {
   const { gatewayBase } = useApp();
   const [loading, setLoading] = useState(false);
   const [settings, setSettings] = useState<E2bPlatformSettings | null>(null);
   const [e2bWorker, setE2bWorker] = useState<E2bWorkerSettings | null>(null);
+  const [bootstrapSnap, setBootstrapSnap] = useState<ClusterBootstrapSnapshot | null>(null);
 
-  const load = useCallback(async () => {
+  const loadSettings = useCallback(async () => {
     setLoading(true);
     try {
       const r = await proxyHttp<GlobalSettingsResponse>(
@@ -38,9 +48,29 @@ export default function E2bPlatformPage() {
     }
   }, [gatewayBase]);
 
+  const refreshBootstrap = useCallback(async (): Promise<ClusterBootstrapSnapshot | null> => {
+    if (!gatewayBase) return null;
+    try {
+      const data = await proxyHttp<ClusterBootstrapSnapshot>(
+        gatewayBase,
+        "GET",
+        "/v1/gateway/bootstrap/status"
+      );
+      setBootstrapSnap(data);
+      return data;
+    } catch {
+      return null;
+    }
+  }, [gatewayBase]);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadSettings();
+    void refreshBootstrap();
+  }, [loadSettings, refreshBootstrap]);
+
+  const reloadAll = async () => {
+    await Promise.all([loadSettings(), refreshBootstrap()]);
+  };
 
   return (
     <Space direction="vertical" size="large" style={{ width: "100%" }}>
@@ -48,23 +78,20 @@ export default function E2bPlatformPage() {
         <Typography.Title level={4} style={{ margin: 0 }}>
           <ApiOutlined /> e2b 平台
         </Typography.Title>
-        <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
+        <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void reloadAll()}>
           刷新
         </Button>
       </Space>
 
       <Alert
-        type="warning"
+        type="info"
         showIcon
-        message="只读展示"
+        message="连接只读；模板可随时重打"
         description={
           <Typography.Paragraph style={{ marginBottom: 0 }}>
-            e2b 平台地址与密钥通过仓库根目录 <Typography.Text code>.env</Typography.Text>{" "}
-            配置，修改后需重启 Gateway 生效。Admin 不提供运行时切换 e2b 的能力。
-            <br />
-            关键变量：<Typography.Text code>CLAW_E2B_API_URL</Typography.Text>、
-            <Typography.Text code>CLAW_E2B_SANDBOX_URL</Typography.Text>、
-            <Typography.Text code>CLAW_E2B_API_KEY</Typography.Text>
+            e2b 平台地址与密钥来自仓库 <Typography.Text code>.env</Typography.Text>
+            ，改完需重启 Gateway。下方「制作 / 升级模板」与集群 Init 同一路径：选 ACR/CI tag →
+            异步发布 worker / relaxed（含 OVS）/ observe / nas-api，无需重建 gateway 镜像。
           </Typography.Paragraph>
         }
       />
@@ -130,6 +157,18 @@ export default function E2bPlatformPage() {
             </Descriptions.Item>
           </Descriptions>
         ) : null}
+      </Card>
+
+      <Card title="制作 / 升级 e2b 模板">
+        {bootstrapSnap ? (
+          <TemplateBuildStep
+            mode="ops"
+            snap={bootstrapSnap}
+            onRefresh={refreshBootstrap}
+          />
+        ) : (
+          <Typography.Text type="secondary">加载 bootstrap 状态中…</Typography.Text>
+        )}
       </Card>
     </Space>
   );

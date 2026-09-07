@@ -64,8 +64,14 @@ export default function LlmStep({ snap, onRefresh, onNext }: Props) {
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <Typography.Paragraph type="secondary">
-        配置全局推理模型并写入 PostgreSQL（与 Admin 全局推理一致）。
+        配置全局推理模型并写入 PostgreSQL。「下一步」仅在 active LLM 已生效后出现；点它即表示本步成功。
       </Typography.Paragraph>
+
+      {llmOk ? (
+        <Alert type="success" showIcon message="active LLM 已就绪，可进入下一步" />
+      ) : (
+        <Alert type="info" showIcon message="请先「保存并 Apply」；成功后才会出现「下一步」" />
+      )}
 
       {snap.envLlmAvailable ? (
         <Alert

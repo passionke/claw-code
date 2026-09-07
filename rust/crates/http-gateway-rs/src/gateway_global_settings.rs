@@ -879,8 +879,53 @@ fn active_llm_model_rev_public(store: &LlmModelsStore) -> Option<String> {
 }
 
 fn parse_settings_store(v: &serde_json::Value) -> GatewayGlobalSettingsStore {
-    let mut store: GatewayGlobalSettingsStore =
-        serde_json::from_value(v.clone()).unwrap_or_default();
+    match serde_json::from_value::<GatewayGlobalSettingsStore>(v.clone()) {
+        Ok(mut store) => {
+            store.claw_tap.normalize_mode();
+            store
+        }
+        Err(err) => {
+            // Never silently wipe e2b template pins: salvage nested objects independently.
+            // Author: kejiqing
+            tracing::error!(
+                target: "claw_gateway_settings",
+                error = %err,
+                "gateway_global_settings.settings_json deserialize failed; salvaging e2b sections"
+            );
+            salvage_settings_store(v)
+        }
+    }
+}
+
+fn from_section<T: Default + serde::de::DeserializeOwned>(v: &serde_json::Value, key: &str) -> T {
+    v.get(key)
+        .cloned()
+        .and_then(|section| serde_json::from_value(section).ok())
+        .unwrap_or_default()
+}
+
+/// Best-effort recovery when one poisoned field would otherwise Default the entire store.
+fn salvage_settings_store(v: &serde_json::Value) -> GatewayGlobalSettingsStore {
+    let mut store = GatewayGlobalSettingsStore {
+        e2b_worker: from_section(v, "e2bWorker"),
+        e2b_worker_relaxed: from_section(v, "e2bWorkerRelaxed"),
+        e2b_nas_api: from_section(v, "e2bNasApi"),
+        e2b_observe: from_section(v, "e2bObserve"),
+        e2b_ovs: from_section(v, "e2bOvs"),
+        claw_tap: from_section(v, "clawTap"),
+        cluster_bootstrap: from_section(v, "clusterBootstrap"),
+        admin_mcp_tokens: from_section(v, "adminMcpTokens"),
+        git_pats: from_section(v, "gitPats"),
+        cluster_id: v
+            .get("clusterId")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        strict_landlock_default: v
+            .get("strictLandlockDefault")
+            .cloned()
+            .and_then(|x| serde_json::from_value(x).ok()),
+    };
     store.claw_tap.normalize_mode();
     store
 }
@@ -1256,5 +1301,43 @@ mod tests {
         }))
         .expect("deserialize");
         assert_eq!(input.api_key.as_deref(), Some("sk-test"));
+    }
+
+    #[test]
+    fn parse_settings_keeps_e2b_pins_when_claw_tap_host_is_null() {
+        // Regression: null host used to fail whole-store parse → unwrap_or_default wiped pins.
+        // Author: kejiqing
+        let v = serde_json::json!({
+            "clawTap": { "mode": "remote", "host": null, "updatedAtMs": 1 },
+            "e2bWorker": {
+                "templateId": "tpl_w",
+                "buildId": "build-w",
+                "updatedAtMs": 2
+            },
+            "e2bNasApi": {
+                "templateId": "tpl_n",
+                "buildId": "build-n",
+                "updatedAtMs": 3
+            },
+            "e2bObserve": {
+                "templateId": "tpl_o",
+                "buildId": "build-o",
+                "updatedAtMs": 4
+            },
+            "e2bWorkerRelaxed": {
+                "templateId": "tpl_r",
+                "buildId": "build-r",
+                "updatedAtMs": 5
+            }
+        });
+        let store = parse_settings_store(&v);
+        assert_eq!(store.claw_tap.host, "");
+        assert_eq!(store.e2b_worker.build_id.as_deref(), Some("build-w"));
+        assert_eq!(store.e2b_nas_api.build_id.as_deref(), Some("build-n"));
+        assert_eq!(store.e2b_observe.build_id.as_deref(), Some("build-o"));
+        assert_eq!(
+            store.e2b_worker_relaxed.build_id.as_deref(),
+            Some("build-r")
+        );
     }
 }

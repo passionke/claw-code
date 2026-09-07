@@ -24,9 +24,22 @@ Author: kejiqing
 ./deploy/stack/gateway.sh e2b-worker-deploy
 ```
 
-**Mac arm64（用 CI 镜像里的 amd64 claw，勿走 qemu 编译）：**
+**Mac arm64（Admin 选 ACR/CI tag，勿走 qemu 编译）：**
+
+在 Gateway Admin：
+
+- **集群 Init**「e2b 模板」步，或
+- **全局配置 → e2b 平台 → 制作 / 升级模板**（gateway 不变、仅 CLI/worker 镜像升级时用这条）
+
+填写 tag（如 `release-v1.8.11`）→ **发布模板** / **制作 / 升级模板**。
+
+等价 API / 脚本：
 
 ```bash
+# Admin 触发的同一条脚本（deploy host / Gateway 进程可执行）
+./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-v1.8.19
+
+# 或仅 worker+relaxed：
 ./deploy/stack/gateway.sh e2b-worker-deploy --from-ci-image release-v1.7.19
 ```
 
@@ -69,7 +82,7 @@ Gateway：
 - relaxed：`load_e2b_worker_relaxed_template_id()` → `PG e2bWorkerRelaxed.templateId` → env → `claw-worker-relaxed`
 
 **strict vs relaxed**：strict 用于 solve 池；relaxed = `claw` + **curl/git/python3/pip** + **内置 OVS**，用于 OVS / interactive。  
-e2b 模板 `claw-worker-relaxed` 与 CI 镜像 `claw-gateway-worker-relaxed` **工具包对齐**（OVS 由 e2b 模板 bake；沙箱更新必须走本手册「一条命令」）。
+e2b 模板 `claw-worker-relaxed` 与 CI 镜像 `claw-gateway-worker-relaxed` **工具包对齐**；OVS **必须**在 e2b 模板 bake（从 `CLAW_OVS_IMAGE` 抽 openvscode 树 + 装扩展）。Admin CI-tag bootstrap 在 gateway 内用 **registry HTTP 抽树**（无嵌套 podman），与 host `e2b-worker-deploy` 同一 Dockerfile 路径。
 
 单独只打 relaxed（少见；一般用上面一条命令）：
 

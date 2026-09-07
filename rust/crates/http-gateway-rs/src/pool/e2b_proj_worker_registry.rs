@@ -24,8 +24,9 @@ use crate::gateway_e2b_lifecycle_decision::{
 };
 use crate::gateway_e2b_worker_settings::{
     e2b_project_worker_renew_interval_secs_from_env, e2b_project_worker_ttl_secs_from_env,
-    load_e2b_worker_build_id, load_e2b_worker_relaxed_build_id,
-    load_e2b_worker_relaxed_template_id, load_e2b_worker_template_id,
+    e2b_worker_relaxed_template_from_env, e2b_worker_template_from_env, load_e2b_worker_build_id,
+    load_e2b_worker_relaxed_build_id, load_e2b_worker_relaxed_template_id,
+    load_e2b_worker_template_id,
 };
 use crate::project_config_draft;
 use crate::session_db::{
@@ -713,8 +714,15 @@ impl E2bProjWorkerRegistry {
             .map_err(|e| format!("load worker_env_json for proj {proj_id}: {e}"))?;
         let env_vars = crate::pool::parse_worker_env_map(&worker_env_json)
             .map_err(|e| format!("invalid worker_env_json for proj {proj_id}: {e}"))?;
+        // Prefer alias for create target; pin buildId only when PG has one (after publish on
+        // *this* e2b). Endpoint change clears pins so stale UUIDs cannot 503. Author: kejiqing
+        let create_alias = if spec.include_ovs {
+            e2b_worker_relaxed_template_from_env()
+        } else {
+            e2b_worker_template_from_env()
+        };
         let template_ref = claw_e2b_sandbox_client::e2b_sandbox_template_ref(
-            &spec.e2b_template_id,
+            &create_alias,
             spec.build_id.as_deref(),
         );
         let handle = self

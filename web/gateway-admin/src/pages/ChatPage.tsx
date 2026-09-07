@@ -30,6 +30,10 @@ import {
   isExternalOrigin,
 } from "../utils/clientOrigin";
 import { extractSolveReportMessage } from "../utils/solveReportBody";
+import {
+  isPlanConfirmUserPrompt,
+  type ListSessionPlansResponse,
+} from "../utils/planConfirm";
 import { turnViewModeForStatus } from "../utils/turnViewMode";
 import type { TurnFeedbackValue } from "../types/chat";
 import { isOvsWorkerRelaxed } from "../utils/ovsUrl";
@@ -299,6 +303,66 @@ export default function ChatPage() {
       (attachments?.length
         ? `[附件] ${attachments.map((a) => a.name || a.path).join(", ")}`
         : "");
+
+    // Bare「确认」→ same confirm API as plan card button (agent + sealed plan), not another Plan turn.
+    if (sid && !attachments?.length && isPlanConfirmUserPrompt(userText)) {
+      try {
+        const plansRes = await proxyHttp<ListSessionPlansResponse>(
+          gatewayBase,
+          "GET",
+          `/v1/sessions/${encodeURIComponent(sid)}/plans?proj_id=${encodeURIComponent(String(projId))}`
+        );
+        const awaiting = (plansRes.plans ?? []).find((p) => p.status === "awaiting_confirm");
+        if (awaiting?.planId) {
+          const asyncRes = await proxyHttp<SolveAsyncResponse>(
+            gatewayBase,
+            "POST",
+            `/v1/sessions/${encodeURIComponent(sid)}/plans/${encodeURIComponent(awaiting.planId)}/confirm`,
+            { projId }
+          );
+          if (!asyncRes?.taskId) {
+            appendSys({ tag: "确认方案失败", text: "缺少 taskId", variant: "err" });
+            return;
+          }
+          sessionIdRef.current = asyncRes.sessionId;
+          setActiveSessionId(asyncRes.sessionId);
+          setSessionClientOrigin(CLIENT_ORIGIN_GATEWAY_ADMIN);
+          setHistoryRefreshKey((k) => k + 1);
+          setThread((prev) => [
+            ...prev,
+            {
+              id: asyncRes.turnId,
+              userText: displayText || "确认",
+              taskId: asyncRes.taskId,
+              sessionId: asyncRes.sessionId,
+              turnId: asyncRes.turnId,
+              initialStatus: asyncRes.status || "queued",
+              viewMode: "live",
+              clientOrigin: CLIENT_ORIGIN_GATEWAY_ADMIN,
+              extraSession: extra,
+              createdAtMs: Date.now(),
+              poolId: asyncRes.poolId ?? undefined,
+              gatewayId: asyncRes.gatewayId ?? undefined,
+              gatewayBase: asyncRes.gatewayBase ?? undefined,
+              workerName: asyncRes.workerName ?? undefined,
+              workerProfile: asyncRes.workerProfile ?? undefined,
+              workerExecUser: asyncRes.workerExecUser ?? undefined,
+            },
+          ]);
+          scrollLog();
+          message.success("已确认，开始执行");
+          return;
+        }
+      } catch (e) {
+        appendSys({
+          tag: "确认方案失败",
+          text: String((e as Error).message || e),
+          variant: "err",
+        });
+        return;
+      }
+    }
+
     const payload: Record<string, unknown> = {
       projId,
       userPrompt: userText.trim() || "请查看附件",

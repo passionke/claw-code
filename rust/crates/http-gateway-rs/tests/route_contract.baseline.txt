@@ -12,8 +12,14 @@ POST	/v1/chat/completions	chat_completions
 POST	/v1/dev/biz_report_seed_task	dev_seed_biz_report_task
 POST	/v1/gateway/bootstrap/apply-deploy-env	post_gateway_bootstrap_apply_deploy_env_handler
 POST	/v1/gateway/bootstrap/apply-llm-from-env	post_gateway_bootstrap_apply_llm_from_env_handler
+GET	/v1/gateway/bootstrap/ci-image-tags	get_gateway_bootstrap_ci_image_tags_handler
+POST	/v1/gateway/bootstrap/complete	post_gateway_bootstrap_complete_handler
 POST	/v1/gateway/bootstrap/ensure-core	post_gateway_bootstrap_ensure_core_handler
 GET	/v1/gateway/bootstrap/env-snapshot	get_gateway_bootstrap_env_snapshot_handler
+GET	/v1/gateway/bootstrap/publish-templates	get_gateway_bootstrap_publish_templates_handler
+POST	/v1/gateway/bootstrap/publish-templates	post_gateway_bootstrap_publish_templates_handler
+POST	/v1/gateway/bootstrap/reopen	post_gateway_bootstrap_reopen_handler
+POST	/v1/gateway/bootstrap/reset	post_gateway_bootstrap_reset_handler
 GET	/v1/gateway/bootstrap/status	get_gateway_bootstrap_status_handler
 GET	/v1/gateway/endpoints	list_gateway_endpoints_handler
 DELETE	/v1/gateway/endpoints/{gateway_id}	delete_gateway_endpoint_handler
@@ -122,8 +128,8 @@ POST	/v1/sessions/{session_id}/files	session_upload::upload_session_files
 GET	/v1/sessions/{session_id}/plans	list_session_plans
 GET	/v1/sessions/{session_id}/plans/{plan_id}	get_session_plan
 POST	/v1/sessions/{session_id}/plans/{plan_id}/confirm	confirm_session_plan
-POST	/v1/sessions/{session_id}/turns/{turn_id}/ask-user-answer	post_ask_user_answer
 GET	/v1/sessions/{session_id}/turns	list_session_turns
+POST	/v1/sessions/{session_id}/turns/{turn_id}/ask-user-answer	post_ask_user_answer
 POST	/v1/sessions/{session_id}/turns/{turn_id}/cancel	cancel_session_turn
 GET	/v1/sessions/{session_id}/turns/{turn_id}/timeline	get_turn_timeline
 GET	/v1/sessions/{session_id}/turns/{turn_id}/tools	get_turn_tools

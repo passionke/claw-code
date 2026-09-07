@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -16,10 +17,14 @@ from e2b_template_registry import (
     apply_template_skip_cache_force,
     load_repo_dotenv,
     log_debian_base_resolution,
+    template_apt_prepare_prefix,
     template_claude_tap_image,
     template_debian_apt_mirror,
+    template_debian_base_image,
     template_gateway_worker_image,
 )
+from e2b_template_build import build_template_with_retry
+from registry_extract import extract_file_from_image
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
@@ -174,6 +179,39 @@ def _observe_live_port() -> int:
         return 3000
 
 
+def _dockerfile_debian_observe(live_port: int) -> str:
+    """debian + claude-tap binary + observe start scripts (no nested podman). Author: kejiqing"""
+    debian = template_debian_base_image()
+    apt = template_apt_prepare_prefix()
+    return f"""FROM {debian}
+ENV CLAW_OBSERVE_LIVE_PORT={live_port}
+RUN {apt}apt-get update && apt-get install -y --no-install-recommends \\
+    nfs-common ca-certificates curl sudo \\
+    && echo 'user ALL=(ALL) NOPASSWD: /bin/mount, /bin/umount, /usr/bin/mountpoint, /bin/mkdir, /bin/chown' > /etc/sudoers.d/claw-nfs \\
+    && chmod 440 /etc/sudoers.d/claw-nfs \\
+    && rm -rf /var/lib/apt/lists/* \\
+    && mkdir -p /claw_ws/tap-traces \\
+    && chmod -R a+rwX /claw_ws
+COPY claude-tap.bin /usr/local/bin/claude-tap
+RUN chmod +x /usr/local/bin/claude-tap \\
+    && printf '%s\\n' \\
+        '#!/bin/sh' \\
+        'set -eu' \\
+        ': "${{CLAW_CLUSTER_ID:?missing CLAW_CLUSTER_ID (sandbox create envVars)}}"' \\
+        ': "${{CLAW_GATEWAY_DATABASE_URL:?missing CLAW_GATEWAY_DATABASE_URL (sandbox create envVars)}}"' \\
+        'mkdir -p /claw_ws/tap-traces' \\
+        'live_port="${{CLAW_OBSERVE_LIVE_PORT:-3000}}"' \\
+        'exec env CLAW_CLUSTER_ID="$CLAW_CLUSTER_ID" CLAW_GATEWAY_DATABASE_URL="$CLAW_GATEWAY_DATABASE_URL" /usr/local/bin/claude-tap --tap-no-launch --tap-live --tap-host 0.0.0.0 --tap-port 8080 --tap-live-port "$live_port" --tap-target https://bootstrap.invalid/v1 --tap-output-dir /claw_ws/tap-traces --tap-no-update-check --tap-no-auto-update' \\
+        > /usr/local/bin/claw-observe-start \\
+    && printf '%s\\n' \\
+        '#!/bin/sh' \\
+        'live_port="${{CLAW_OBSERVE_LIVE_PORT:-3000}}"' \\
+        'exec curl -fsS --connect-timeout 2 "http://127.0.0.1:${{live_port}}/"' \\
+        > /usr/local/bin/claw-observe-ready \\
+    && chmod +x /usr/local/bin/claw-observe-start /usr/local/bin/claw-observe-ready
+"""
+
+
 def main() -> int:
     opts = _conn_opts()
     log_debian_base_resolution(api_url=opts["api_url"])
@@ -192,27 +230,67 @@ def main() -> int:
 
     skip_cache = _env("CLAW_E2B_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no")
 
-    e2b_image = _e2b_observe_image_tag(skip_cache=skip_cache)
-    e2b_image = _build_e2b_observe_image(live_port, e2b_image)
-
-    print(f"==> e2b Template.build from_image={e2b_image!r}")
-    template = (
-        Template()
-        .from_image(e2b_image)
-        .set_start_cmd(OBSERVE_START_CMD, OBSERVE_READY_CMD)
-    )
-    apply_template_skip_cache_force(template, skip_cache)
-    build = Template.build(
-        template,
-        alias=alias,
-        skip_cache=skip_cache,
-        on_build_logs=default_build_logger(),
-        **opts,
-    )
+    # Bootstrap: e2b rejects claw-tap / missing debian-bookworm-claw-observe → debian+COPY. Author: kejiqing
+    if _env("CLAW_E2B_OBSERVE_SKIP_LOCAL_BUILD") in ("1", "true", "yes"):
+        tap_image = _tap_base_image()
+        print(
+            f"==> skip local observe docker; debian + COPY claude-tap from {tap_image!r}",
+            file=sys.stderr,
+        )
+        with tempfile.TemporaryDirectory(prefix="claw-e2b-observe-") as tmp:
+            staging = Path(tmp)
+            tap_bin = staging / "claude-tap.bin"
+            extract_file_from_image(
+                tap_image,
+                "/usr/local/bin/claude-tap",
+                tap_bin,
+                platform=_template_platform(),
+            )
+            dockerfile_path = staging / "Dockerfile"
+            dockerfile_path.write_text(_dockerfile_debian_observe(live_port), encoding="utf-8")
+            print(
+                f"==> e2b Template.build debian+COPY claude-tap "
+                f"(base={template_debian_base_image()!r})"
+            )
+            template = (
+                Template(file_context_path=str(staging))
+                .from_dockerfile(str(dockerfile_path))
+                .set_start_cmd(OBSERVE_START_CMD, OBSERVE_READY_CMD)
+            )
+            apply_template_skip_cache_force(template, skip_cache)
+            build = build_template_with_retry(
+                Template.build,
+                label=alias,
+                template=template,
+                alias=alias,
+                skip_cache=skip_cache,
+                on_build_logs=default_build_logger(),
+                **opts,
+            )
+    else:
+        e2b_image = _e2b_observe_image_tag(skip_cache=skip_cache)
+        e2b_image = _build_e2b_observe_image(live_port, e2b_image)
+        print(f"==> e2b Template.build from_image={e2b_image!r}")
+        template = (
+            Template()
+            .from_image(e2b_image)
+            .set_start_cmd(OBSERVE_START_CMD, OBSERVE_READY_CMD)
+        )
+        apply_template_skip_cache_force(template, skip_cache)
+        build = build_template_with_retry(
+            Template.build,
+            label=alias,
+            template=template,
+            alias=alias,
+            skip_cache=skip_cache,
+            on_build_logs=default_build_logger(),
+            **opts,
+        )
 
     now_ms = int(time.time() * 1000)
     print(f"template_id: {build.template_id}")
     print(f"build_id: {build.build_id}")
+    image_ref = locals().get("e2b_image") or locals().get("tap_image") or ""
     try:
         merge_settings_json_key(
             "e2bObserve",
@@ -220,7 +298,7 @@ def main() -> int:
                 "templateId": build.template_id,
                 "buildId": build.build_id,
                 "alias": alias,
-                "imageRef": e2b_image,
+                "imageRef": image_ref,
                 "updatedAtMs": now_ms,
             },
             now_ms=now_ms,

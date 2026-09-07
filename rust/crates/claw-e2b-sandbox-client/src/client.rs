@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
@@ -150,7 +150,8 @@ fi"#
 /// HTTP client for e2b sandbox lifecycle + delegated envd exec.
 #[derive(Debug, Clone)]
 pub struct E2bSandboxClient {
-    config: E2bSandboxConfig,
+    /// Shared so bootstrap can replace connection from updated `.env` without restart. Author: kejiqing
+    config: Arc<RwLock<E2bSandboxConfig>>,
     http: reqwest::Client,
     /// Local TTL estimate per sandbox (`POST /timeout` resets from request time).
     lease_expires: Arc<Mutex<HashMap<String, Instant>>>,
@@ -164,7 +165,7 @@ impl E2bSandboxClient {
     #[must_use]
     pub fn new(config: E2bSandboxConfig) -> Self {
         Self {
-            config,
+            config: Arc::new(RwLock::new(config)),
             http: reqwest::Client::new(),
             lease_expires: Arc::new(Mutex::new(HashMap::new())),
             persistent_sandboxes: Arc::new(Mutex::new(HashSet::new())),
@@ -173,16 +174,29 @@ impl E2bSandboxClient {
     }
 
     #[must_use]
-    pub fn config(&self) -> &E2bSandboxConfig {
-        &self.config
+    pub fn config(&self) -> E2bSandboxConfig {
+        self.config
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Replace live config (bootstrap: `.env` applied → `set_var` → re-read). Author: kejiqing
+    pub fn reconfigure(&self, next: E2bSandboxConfig) {
+        *self
+            .config
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
     }
 
     /// Refresh self-hosted e2b platform NAS from `GET /health` (pool uses before create).
     pub async fn refresh_e2b_platform_nas(&self) -> Result<(), String> {
-        if !self.config.is_self_hosted() {
+        if !self.config().is_self_hosted() {
             return Ok(());
         }
-        match fetch_e2b_platform_nas(&self.http, &self.config.api_url, &self.config.api_key).await {
+        match fetch_e2b_platform_nas(&self.http, &self.config().api_url, &self.config().api_key)
+            .await
+        {
             Ok(Some(platform)) => {
                 let ready = platform.ready;
                 let mount_source = platform.mount_source.clone();
@@ -215,7 +229,7 @@ impl E2bSandboxClient {
 
     /// Templates registered on e2bserver (`GET /health` → `templates.items`).
     pub async fn list_templates(&self) -> Result<Vec<E2bTemplateEntry>, String> {
-        fetch_e2b_templates(&self.http, &self.config.api_url, &self.config.api_key).await
+        fetch_e2b_templates(&self.http, &self.config().api_url, &self.config().api_key).await
     }
 
     /// Cached e2b `GET /health` NAS block (host bind root lives on e2b host, not Gateway env).
@@ -235,7 +249,7 @@ impl E2bSandboxClient {
     }
 
     async fn prepare_self_hosted_create(&self) -> Result<(), String> {
-        if !self.config.is_self_hosted() {
+        if !self.config().is_self_hosted() {
             return Ok(());
         }
         if let Err(e) = self.refresh_e2b_platform_nas().await {
@@ -257,7 +271,7 @@ impl E2bSandboxClient {
     }
 
     fn register_sandbox_lease(&self, sandbox_id: &str) {
-        let expires = Instant::now() + Duration::from_secs(self.config.sandbox_timeout_secs);
+        let expires = Instant::now() + Duration::from_secs(self.config().sandbox_timeout_secs);
         self.lease_expires
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -355,7 +369,7 @@ impl E2bSandboxClient {
     /// Renew TTL and register for lease ticker (observe / nas-api / ovs singletons).
     pub async fn touch_persistent_sandbox(&self, sandbox_id: &str) -> Result<(), String> {
         self.track_persistent_sandbox(sandbox_id);
-        self.renew_sandbox_ttl_secs(sandbox_id, self.config.sandbox_timeout_secs)
+        self.renew_sandbox_ttl_secs(sandbox_id, self.config().sandbox_timeout_secs)
             .await
     }
 
@@ -364,7 +378,7 @@ impl E2bSandboxClient {
         &self,
         sandbox_id: &str,
     ) -> Result<SandboxSnapshot, String> {
-        let url = format!("{}/sandboxes/{}", self.config.api_url, sandbox_id);
+        let url = format!("{}/sandboxes/{}", self.config().api_url, sandbox_id);
         let resp = self
             .http
             .get(&url)
@@ -487,14 +501,14 @@ impl E2bSandboxClient {
 
     fn auth_headers(&self) -> Result<HeaderMap, String> {
         let mut headers = HeaderMap::new();
-        if self.config.is_self_hosted() {
+        if self.config().is_self_hosted() {
             headers.insert(
                 "X-API-Key",
-                HeaderValue::from_str(self.config.api_key.trim())
+                HeaderValue::from_str(self.config().api_key.trim())
                     .map_err(|e| format!("X-API-Key header: {e}"))?,
             );
         } else {
-            let value = format!("Bearer {}", self.config.api_key);
+            let value = format!("Bearer {}", self.config().api_key);
             headers.insert(
                 AUTHORIZATION,
                 HeaderValue::from_str(&value).map_err(|e| format!("auth header: {e}"))?,
@@ -504,14 +518,14 @@ impl E2bSandboxClient {
     }
 
     fn ovs_public_host(&self, sandbox_id: &str, sandbox_domain: &str) -> String {
-        self.service_public_host(self.config.ovs_port, sandbox_id, sandbox_domain)
+        self.service_public_host(self.config().ovs_port, sandbox_id, sandbox_domain)
     }
 
     /// `http(s)://{port}-{sandboxId}.{domain}/ovs`
     #[must_use]
     pub fn ovs_service_base_url(&self, sandbox_id: &str, sandbox_domain: &str) -> String {
         let host = self.ovs_public_host(sandbox_id, sandbox_domain);
-        let scheme = if self.config.is_self_hosted() {
+        let scheme = if self.config().is_self_hosted() {
             "http"
         } else {
             "https"
@@ -541,7 +555,7 @@ impl E2bSandboxClient {
 
     /// Self-hosted on `WireGuard`: skip traffic token (see `docs/ovs-chat/E2B-TRAFFIC-ROUTING-F14.md`).
     fn apply_self_hosted_create_opts(&self, body: &mut Value) {
-        if self.config.is_self_hosted() {
+        if self.config().is_self_hosted() {
             body["secure"] = json!(false);
         }
     }
@@ -615,8 +629,8 @@ impl E2bSandboxClient {
 
         let mount_points = worker_mounts(cluster_id, proj_id, worker_id, ovs_mode);
         let mut body = json!({
-            "templateID": self.config.template,
-            "timeout": self.config.sandbox_timeout_secs,
+            "templateID": self.config().template,
+            "timeout": self.config().sandbox_timeout_secs,
             "metadata": metadata,
         });
         let nas = self.require_nas_config_body(&mount_points)?;
@@ -624,8 +638,8 @@ impl E2bSandboxClient {
         let nas_configured = true;
         self.apply_self_hosted_create_opts(&mut body);
 
-        let url = format!("{}/sandboxes", self.config.api_url);
-        debug!(target: "claw_e2b_sandbox", %url, template = %self.config.template, "create sandbox");
+        let url = format!("{}/sandboxes", self.config().api_url);
+        debug!(target: "claw_e2b_sandbox", %url, template = %self.config().template, "create sandbox");
         let resp = self
             .http
             .post(&url)
@@ -646,13 +660,13 @@ impl E2bSandboxClient {
 
         let parsed: CreateSandboxResponse = serde_json::from_str(&text)
             .map_err(|e| format!("e2b create sandbox parse: {e}; body={text}"))?;
-        let sandbox_domain = if self.config.is_self_hosted() {
-            self.config.domain.clone()
+        let sandbox_domain = if self.config().is_self_hosted() {
+            self.config().domain.clone()
         } else {
             parsed
                 .domain
                 .filter(|d| !d.trim().is_empty())
-                .unwrap_or_else(|| self.config.domain.clone())
+                .unwrap_or_else(|| self.config().domain.clone())
         };
         let handle = E2bSandboxHandle {
             sandbox_id: parsed.sandbox_id,
@@ -692,7 +706,7 @@ impl E2bSandboxClient {
         let mount_points = warm_worker_mounts(cluster_id, proj_id, worker_id, !include_ovs);
         let mut body = json!({
             "templateID": template_id,
-            "timeout": self.config.sandbox_timeout_secs,
+            "timeout": self.config().sandbox_timeout_secs,
             "metadata": metadata,
         });
         if !env_vars.is_empty() {
@@ -703,7 +717,7 @@ impl E2bSandboxClient {
         let nas_configured = true;
         self.apply_self_hosted_create_opts(&mut body);
 
-        let url = format!("{}/sandboxes", self.config.api_url);
+        let url = format!("{}/sandboxes", self.config().api_url);
         debug!(target: "claw_e2b_sandbox", %url, proj_id, "create warm-proj sandbox");
         let resp = self
             .http
@@ -725,13 +739,13 @@ impl E2bSandboxClient {
 
         let parsed: CreateSandboxResponse = serde_json::from_str(&text)
             .map_err(|e| format!("e2b create warm sandbox parse: {e}; body={text}"))?;
-        let sandbox_domain = if self.config.is_self_hosted() {
-            self.config.domain.clone()
+        let sandbox_domain = if self.config().is_self_hosted() {
+            self.config().domain.clone()
         } else {
             parsed
                 .domain
                 .filter(|d| !d.trim().is_empty())
-                .unwrap_or_else(|| self.config.domain.clone())
+                .unwrap_or_else(|| self.config().domain.clone())
         };
         let (ovs_public_host, ovs_base_url) =
             self.ovs_handle_fields(&parsed.sandbox_id, &sandbox_domain, include_ovs);
@@ -748,7 +762,7 @@ impl E2bSandboxClient {
             .await
     }
     pub async fn list_sandboxes(&self) -> Result<Vec<BTreeMap<String, String>>, String> {
-        let url = format!("{}/sandboxes", self.config.api_url.trim_end_matches('/'));
+        let url = format!("{}/sandboxes", self.config().api_url.trim_end_matches('/'));
         let resp = self
             .http
             .get(&url)
@@ -969,7 +983,7 @@ impl E2bSandboxClient {
         mount_points: &[NasMountPoint],
         require_nas: bool,
     ) -> Result<E2bSandboxHandle, String> {
-        if self.config.is_self_hosted() {
+        if self.config().is_self_hosted() {
             let _ = self.refresh_e2b_platform_nas().await;
         }
         let mut metadata = BTreeMap::new();
@@ -978,7 +992,7 @@ impl E2bSandboxClient {
 
         let mut body = json!({
             "templateID": template_id,
-            "timeout": self.config.sandbox_timeout_secs,
+            "timeout": self.config().sandbox_timeout_secs,
             "metadata": metadata,
         });
         if !env_vars.is_empty() {
@@ -998,7 +1012,7 @@ impl E2bSandboxClient {
         };
         self.apply_self_hosted_create_opts(&mut body);
 
-        let url = format!("{}/sandboxes", self.config.api_url.trim_end_matches('/'));
+        let url = format!("{}/sandboxes", self.config().api_url.trim_end_matches('/'));
         debug!(
             target: "claw_e2b_sandbox",
             %url,
@@ -1022,20 +1036,23 @@ impl E2bSandboxClient {
             .await
             .map_err(|e| format!("e2b create {claw_role} sandbox body: {e}"))?;
         if !status.is_success() {
-            return Err(format!(
-                "e2b create {claw_role} sandbox HTTP {status}: {text}"
+            return Err(crate::e2b_schedule_error::format_create_sandbox_error(
+                claw_role,
+                status.as_u16(),
+                &text,
+                template_id,
             ));
         }
 
         let parsed: CreateSandboxResponse = serde_json::from_str(&text)
             .map_err(|e| format!("e2b create {claw_role} sandbox parse: {e}; body={text}"))?;
-        let sandbox_domain = if self.config.is_self_hosted() {
-            self.config.domain.clone()
+        let sandbox_domain = if self.config().is_self_hosted() {
+            self.config().domain.clone()
         } else {
             parsed
                 .domain
                 .filter(|d| !d.trim().is_empty())
-                .unwrap_or_else(|| self.config.domain.clone())
+                .unwrap_or_else(|| self.config().domain.clone())
         };
         let handle = E2bSandboxHandle {
             sandbox_id: parsed.sandbox_id,
@@ -1049,7 +1066,7 @@ impl E2bSandboxClient {
             .finish_sandbox_create(handle, nas_configured, mount_points)
             .await?;
         self.track_persistent_sandbox(&handle.sandbox_id);
-        self.renew_sandbox_ttl_verified(&handle.sandbox_id, self.config.sandbox_timeout_secs)
+        self.renew_sandbox_ttl_verified(&handle.sandbox_id, self.config().sandbox_timeout_secs)
             .await?;
         Ok(handle)
     }
@@ -1086,7 +1103,7 @@ impl E2bSandboxClient {
         proj_id: i64,
         sandbox_database_url: &str,
     ) -> Result<E2bSandboxHandle, String> {
-        if self.config.is_self_hosted() {
+        if self.config().is_self_hosted() {
             let _ = self.refresh_e2b_platform_nas().await;
         }
         let mut env_vars = BTreeMap::new();
@@ -1108,7 +1125,7 @@ impl E2bSandboxClient {
         let mount_points = nas_paths::ovs_root_mounts();
         let mut body = json!({
             "templateID": template_id,
-            "timeout": self.config.sandbox_timeout_secs,
+            "timeout": self.config().sandbox_timeout_secs,
             "metadata": metadata,
             "envVars": env_vars,
         });
@@ -1119,7 +1136,7 @@ impl E2bSandboxClient {
         }
         self.apply_self_hosted_create_opts(&mut body);
 
-        let url = format!("{}/sandboxes", self.config.api_url.trim_end_matches('/'));
+        let url = format!("{}/sandboxes", self.config().api_url.trim_end_matches('/'));
         debug!(
             target: "claw_e2b_sandbox",
             %url,
@@ -1148,13 +1165,13 @@ impl E2bSandboxClient {
         }
         let parsed: CreateSandboxResponse = serde_json::from_str(&text)
             .map_err(|e| format!("e2b create observe-proj sandbox parse: {e}; body={text}"))?;
-        let sandbox_domain = if self.config.is_self_hosted() {
-            self.config.domain.clone()
+        let sandbox_domain = if self.config().is_self_hosted() {
+            self.config().domain.clone()
         } else {
             parsed
                 .domain
                 .filter(|d| !d.trim().is_empty())
-                .unwrap_or_else(|| self.config.domain.clone())
+                .unwrap_or_else(|| self.config().domain.clone())
         };
         let handle = E2bSandboxHandle {
             sandbox_id: parsed.sandbox_id,
@@ -1169,7 +1186,7 @@ impl E2bSandboxClient {
             .finish_sandbox_create(handle, nas_configured, &mount_points)
             .await?;
         self.track_persistent_sandbox(&sid);
-        self.renew_sandbox_ttl_verified(&sid, self.config.sandbox_timeout_secs)
+        self.renew_sandbox_ttl_verified(&sid, self.config().sandbox_timeout_secs)
             .await?;
         Ok(handle)
     }
@@ -1256,7 +1273,7 @@ impl E2bSandboxClient {
     ) -> Result<(), String> {
         let url = format!(
             "{}/sandboxes/{}/timeout",
-            self.config.api_url.trim_end_matches('/'),
+            self.config().api_url.trim_end_matches('/'),
             sandbox_id
         );
         debug!(
@@ -1284,9 +1301,9 @@ impl E2bSandboxClient {
 
     /// Renew TTL when remaining time is under [`SANDBOX_LEASE_RENEW_LEAD_SECS`] (5 minutes).
     pub async fn touch_sandbox_lease(&self, sandbox_id: &str) -> Result<(), String> {
-        let timeout_secs = self.config.sandbox_timeout_secs;
+        let timeout_secs = self.config().sandbox_timeout_secs;
         let now = Instant::now();
-        let should_renew = if self.config.is_self_hosted() {
+        let should_renew = if self.config().is_self_hosted() {
             true
         } else {
             let guard = self
@@ -1448,7 +1465,7 @@ impl E2bSandboxClient {
 
     /// Kill a sandbox (`DELETE /sandboxes/{id}`).
     pub async fn kill_sandbox(&self, sandbox_id: &str) -> Result<(), String> {
-        let url = format!("{}/sandboxes/{}", self.config.api_url, sandbox_id);
+        let url = format!("{}/sandboxes/{}", self.config().api_url, sandbox_id);
         let resp = self
             .http
             .delete(&url)
@@ -1456,7 +1473,12 @@ impl E2bSandboxClient {
             .send()
             .await
             .map_err(|e| format!("e2b kill sandbox request: {e}"))?;
-        if resp.status().is_success() || resp.status().as_u16() == 404 {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        // Ghost sandboxes on dead workers: e2b returns 404 "worker … not found". Author: kejiqing
+        let worker_gone = text.to_ascii_lowercase().contains("worker")
+            && text.to_ascii_lowercase().contains("not found");
+        if status.is_success() || status.as_u16() == 404 || worker_gone {
             self.unregister_sandbox_lease(sandbox_id);
             self.persistent_sandboxes
                 .lock()
@@ -1464,8 +1486,6 @@ impl E2bSandboxClient {
                 .remove(sandbox_id);
             return Ok(());
         }
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
         Err(format!("e2b kill sandbox HTTP {status}: {text}"))
     }
 
@@ -1495,10 +1515,10 @@ impl E2bSandboxClient {
         // Task JSON is already on NAS (`gateway-solve-task.json`); helper runs a short claw argv. Author: kejiqing
         let payload = json!({
             "op": "exec_solve",
-            "api_key": self.config.api_key,
-            "domain": self.config.domain,
-            "api_url": self.config.api_url,
-            "sandbox_url": self.config.sandbox_url,
+            "api_key": self.config().api_key,
+            "domain": self.config().domain,
+            "api_url": self.config().api_url,
+            "sandbox_url": self.config().sandbox_url,
             "sandbox_id": sandbox_id,
             "claw_bin": claw_bin,
             "task_file": task_file,
@@ -1507,7 +1527,7 @@ impl E2bSandboxClient {
             "env": env,
             "timeout": inputs.timeout_seconds,
         });
-        Self::run_exec_helper(&self.config.exec_helper, &payload, on_stdout_line).await
+        Self::run_exec_helper(&self.config().exec_helper, &payload, on_stdout_line).await
     }
 
     /// Run a shell script inside the sandbox via `deploy/e2b/e2b_exec.py` (envd gRPC).
@@ -1533,17 +1553,17 @@ impl E2bSandboxClient {
         self.touch_sandbox_lease(&handle.sandbox_id).await?;
         let mut payload = json!({
             "op": "run_sh",
-            "api_key": self.config.api_key,
+            "api_key": self.config().api_key,
             "domain": handle.sandbox_domain,
-            "api_url": self.config.api_url,
-            "sandbox_url": self.config.sandbox_url,
+            "api_url": self.config().api_url,
+            "sandbox_url": self.config().sandbox_url,
             "sandbox_id": handle.sandbox_id,
             "script": script,
         });
         if let Some(env) = env.filter(|m| !m.is_empty()) {
             payload["env"] = json!(env);
         }
-        Self::run_exec_helper(&self.config.exec_helper, &payload, on_stdout_line).await
+        Self::run_exec_helper(&self.config().exec_helper, &payload, on_stdout_line).await
     }
 
     /// Like [`Self::exec_shell_script`] but returns captured stdout (for small in-guest reads).
@@ -1556,17 +1576,17 @@ impl E2bSandboxClient {
         self.touch_sandbox_lease(&handle.sandbox_id).await?;
         let mut payload = json!({
             "op": "run_sh",
-            "api_key": self.config.api_key,
+            "api_key": self.config().api_key,
             "domain": handle.sandbox_domain,
-            "api_url": self.config.api_url,
-            "sandbox_url": self.config.sandbox_url,
+            "api_url": self.config().api_url,
+            "sandbox_url": self.config().sandbox_url,
             "sandbox_id": handle.sandbox_id,
             "script": script,
         });
         if let Some(env) = env.filter(|m| !m.is_empty()) {
             payload["env"] = json!(env);
         }
-        let outcome = Self::run_exec_helper(&self.config.exec_helper, &payload, None).await?;
+        let outcome = Self::run_exec_helper(&self.config().exec_helper, &payload, None).await?;
         Ok(outcome.stdout)
     }
 
@@ -1717,8 +1737,8 @@ impl E2bSandboxClient {
             })
             .collect();
         Some(json!({
-            "userId": self.config.nas_user_id,
-            "groupId": self.config.nas_group_id,
+            "userId": self.config().nas_user_id,
+            "groupId": self.config().nas_group_id,
             "mountPoints": points,
         }))
     }

@@ -376,7 +376,7 @@ Your job:
 ## 验收
 …
 
-The final message MUST be that markdown plan (no code edits). Implementation happens only after the user confirms.";
+The final message MUST be that markdown plan (no code edits). Do **not** tell the user to reply 「确认」 in chat. Implementation starts only after they use the product Confirm action (which switches to execute mode with write permissions).";
 
 /// Injected when AskUserQuestion is enabled in Agent mode. Author: kejiqing
 const AGENT_ASK_USER_SYSTEM_SECTION: &str = r"# Asking the user
