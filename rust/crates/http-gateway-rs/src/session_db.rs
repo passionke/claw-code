@@ -15,10 +15,9 @@ use crate::cluster_scope::resolve_gateway_cluster_id_for_connect;
 use crate::pool::system_landlock_default_json;
 use crate::turn_id::{self, TURN_ID_PREFIX};
 use serde_json::{json, Value};
-use sqlx::pool::PoolConnection;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::types::Json;
-use sqlx::{Error as SqlxError, PgPool, Postgres, QueryBuilder, Row};
+use sqlx::{Error as SqlxError, PgPool, QueryBuilder, Row};
 
 /// One row for [`GatewaySessionDb::list_sessions_for_proj`]. Author: kejiqing
 #[derive(Debug, Clone)]
@@ -538,64 +537,6 @@ fn row_to_project_fc_worker(row: &sqlx::postgres::PgRow) -> Result<ProjectFcWork
         in_use_count: row.try_get("in_use_count").unwrap_or(0),
         in_use_until_ms: row.try_get("in_use_until_ms").unwrap_or(0),
     })
-}
-
-/// Session-scoped `pg_advisory_lock` held on one pooled connection.
-///
-/// Normal path: [`Self::unlock`] then return the connection to the pool.
-/// Cancel/abort path: [`Drop`] closes the connection so PostgreSQL releases the
-/// session lock instead of leaking it into the pool. Author: kejiqing
-struct PgSessionAdvisoryLockGuard {
-    conn: Option<PoolConnection<Postgres>>,
-    what: String,
-    key: String,
-}
-
-impl PgSessionAdvisoryLockGuard {
-    fn new(conn: PoolConnection<Postgres>, what: &str, key: &str) -> Self {
-        Self {
-            conn: Some(conn),
-            what: what.to_string(),
-            key: key.to_string(),
-        }
-    }
-
-    async fn unlock(&mut self) {
-        let Some(mut conn) = self.conn.take() else {
-            return;
-        };
-        if let Err(e) = sqlx::query("SELECT pg_advisory_unlock(hashtext($1::text))")
-            .bind(&self.key)
-            .execute(&mut *conn)
-            .await
-        {
-            tracing::warn!(
-                target: "claw_pg_advisory_lock",
-                what = %self.what,
-                key = %self.key,
-                error = %e,
-                "pg_advisory_unlock failed; closing connection so PG releases the lock"
-            );
-            conn.close_on_drop();
-        }
-        drop(conn);
-    }
-}
-
-impl Drop for PgSessionAdvisoryLockGuard {
-    fn drop(&mut self) {
-        let Some(mut conn) = self.conn.take() else {
-            return;
-        };
-        tracing::warn!(
-            target: "claw_pg_advisory_lock",
-            what = %self.what,
-            key = %self.key,
-            "pg advisory lock guard dropped without unlock (cancel/abort?); closing connection to release session lock"
-        );
-        conn.close_on_drop();
-        drop(conn);
-    }
 }
 
 impl GatewaySessionDb {
@@ -3545,16 +3486,14 @@ impl GatewaySessionDb {
     /// Run `f` while holding a session-scoped `pg_advisory_lock` on `key`.
     ///
     /// The lock lives on the physical connection that took it, so lock and unlock
-    /// must share one `PoolConnection`. Running them on `&self.pool` can send the
-    /// unlock to a different pooled connection, which then reports "you don't own a
-    /// lock of type `ExclusiveLock`" while the real lock leaks until its holder
-    /// closes.
+    /// must share one `PoolConnection`.
     ///
-    /// **Cancel safety:** `tokio::task::AbortHandle` (solve cancel) can drop this
-    /// future between lock and unlock. A [`PgSessionAdvisoryLockGuard`] then
-    /// `close_on_drop`s the connection so PG releases the session lock instead of
-    /// returning a still-locked connection to the pool (which would stall every
-    /// subsequent ensure behind `nas-api-singleton` / observe). Author: kejiqing
+    /// **Cancel safety:** solve cancel aborts this future at any `.await`. Session
+    /// advisory locks survive returning a connection to the sqlx pool (v1.8.14 hole:
+    /// unlock `take()` then abort, or cancel while waiters race). Policy: mark
+    /// `close_on_drop` immediately after acquire so any abort destroys the backend
+    /// and PG releases the session lock. `pg_advisory_unlock` is best-effort only.
+    /// See `docs/pg-advisory-lock-cancel-leak.md`. Author: kejiqing
     async fn with_pg_advisory_lock<T, F, Fut>(
         &self,
         what: &str,
@@ -3570,14 +3509,29 @@ impl GatewaySessionDb {
             .acquire()
             .await
             .map_err(|e| format!("pg_advisory_lock {what}: acquire connection: {e}"))?;
+        // Never recycle this backend if cancel interrupts lock / critical section /
+        // unlock — session advisory must not leak into the pool. Author: kejiqing
+        conn.close_on_drop();
         sqlx::query("SELECT pg_advisory_lock(hashtext($1::text))")
             .bind(key)
             .execute(&mut *conn)
             .await
             .map_err(|e| format!("pg_advisory_lock {what}: {e}"))?;
-        let mut guard = PgSessionAdvisoryLockGuard::new(conn, what, key);
         let out = f().await;
-        guard.unlock().await;
+        if let Err(e) = sqlx::query("SELECT pg_advisory_unlock(hashtext($1::text))")
+            .bind(key)
+            .execute(&mut *conn)
+            .await
+        {
+            tracing::warn!(
+                target: "claw_pg_advisory_lock",
+                what = %what,
+                key = %key,
+                error = %e,
+                "pg_advisory_unlock failed; connection will close and PG will drop session locks"
+            );
+        }
+        drop(conn);
         out
     }
 
@@ -7101,79 +7055,225 @@ mod tests {
         .expect("second singleton lock failed");
     }
 
+    /// Concurrent cancel storm: holder in critical section + waiters blocked on
+    /// `pg_advisory_lock`; abort all — key must become free (no pool leak).
+    /// Regression for pre-claw-01 cancel storm on 252 / v1.8.14. Author: kejiqing
+    #[tokio::test]
+    async fn singleton_role_lock_releases_after_concurrent_abort_storm() {
+        let Some(url) = gateway_integration_database_url() else {
+            eprintln!(
+                "skip singleton_role_lock_releases_after_concurrent_abort_storm: set CLAW_GATEWAY_TEST_DATABASE_URL"
+            );
+            return;
+        };
+        if !pg_tcp_reachable(&url, std::time::Duration::from_secs(2)) {
+            eprintln!(
+                "skip singleton_role_lock_releases_after_concurrent_abort_storm: PG not reachable"
+            );
+            return;
+        }
+        let db = match GatewaySessionDb::connect_without_migrate(&url).await {
+            Ok(db) => std::sync::Arc::new(db),
+            Err(e) => {
+                eprintln!(
+                    "skip singleton_role_lock_releases_after_concurrent_abort_storm: connect failed: {e}"
+                );
+                return;
+            }
+        };
+        let role = format!("ut-storm-{}", uuid::Uuid::new_v4().simple());
+        let key = format!("{}:{}", db.cluster_id(), role);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let db_hold = std::sync::Arc::clone(&db);
+        let role_hold = role.clone();
+        let holder = tokio::spawn(async move {
+            db_hold
+                .with_e2b_singleton_role_lock(&role_hold, || async {
+                    let _ = entered_tx.send(());
+                    std::future::pending::<Result<(), String>>().await
+                })
+                .await
+        });
+        entered_rx.await.expect("holder entered");
+
+        let mut waiters = Vec::new();
+        for _ in 0..8 {
+            let db_w = std::sync::Arc::clone(&db);
+            let role_w = role.clone();
+            waiters.push(tokio::spawn(async move {
+                db_w.with_e2b_singleton_role_lock(&role_w, || async { Ok(()) })
+                    .await
+            }));
+        }
+        // Let waiters block on pg_advisory_lock.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        holder.abort();
+        for w in &waiters {
+            w.abort();
+        }
+        let _ = holder.await;
+        for w in waiters {
+            let _ = w.await;
+        }
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut free = false;
+        while tokio::time::Instant::now() < deadline {
+            let mut conn = db.pg_pool().acquire().await.expect("acquire");
+            free = sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext($1::text))")
+                .bind(&key)
+                .fetch_one(&mut *conn)
+                .await
+                .expect("try_lock");
+            if free {
+                sqlx::query("SELECT pg_advisory_unlock(hashtext($1::text))")
+                    .bind(&key)
+                    .execute(&mut *conn)
+                    .await
+                    .expect("unlock");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            free,
+            "after concurrent abort storm, key={key} must be free (close_on_drop leak?)"
+        );
+    }
+
     /// Pure unit model of PG session locks + sqlx pool return-vs-close.
-    /// Documents why abort must destroy the locking connection. Author: kejiqing
-    #[test]
-    fn session_advisory_lock_pool_simulation_close_on_drop_prevents_leak() {
-        use std::collections::{HashMap, HashSet};
+    /// Author: kejiqing
+    #[derive(Default)]
+    struct FakeSessionAdvisoryPg {
+        locks_by_conn: std::collections::HashMap<u64, std::collections::HashSet<&'static str>>,
+        next_conn: u64,
+        idle_pool: Vec<u64>,
+        /// Connections that must never return to the pool while (or after) holding
+        /// a session advisory lock — production policy after the cancel-leak fix.
+        close_on_drop: std::collections::HashSet<u64>,
+    }
 
-        #[derive(Default)]
-        struct FakePg {
-            locks_by_conn: HashMap<u64, HashSet<&'static str>>,
-            next_conn: u64,
-            idle_pool: Vec<u64>,
+    impl FakeSessionAdvisoryPg {
+        fn acquire(&mut self) -> u64 {
+            if let Some(id) = self.idle_pool.pop() {
+                return id;
+            }
+            let id = self.next_conn;
+            self.next_conn += 1;
+            self.locks_by_conn
+                .insert(id, std::collections::HashSet::new());
+            id
         }
 
-        impl FakePg {
-            fn acquire(&mut self) -> u64 {
-                if let Some(id) = self.idle_pool.pop() {
-                    return id;
+        fn mark_close_on_drop(&mut self, conn: u64) {
+            self.close_on_drop.insert(conn);
+        }
+
+        fn advisory_lock(&mut self, conn: u64, key: &'static str) -> bool {
+            for (other, keys) in &self.locks_by_conn {
+                if *other != conn && keys.contains(key) {
+                    return false;
                 }
-                let id = self.next_conn;
-                self.next_conn += 1;
-                self.locks_by_conn.insert(id, HashSet::new());
-                id
             }
+            self.locks_by_conn.get_mut(&conn).expect("conn").insert(key);
+            true
+        }
 
-            fn advisory_lock(&mut self, conn: u64, key: &'static str) -> bool {
-                for (other, keys) in &self.locks_by_conn {
-                    if *other != conn && keys.contains(key) {
-                        return false;
-                    }
-                }
-                self.locks_by_conn.get_mut(&conn).expect("conn").insert(key);
-                true
-            }
-
-            fn return_to_pool(&mut self, conn: u64) {
-                // Bug path: session locks stay on the backend until disconnect.
-                self.idle_pool.push(conn);
-            }
-
-            fn close(&mut self, conn: u64) {
-                // Fix path: close_on_drop → PG drops session advisory locks.
+        /// Drop a PoolConnection: close_on_drop destroys backend (+ session locks);
+        /// otherwise the backend returns to the idle pool with locks intact.
+        fn drop_conn(&mut self, conn: u64) {
+            if self.close_on_drop.remove(&conn) {
                 self.locks_by_conn.remove(&conn);
+                return;
             }
-
-            fn try_lock_from_fresh_conn(&mut self, key: &'static str) -> bool {
-                // Another backend/session (not the pooled leaked one).
-                let id = self.next_conn;
-                self.next_conn += 1;
-                self.locks_by_conn.insert(id, HashSet::new());
-                let ok = self.advisory_lock(id, key);
-                self.locks_by_conn.remove(&id);
-                ok
-            }
+            self.idle_pool.push(conn);
         }
 
-        // Old bug: abort returns locked connection to the pool.
-        let mut leaked = FakePg::default();
+        fn try_lock_from_fresh_conn(&mut self, key: &'static str) -> bool {
+            let id = self.next_conn;
+            self.next_conn += 1;
+            self.locks_by_conn
+                .insert(id, std::collections::HashSet::new());
+            let ok = self.advisory_lock(id, key);
+            self.locks_by_conn.remove(&id);
+            ok
+        }
+    }
+
+    /// Documents the pre-fix pool leak (return locked conn). Author: kejiqing
+    #[test]
+    fn session_advisory_lock_pool_simulation_return_without_close_leaks() {
+        let mut leaked = FakeSessionAdvisoryPg::default();
         let holder = leaked.acquire();
         assert!(leaked.advisory_lock(holder, "nas-api-singleton"));
-        leaked.return_to_pool(holder);
+        leaked.drop_conn(holder); // no close_on_drop → return to pool
         assert!(
             !leaked.try_lock_from_fresh_conn("nas-api-singleton"),
             "without close_on_drop, abort must leave the lock held on a pooled connection"
         );
+    }
 
-        // Fix: abort closes the connection (PgSessionAdvisoryLockGuard::drop).
-        let mut fixed = FakePg::default();
-        let holder = fixed.acquire();
-        assert!(fixed.advisory_lock(holder, "nas-api-singleton"));
-        fixed.close(holder);
+    /// Hole 2 regression: unlock-path abort must not recycle a locked backend.
+    /// Was the destruction signal under v1.8.14 (return after take without close).
+    /// Production policy: mark close_on_drop as soon as this backend may hold a
+    /// session advisory. Author: kejiqing
+    #[test]
+    fn abort_after_unlock_take_must_not_leak() {
+        let mut pg = FakeSessionAdvisoryPg::default();
+        let conn = pg.acquire();
+        assert!(pg.advisory_lock(conn, "nas-api-singleton"));
+        pg.mark_close_on_drop(conn);
+        // Abort after unlock take(): Drop closes backend → session locks cleared.
+        pg.drop_conn(conn);
         assert!(
-            fixed.try_lock_from_fresh_conn("nas-api-singleton"),
-            "with close_on_drop, abort must release the session lock"
+            pg.try_lock_from_fresh_conn("nas-api-singleton"),
+            "abort after unlock take() must not leave nas-api-singleton held on a pooled conn"
+        );
+    }
+
+    /// Required policy mirror of [`abort_after_unlock_take_must_not_leak`]. Author: kejiqing
+    #[test]
+    fn session_advisory_lock_close_on_drop_survives_abort_after_unlock_take() {
+        let mut pg = FakeSessionAdvisoryPg::default();
+        let conn = pg.acquire();
+        assert!(pg.advisory_lock(conn, "pre-claw-01:nas-api-singleton"));
+        pg.mark_close_on_drop(conn);
+        pg.drop_conn(conn);
+        assert!(pg.try_lock_from_fresh_conn("pre-claw-01:nas-api-singleton"));
+    }
+
+    /// Concurrent cancel model: one holder + waiters aborted; locked backends must
+    /// close so a fresh session can take the key. Author: kejiqing
+    #[test]
+    fn session_advisory_lock_concurrent_abort_waiters_must_not_leave_key_held() {
+        let mut pg = FakeSessionAdvisoryPg::default();
+        let key = "nas-api-singleton";
+        let holder = pg.acquire();
+        pg.mark_close_on_drop(holder);
+        assert!(pg.advisory_lock(holder, key));
+
+        let mut waiters = Vec::new();
+        for _ in 0..8 {
+            let w = pg.acquire();
+            pg.mark_close_on_drop(w);
+            // Blocked on lock — never acquired; abort still drops conn.
+            waiters.push(w);
+        }
+
+        // Cancel storm: abort holder (held lock) + all waiters.
+        pg.drop_conn(holder);
+        for w in waiters {
+            pg.drop_conn(w);
+        }
+
+        assert!(
+            pg.try_lock_from_fresh_conn(key),
+            "after concurrent abort, session advisory key must be free"
+        );
+        assert!(
+            pg.idle_pool.is_empty(),
+            "no locked backend may sit idle in the pool after cancel storm"
         );
     }
 }

@@ -99,6 +99,7 @@ Admin 客户端始终连**当前选中的** `gatewayBase`；错机由后端反�
 
 - 多 sandbox 同 role → 稳定规则选唯一 winner，persist 后 reap 其余
 - `global settings` 更新用字段级 `jsonb_set` merge，禁止整包 RMW 覆盖
+- solve cancel × session advisory 泄漏与闭环修复：见 [`docs/pg-advisory-lock-cancel-leak.md`](./pg-advisory-lock-cancel-leak.md)
 
 ---
 
