@@ -89,9 +89,25 @@ export async function fetchPlaygroundConfig(): Promise<PlaygroundConfig> {
   return r.json() as Promise<PlaygroundConfig>;
 }
 
-export async function fetchAdminMe(): Promise<{ ok: boolean; user?: string }> {
+export async function fetchAdminMe(): Promise<{
+  ok: boolean;
+  user?: string;
+  accountId?: string;
+  systemRole?: string;
+  systemAdmin?: boolean;
+  projectIds?: number[];
+  error?: string;
+}> {
   const r = await fetch("/__admin_me__", { credentials: "same-origin" });
-  return r.json() as Promise<{ ok: boolean; user?: string }>;
+  return r.json() as Promise<{
+    ok: boolean;
+    user?: string;
+    accountId?: string;
+    systemRole?: string;
+    systemAdmin?: boolean;
+    projectIds?: number[];
+    error?: string;
+  }>;
 }
 
 export async function adminLogin(

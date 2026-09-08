@@ -378,8 +378,10 @@ pub(crate) async fn delete_gateway_git_pat_handler(
 )]
 pub(crate) async fn issue_gateway_admin_mcp_token_handler(
     State(state): State<AppState>,
-    Json(req): Json<gateway_admin_mcp_token::IssueAdminMcpTokenInput>,
+    headers: HeaderMap,
+    Json(mut req): Json<gateway_admin_mcp_token::IssueAdminMcpTokenInput>,
 ) -> Result<Json<gateway_admin_mcp_token::IssueAdminMcpTokenResponse>, ApiError> {
+    crate::routes::admin_auth::guard_global_issue_admin_mcp(&state, &headers, &mut req).await?;
     let body = gateway_admin_mcp_token::issue_admin_mcp_token(&state.session_db, req)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
@@ -403,8 +405,10 @@ pub(crate) async fn issue_gateway_admin_mcp_token_handler(
 )]
 pub(crate) async fn revoke_gateway_admin_mcp_token_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxumPath(token_id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
+    crate::routes::admin_auth::guard_global_revoke_admin_mcp(&state, &headers).await?;
     let revoked = gateway_admin_mcp_token::revoke_admin_mcp_token(&state.session_db, &token_id)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;

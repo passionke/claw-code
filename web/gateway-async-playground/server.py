@@ -282,6 +282,34 @@ def _admin_requires_login(path: str) -> bool:
     return False
 
 
+def _admin_proxy_requires_login(subpath: str) -> bool:
+    """Proxy paths that must carry a logged-in session (chat/solve stay open). Author: kejiqing"""
+    p = subpath.split("?", 1)[0]
+    if p.startswith("/v1/admin/auth/login"):
+        return False
+    # Public / agent paths used by chat
+    open_prefixes = (
+        "/healthz",
+        "/v1/projects",
+        "/v1/solve",
+        "/v1/sessions",
+        "/v1/tasks",
+        "/v1/turns",
+        "/v1/ag-ui",
+        "/v1/biz-report",
+        "/v1/chat",
+        "/v1/responses",
+        "/v1/openai",
+        "/v1/project/config",
+    )
+    for pref in open_prefixes:
+        if p == pref or p.startswith(pref + "/"):
+            return False
+    if p.startswith("/v1/"):
+        return True
+    return False
+
+
 WS_ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
@@ -839,6 +867,7 @@ def proxy_ovs_vscode_ws(
 
 
 def make_session_token(user: str) -> str:
+    """Legacy HMAC session (unused after gateway accounts); kept for tests. Author: kejiqing"""
     exp = int(time.time()) + SESSION_TTL_SEC
     payload = f"{user}:{exp}"
     sig = hmac.new(_session_secret(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -846,7 +875,10 @@ def make_session_token(user: str) -> str:
 
 
 def verify_session_token(token: str | None) -> str | None:
+    """Legacy HMAC verify. Gateway cass_ tokens are opaque — see read_session_token. Author: kejiqing"""
     if not token or ":" not in token:
+        return None
+    if token.startswith("cass_"):
         return None
     try:
         user, exp_s, sig = token.rsplit(":", 2)
@@ -865,9 +897,103 @@ def verify_session_token(token: str | None) -> str | None:
 
 
 def check_admin_credentials(user: str, password: str) -> bool:
+    """Legacy local check; login path now uses gateway. Author: kejiqing"""
     if user != ADMIN_USER:
         return False
     return secrets.compare_digest(password, ADMIN_PASSWORD)
+
+
+def _gateway_login_url() -> str | None:
+    base = (UPSTREAM_GATEWAY_BASE or PUBLIC_GATEWAY_BASE or "").rstrip("/")
+    if not base:
+        return None
+    return f"{base}/v1/admin/auth/login"
+
+
+def _gateway_me_url() -> str | None:
+    base = (UPSTREAM_GATEWAY_BASE or PUBLIC_GATEWAY_BASE or "").rstrip("/")
+    if not base:
+        return None
+    return f"{base}/v1/admin/auth/me"
+
+
+def gateway_admin_login(username: str, password: str) -> tuple[dict | None, str | None]:
+    """POST gateway login; returns (body, error). Author: kejiqing"""
+    url = _gateway_login_url()
+    if not url:
+        return None, "gateway base not configured"
+    payload = json.dumps(
+        {"username": username, "password": password}, ensure_ascii=False
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json; charset=utf-8"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+            data = json.loads(raw.decode("utf-8") if raw else "{}")
+            if not isinstance(data, dict) or not data.get("token"):
+                return None, "invalid login response"
+            return data, None
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        try:
+            detail = json.loads(raw).get("detail") if raw else None
+        except json.JSONDecodeError:
+            detail = None
+        return None, str(detail or raw or e)
+    except urllib.error.URLError as e:
+        return None, str(getattr(e, "reason", e))
+
+
+def gateway_admin_me(token: str) -> tuple[dict | None, str | None]:
+    url = _gateway_me_url()
+    if not url:
+        return None, "gateway base not configured"
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+            data = json.loads(raw.decode("utf-8") if raw else "{}")
+            if not isinstance(data, dict):
+                return None, "invalid me response"
+            return data, None
+    except urllib.error.HTTPError as e:
+        return None, f"http {e.code}"
+    except urllib.error.URLError as e:
+        return None, str(getattr(e, "reason", e))
+
+
+def read_session_token(handler: BaseHTTPRequestHandler) -> str | None:
+    raw = handler.headers.get("Cookie", "")
+    jar = cookies.SimpleCookie()
+    jar.load(raw)
+    if SESSION_COOKIE not in jar:
+        return None
+    tok = (jar[SESSION_COOKIE].value or "").strip()
+    if tok.startswith("cass_"):
+        return tok
+    # Legacy HMAC cookie still counts as logged-in for static gate only.
+    if verify_session_token(tok):
+        return tok
+    return None
+
+
+def read_session_user(handler: BaseHTTPRequestHandler) -> str | None:
+    tok = read_session_token(handler)
+    if not tok:
+        return None
+    if tok.startswith("cass_"):
+        # Presence of cass_ is enough for HTML gate; gateway enforces on API. Author: kejiqing
+        return "session"
+    return verify_session_token(tok)
 
 
 def _is_private_lan_host(host: str | None) -> bool:
@@ -1040,15 +1166,6 @@ def clear_session_cookie(handler: BaseHTTPRequestHandler) -> None:
         handler.send_header("Set-Cookie", morsel.OutputString())
 
 
-def read_session_user(handler: BaseHTTPRequestHandler) -> str | None:
-    raw = handler.headers.get("Cookie", "")
-    jar = cookies.SimpleCookie()
-    jar.load(raw)
-    if SESSION_COOKIE not in jar:
-        return None
-    return verify_session_token(jar[SESSION_COOKIE].value)
-
-
 def playground_config() -> dict:
     """One default gateway (browser → host port). Optional extras via PLAYGROUND_EXTRA_GATEWAY_BASES."""
     presets: list[dict[str, str]] = []
@@ -1107,9 +1224,31 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/__admin_me__":
-            user = read_session_user(self)
+            tok = read_session_token(self)
+            if not tok:
+                send_json(self, 401, {"ok": False, "error": "not logged in"})
+                return
+            if tok.startswith("cass_"):
+                me, err = gateway_admin_me(tok)
+                if not me:
+                    send_json(self, 401, {"ok": False, "error": err or "not logged in"})
+                    return
+                send_json(
+                    self,
+                    200,
+                    {
+                        "ok": True,
+                        "user": me.get("username"),
+                        "accountId": me.get("accountId"),
+                        "systemRole": me.get("systemRole"),
+                        "systemAdmin": bool(me.get("systemAdmin")),
+                        "projectIds": me.get("projectIds") or [],
+                    },
+                )
+                return
+            user = verify_session_token(tok)
             if user:
-                send_json(self, 200, {"ok": True, "user": user})
+                send_json(self, 200, {"ok": True, "user": user, "systemAdmin": True})
             else:
                 send_json(self, 401, {"ok": False, "error": "not logged in"})
             return
@@ -1230,14 +1369,26 @@ class Handler(BaseHTTPRequestHandler):
                 return
             user = str(payload.get("user") or "").strip()
             password = str(payload.get("password") or "")
-            if not check_admin_credentials(user, password):
-                send_json(self, 401, {"error": "账号或密码错误"})
+            data, err = gateway_admin_login(user, password)
+            if not data:
+                send_json(self, 401, {"error": err or "账号或密码错误"})
                 return
-            token = make_session_token(user)
+            token = str(data.get("token") or "")
+            if not token.startswith("cass_"):
+                send_json(self, 502, {"error": "gateway returned invalid session token"})
+                return
             nxt = _safe_admin_next(str(payload.get("next") or "").strip() or None)
-            body = json.dumps({"ok": True, "user": user, "next": nxt}, ensure_ascii=False).encode(
-                "utf-8"
-            )
+            body = json.dumps(
+                {
+                    "ok": True,
+                    "user": data.get("username") or user,
+                    "accountId": data.get("accountId"),
+                    "systemRole": data.get("systemRole"),
+                    "projectIds": data.get("projectIds") or [],
+                    "next": nxt,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1359,6 +1510,15 @@ class Handler(BaseHTTPRequestHandler):
                 k.lower() == "content-type" for k in headers
             ):
                 headers["Content-Type"] = "application/json; charset=utf-8"
+
+        # Inject gateway admin session for ACL (cass_). Author: kejiqing
+        sess = read_session_token(self)
+        if sess and sess.startswith("cass_"):
+            if not any(k.lower() == "authorization" for k in headers):
+                headers["Authorization"] = f"Bearer {sess}"
+        elif _admin_proxy_requires_login(subpath) and not read_session_user(self):
+            send_json(self, 401, {"ok": False, "error": "login required"})
+            return
 
         try:
             req = urllib.request.Request(url, data=body_bytes, method=method, headers=headers)

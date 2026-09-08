@@ -1348,6 +1348,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "api",
+ "argon2",
  "async-trait",
  "axum 0.8.9",
  "base64",
@@ -1363,6 +1364,7 @@ dependencies = [
  "http",
  "percent-encoding",
  "preflight-spi",
+ "rand 0.8.6",
  "reqwest",
  "runtime",
  "serde",

@@ -1351,6 +1351,8 @@ impl GatewaySessionDb {
             include_str!("../migrations/026_gateway_session_plans.sql"),
         )
         .await?;
+        Self::run_sql_migration_file(pool, include_str!("../migrations/027_admin_accounts.sql"))
+            .await?;
         Self::migrate_cluster_id_phase3(pool).await?;
 
         Ok(())

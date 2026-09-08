@@ -69,7 +69,7 @@ e2b workers receive LLM env via **one gateway entry** — `prepare_e2b_worker_ll
 | --- | --- |
 | `CLAW_ALLOW_RELAXED_WORKER` | Enable relaxed e2b worker template |
 | `CLAW_MCP_MAX_CONCURRENT` | Worker MCP parallelism |
-| `PLAYGROUND_ADMIN_USER` / `PLAYGROUND_ADMIN_PASSWORD` | `/admin` login |
+| `PLAYGROUND_ADMIN_USER` / `PLAYGROUND_ADMIN_PASSWORD` | Seed first `system_admin` when cluster has zero accounts; then `/admin` login uses gateway `POST /v1/admin/auth/login` (multi-account RBAC by `proj_id`) |
 | `CLAW_IMAGE_PREFIX` / `CLAW_IMAGE_REGISTRY` | Release image namespace |
 
 ### Deprecated (no consumers — safe to remove from `.env`)
