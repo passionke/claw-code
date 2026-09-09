@@ -22,7 +22,7 @@ Author: kejiqing
 
 | 步 | 在哪做 | 命令 / 动作 | 成功标志 |
 |----|--------|-------------|----------|
-| A1 | GitHub | push 分支 → `claw-code-branch-worker` 跑绿 | ACR 有 `claw-code:branch-<分支名>`（amd64，给 e2b） |
+| A1 | GitHub | Actions → `claw-code-branch-worker` → **Run workflow**（手工；push 不再自动打） | ACR 有 `claw-code:branch-<分支名>`（amd64，给 e2b） |
 | A2 | workPi | `git pull` 同分支 | 部署脚本/配置对齐 |
 | A3 | workPi | `cp -n .env.workpi .env`（首次）后 `./deploy/stack/lib/workpi-branch-deploy.sh branch-<分支名>` | e2b 模板 PG `buildId` 更新；**本地 arm64** `build local` + `restart` |
 | A4 | workPi | `curl http://127.0.0.1:18088/healthz` | `ok=true`；worker 合同含新 `buildId`；`deployImageTag=local` |

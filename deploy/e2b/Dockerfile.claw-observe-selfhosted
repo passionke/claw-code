@@ -32,7 +32,8 @@ RUN printf '%s\n' \
         ': "${CLAW_GATEWAY_DATABASE_URL:?missing CLAW_GATEWAY_DATABASE_URL (sandbox create envVars)}"' \
         'mkdir -p /claw_ws/tap-traces' \
         'live_port="${CLAW_OBSERVE_LIVE_PORT:-3000}"' \
-        'exec env CLAW_CLUSTER_ID="$CLAW_CLUSTER_ID" CLAW_GATEWAY_DATABASE_URL="$CLAW_GATEWAY_DATABASE_URL" /usr/local/bin/claude-tap --tap-no-launch --tap-live --tap-host 0.0.0.0 --tap-port 8080 --tap-live-port "$live_port" --tap-target https://bootstrap.invalid/v1 --tap-output-dir /claw_ws/tap-traces --tap-no-update-check --tap-no-auto-update' \
+        'tap_client="${CLAW_TAP_CLIENT:-openai}"' \
+        'exec env CLAW_CLUSTER_ID="$CLAW_CLUSTER_ID" CLAW_GATEWAY_DATABASE_URL="$CLAW_GATEWAY_DATABASE_URL" CLAW_TAP_CLIENT="$tap_client" /usr/local/bin/claude-tap --tap-no-launch --tap-live --tap-host 0.0.0.0 --tap-port 8080 --tap-live-port "$live_port" --tap-client "$tap_client" --tap-target https://bootstrap.invalid/v1 --tap-output-dir /claw_ws/tap-traces --tap-no-update-check --tap-no-auto-update' \
         > /usr/local/bin/claw-observe-start \
     && printf '%s\n' \
         '#!/bin/sh' \

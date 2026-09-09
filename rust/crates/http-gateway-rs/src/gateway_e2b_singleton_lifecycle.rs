@@ -24,7 +24,8 @@ use crate::gateway_e2b_nas_api_settings::e2b_nas_api_template_from_env;
 use crate::gateway_e2b_observe_settings::e2b_observe_template_from_env;
 use crate::gateway_e2b_ovs_settings::load_e2b_ovs_template_id;
 use crate::gateway_e2b_worker_settings::e2b_project_worker_renew_interval_secs_from_env;
-use crate::gateway_global_settings::get_gateway_global_settings;
+use crate::gateway_global_settings::{get_gateway_global_settings, load_active_llm_runtime};
+use crate::gateway_tap_client::{tap_client_from_base_model_url, DEFAULT_TAP_CLIENT};
 use crate::pool::interactive_backend::{
     e2b_observe_is_enabled, interactive_backend_is_e2b, E2bNasApiSingleton,
 };
@@ -701,6 +702,18 @@ async fn ensure_observe(
     // Create by alias on current e2b; ignore stale PG tpl_*. Author: kejiqing
     let template = e2b_observe_template_from_env();
     let sandbox_db_url = sandbox_database_url()?;
+    let tap_client = match load_active_llm_runtime(db).await {
+        Ok(Some(rt)) => tap_client_from_base_model_url(&rt.base_model_url).to_string(),
+        Ok(None) => DEFAULT_TAP_CLIENT.to_string(),
+        Err(e) => {
+            warn!(
+                target: "claw_e2b_singleton",
+                error = %e,
+                "load active LLM for observe tap_client failed; using default"
+            );
+            DEFAULT_TAP_CLIENT.to_string()
+        }
+    };
     let live_port = observe_live_port();
     let (settings, _, _) = get_gateway_global_settings(db)
         .await
@@ -796,10 +809,11 @@ async fn ensure_observe(
         target: "claw_e2b_singleton",
         template = %template,
         cluster_id = %cluster_id,
+        tap_client = %tap_client,
         "create observe singleton"
     );
     let handle = client
-        .create_observe_singleton(&template, &cluster_id, &sandbox_db_url)
+        .create_observe_singleton(&template, &cluster_id, &sandbox_db_url, &tap_client)
         .await?;
     let live_base = service_base_url(
         client,

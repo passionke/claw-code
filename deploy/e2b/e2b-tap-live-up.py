@@ -92,6 +92,44 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def _tap_client_from_base_model_url(raw: str) -> str:
+    """Match http-gateway-rs gateway_tap_client path rules. Author: kejiqing"""
+    s = (raw or "").strip()
+    if not s:
+        return "openai"
+    lower = s.lower()
+    for prefix in ("https://", "http://"):
+        if lower.startswith(prefix):
+            rest = s[len(prefix) :]
+            break
+    else:
+        rest = s
+    slash = rest.find("/")
+    path = rest[slash:] if slash >= 0 else ""
+    path = path.split("?", 1)[0].split("#", 1)[0].lower()
+    while "//" in path:
+        path = path.replace("//", "/")
+    path = path.rstrip("/") or ""
+    if path.endswith("/chat/completions"):
+        return "openai"
+    if path.endswith("/messages"):
+        return "claude"
+    if path.endswith("/responses"):
+        return "codex"
+    return "openai"
+
+
+def _resolve_observe_tap_client() -> str:
+    explicit = _env("CLAW_TAP_CLIENT")
+    if explicit:
+        return explicit
+    for key in ("UPSTREAM_OPENAI_BASE_URL", "OPENAI_BASE_URL"):
+        base = _env(key)
+        if base:
+            return _tap_client_from_base_model_url(base)
+    return "openai"
+
+
 def _is_self_hosted(api_url: str) -> bool:
     u = api_url.lower()
     return not ("aliyuncs.com" in u or "e2b.fc." in u)
@@ -241,6 +279,7 @@ def _create_observe_sandbox(
     timeout_secs: int,
     cluster_id: str,
     db_url: str,
+    tap_client: str,
 ) -> tuple[str, str]:
     body: dict[str, Any] = {
         "templateID": template,
@@ -252,6 +291,7 @@ def _create_observe_sandbox(
         "envVars": {
             "CLAW_CLUSTER_ID": cluster_id,
             "CLAW_GATEWAY_DATABASE_URL": db_url,
+            "CLAW_TAP_CLIENT": tap_client,
         },
     }
     nas = _nas_config_body()
@@ -413,7 +453,11 @@ def main() -> int:
             print(f"==> reuse observe sandbox {sandbox_id}", file=sys.stderr)
 
     if not sandbox_id:
-        print(f"==> create observe sandbox (template={template}, cluster={cluster_id})", file=sys.stderr)
+        tap_client = _resolve_observe_tap_client()
+        print(
+            f"==> create observe sandbox (template={template}, cluster={cluster_id}, tap_client={tap_client})",
+            file=sys.stderr,
+        )
         sandbox_id, domain = _create_observe_sandbox(
             api_url=api_url,
             api_key=api_key,
@@ -422,6 +466,7 @@ def main() -> int:
             timeout_secs=timeout_secs,
             cluster_id=cluster_id,
             db_url=sandbox_db_url,
+            tap_client=tap_client,
         )
         print(f"==> sandbox_id={sandbox_id}", file=sys.stderr)
         print(f"==> apply sandbox TTL {timeout_secs}s (POST /timeout)", file=sys.stderr)

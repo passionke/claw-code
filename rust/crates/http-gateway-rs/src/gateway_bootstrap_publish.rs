@@ -412,19 +412,14 @@ fn basic_auth_from_docker_config(registry_host: &str) -> Option<(String, String)
     None
 }
 
-fn registry_basic_credentials(registry_host: &str) -> Result<(String, String), String> {
+fn registry_basic_credentials(registry_host: &str) -> Option<(String, String)> {
     if let (Some(u), Some(p)) = (
         env_nonempty("ACR_USERNAME").or_else(|| env_nonempty("ACR_USER")),
         env_nonempty("ACR_PASSWORD").or_else(|| env_nonempty("ACR_PASSWORK")),
     ) {
-        return Ok((u, p));
+        return Some((u, p));
     }
-    basic_auth_from_docker_config(registry_host).ok_or_else(|| {
-        format!(
-            "ACR credentials missing for {registry_host}: set ACR_USERNAME/ACR_PASSWORD \
-             or mount docker config (CLAW_DOCKER_CONFIG / /run/claw/claw/docker-config.json)"
-        )
-    })
+    basic_auth_from_docker_config(registry_host)
 }
 
 fn parse_bearer_challenge(www: &str) -> Result<(String, String, String), String> {
@@ -454,13 +449,15 @@ fn parse_bearer_challenge(www: &str) -> Result<(String, String, String), String>
     ))
 }
 
+/// Exchange registry Bearer for tags/list. Prefer Basic when creds exist; else anonymous.
+/// Author: kejiqing
 async fn registry_bearer_token(
     client: &reqwest::Client,
     registry_host: &str,
     repository: &str,
 ) -> Result<String, String> {
     use base64::Engine;
-    let (user, pass) = registry_basic_credentials(registry_host)?;
+    let creds = registry_basic_credentials(registry_host);
     let probe = format!("https://{registry_host}/v2/{repository}/tags/list?n=1");
     let resp = client
         .get(&probe)
@@ -496,16 +493,23 @@ async fn registry_bearer_token(
         }
         q.append_pair("scope", &scope);
     }
-    let basic = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
-    let tok_resp = client
-        .get(url)
-        .header(reqwest::header::AUTHORIZATION, format!("Basic {basic}"))
+    let mut tok_req = client.get(url);
+    let auth_mode = if let Some((user, pass)) = &creds {
+        let basic = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
+        tok_req = tok_req.header(reqwest::header::AUTHORIZATION, format!("Basic {basic}"));
+        "basic"
+    } else {
+        "anonymous"
+    };
+    let tok_resp = tok_req
         .send()
         .await
-        .map_err(|e| format!("token exchange: {e}"))?;
+        .map_err(|e| format!("token exchange ({auth_mode}): {e}"))?;
     if !tok_resp.status().is_success() {
         return Err(format!(
-            "token exchange HTTP {}",
+            "registry token exchange failed ({auth_mode}) HTTP {} for {registry_host}/{repository}; \
+             tags/list needs pull access — set ACR_USERNAME/ACR_PASSWORD (or docker config) if the repo is private, \
+             or check registry/network",
             tok_resp.status().as_u16()
         ));
     }

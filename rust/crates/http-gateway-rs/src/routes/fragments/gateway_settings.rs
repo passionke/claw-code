@@ -601,6 +601,12 @@ pub(crate) async fn apply_gateway_llm_model_with_sync(
     model_id: &str,
     model_rev: Option<&str>,
 ) -> Result<gateway_global_settings::ApplyLlmModelResponse, ApiError> {
+    let old_url = gateway_global_settings::load_active_llm_runtime(&state.session_db)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.base_model_url)
+        .unwrap_or_default();
     let mut resp =
         gateway_global_settings::apply_llm_model_by_id(&state.session_db, model_id, model_rev)
             .await
@@ -622,6 +628,36 @@ pub(crate) async fn apply_gateway_llm_model_with_sync(
                 .or_else(|| Some("local clawTap restarted after LLM apply".into()));
         } else if let Some(msg) = restart.message {
             resp.outcome.message = Some(msg);
+        }
+    }
+    let new_url = gateway_global_settings::load_active_llm_runtime(&state.session_db)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.base_model_url)
+        .unwrap_or_default();
+    if gateway_tap_client::tap_client_changed(&old_url, &new_url) {
+        if let Some(client) = state.pool_clients.e2b_sandbox_client() {
+            if pool::interactive_backend::e2b_observe_is_enabled() {
+                match gateway_e2b_observe_reset::reset_observe_tap(&state.session_db, client).await
+                {
+                    Ok(_) => {
+                        info!(
+                            target: "gateway_llm_apply",
+                            old_tap_client = %gateway_tap_client::tap_client_from_base_model_url(&old_url),
+                            new_tap_client = %gateway_tap_client::tap_client_from_base_model_url(&new_url),
+                            "observe reset after LLM apply tap_client change"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            target: "gateway_llm_apply",
+                            error = %e,
+                            "observe reset after LLM apply failed (best-effort)"
+                        );
+                    }
+                }
+            }
         }
     }
     Ok(resp)

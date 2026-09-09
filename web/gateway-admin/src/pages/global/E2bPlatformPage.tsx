@@ -90,8 +90,9 @@ export default function E2bPlatformPage() {
         description={
           <Typography.Paragraph style={{ marginBottom: 0 }}>
             e2b 平台地址与密钥来自仓库 <Typography.Text code>.env</Typography.Text>
-            ，改完需重启 Gateway。下方「制作 / 升级模板」与集群 Init 同一路径：选 ACR/CI tag →
-            异步发布 worker / relaxed（含 OVS）/ observe / nas-api，无需重建 gateway 镜像。
+            ，改完需重启 Gateway。下方「制作 / 升级模板」与集群 Init 同一路径：选或手填 CI/镜像
+            tag → 异步发布 worker / relaxed（含 OVS）/ observe / nas-api，无需重建 gateway
+            镜像；清单拉取失败时仍可手填发布。
           </Typography.Paragraph>
         }
       />

@@ -17,6 +17,7 @@ use crate::gateway_llm_cluster_store::resolve_llm_cluster_id;
 use crate::gateway_project_llm::{
     load_active_project_llm_runtime, load_project_inference_settings, ProjectObservePublic,
 };
+use crate::gateway_tap_client::tap_client_from_base_model_url;
 use crate::pool::interactive_backend::e2b_observe_is_enabled;
 use crate::session_db::{GatewayLlmProjectObserveRow, GatewaySessionDb};
 
@@ -209,7 +210,7 @@ async fn ensure_project_observe_inner(
     let active = load_active_project_llm_runtime(db, proj_id)
         .await
         .map_err(|e| e.to_string())?;
-    if active.is_none() {
+    let Some(active) = active else {
         teardown_project_observe(db, client, proj_id).await?;
         let settings = load_project_inference_settings(db, proj_id).await?;
         return Ok(ProjectObserveResetResponse {
@@ -218,7 +219,8 @@ async fn ensure_project_observe_inner(
             sandbox_id: None,
             message: Some("project inherits global LLM; project observe torn down".into()),
         });
-    }
+    };
+    let tap_client = tap_client_from_base_model_url(&active.base_model_url);
 
     let cluster_id = gateway_cluster_id()?;
     let template = load_e2b_observe_template_id(db)
@@ -366,10 +368,11 @@ async fn ensure_project_observe_inner(
         template = %template,
         cluster_id = %cluster_id,
         proj_id,
+        tap_client = %tap_client,
         "create project observe"
     );
     let handle = client
-        .create_observe_proj_singleton(&template, &cluster_id, proj_id, &sandbox_db_url)
+        .create_observe_proj_singleton(&template, &cluster_id, proj_id, &sandbox_db_url, tap_client)
         .await?;
     let live_base = service_base_url(
         client,

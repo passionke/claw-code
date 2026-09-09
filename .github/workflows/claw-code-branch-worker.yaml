@@ -6,6 +6,7 @@
 #   branch-<sanitized-branch>   e.g. branch-feat-delegate-output-yield
 #   dev-<sha12>                 immutable commit pin
 #
+# Manual only (`workflow_dispatch`) — no auto push on feat/fix (too heavy). Author: kejiqing
 # Do NOT use release-v* prefix here.
 name: claw-code-branch-worker
 
@@ -16,10 +17,6 @@ on:
         description: "Branch to build (empty = triggering ref)"
         required: false
         default: ""
-  push:
-    branches:
-      - "feat/**"
-      - "fix/**"
 
 permissions:
   contents: read
