@@ -63,6 +63,7 @@ pub mod gateway_project_e2b_worker;
 pub mod gateway_project_llm;
 pub mod gateway_project_observe;
 pub mod gateway_strict_landlock_settings;
+pub mod gateway_tap_client;
 pub mod gateway_translate;
 pub mod live_report_audit;
 pub mod llm_probe;

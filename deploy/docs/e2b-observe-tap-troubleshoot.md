@@ -36,6 +36,8 @@ flowchart LR
 | **8080** | `http://8080-{sandboxId}.{CLAW_E2B_DOMAIN}` | **LLM 代理**（worker solve 的 `OPENAI_BASE_URL`） |
 
 - **单例元数据：** e2b sandbox `metadata.clawRole=observe-singleton`，`metadata.clusterId=CLAW_CLUSTER_ID`
+- **创建 envVars：** `CLAW_CLUSTER_ID` + `CLAW_GATEWAY_DATABASE_URL` + **`CLAW_TAP_CLIENT`**（gateway 按 active LLM `baseModelUrl` **path** 推断：`/messages`→`claude`，`/responses`→`codex`，`/chat/completions` 或裸 `/v1`→`openai`）
+- **模板 start：** `claw-observe-start` 读 `--tap-client "${CLAW_TAP_CLIENT:-openai}"`（**发版后各环境重建一次 observe 模板**即可；之后换协议靠 Apply/reset，不必再为协议改模板）
 - **PG 契约：** `gateway_global_settings.settings_json.clawTap`（按 **cluster_id** 分行，见 §4）
 - **不由 Admin 手填 252 IP**；`observe-tap-up` 创建沙箱后自动写入 `proxyBaseUrl` / `liveBaseUrl` / `e2bObserveSandboxId`
 

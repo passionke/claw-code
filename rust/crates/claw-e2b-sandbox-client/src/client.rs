@@ -26,6 +26,30 @@ pub const SINGLETON_ROLE_OBSERVE_PROJ: &str = "observe-proj";
 /// Per-project worker `metadata.clawRole`.
 pub const WARM_PROJ_ROLE: &str = "warm-proj";
 
+/// Observe sandbox env key for claude-tap `--tap-client`. Author: kejiqing
+pub const CLAW_TAP_CLIENT_ENV: &str = "CLAW_TAP_CLIENT";
+
+/// Build observe create `envVars` (global or project). Author: kejiqing
+#[must_use]
+pub fn observe_env_vars(
+    cluster_id: &str,
+    sandbox_database_url: &str,
+    tap_client: &str,
+    proj_id: Option<i64>,
+) -> BTreeMap<String, String> {
+    let mut env_vars = BTreeMap::new();
+    env_vars.insert("CLAW_CLUSTER_ID".to_string(), cluster_id.to_string());
+    env_vars.insert(
+        "CLAW_GATEWAY_DATABASE_URL".to_string(),
+        sandbox_database_url.to_string(),
+    );
+    env_vars.insert(CLAW_TAP_CLIENT_ENV.to_string(), tap_client.to_string());
+    if let Some(pid) = proj_id {
+        env_vars.insert("CLAW_PROJ_ID".to_string(), pid.to_string());
+    }
+    env_vars
+}
+
 /// e2b `POST /sandboxes` `templateID`: pin a specific build when `build_id` is set.
 /// Self-hosted registry resolves raw build UUID via `build_index` (`resolve_target`).
 pub fn e2b_sandbox_template_ref(template_id: &str, build_id: Option<&str>) -> String {
@@ -1077,13 +1101,9 @@ impl E2bSandboxClient {
         template_id: &str,
         cluster_id: &str,
         sandbox_database_url: &str,
+        tap_client: &str,
     ) -> Result<E2bSandboxHandle, String> {
-        let mut env_vars = BTreeMap::new();
-        env_vars.insert("CLAW_CLUSTER_ID".to_string(), cluster_id.to_string());
-        env_vars.insert(
-            "CLAW_GATEWAY_DATABASE_URL".to_string(),
-            sandbox_database_url.to_string(),
-        );
+        let env_vars = observe_env_vars(cluster_id, sandbox_database_url, tap_client, None);
         self.create_singleton_sandbox(
             template_id,
             cluster_id,
@@ -1102,17 +1122,13 @@ impl E2bSandboxClient {
         cluster_id: &str,
         proj_id: i64,
         sandbox_database_url: &str,
+        tap_client: &str,
     ) -> Result<E2bSandboxHandle, String> {
         if self.config().is_self_hosted() {
             let _ = self.refresh_e2b_platform_nas().await;
         }
-        let mut env_vars = BTreeMap::new();
-        env_vars.insert("CLAW_CLUSTER_ID".to_string(), cluster_id.to_string());
-        env_vars.insert(
-            "CLAW_GATEWAY_DATABASE_URL".to_string(),
-            sandbox_database_url.to_string(),
-        );
-        env_vars.insert("CLAW_PROJ_ID".to_string(), proj_id.to_string());
+        let env_vars =
+            observe_env_vars(cluster_id, sandbox_database_url, tap_client, Some(proj_id));
 
         let mut metadata = BTreeMap::new();
         metadata.insert(
@@ -1794,6 +1810,40 @@ mod nas_addr_tests {
 #[cfg(test)]
 mod client_tests {
     use super::*;
+
+    #[test]
+    fn observe_env_vars_global_has_tap_client_no_proj() {
+        let m = observe_env_vars("c1", "postgres://db/x", "codex", None);
+        assert_eq!(m.get("CLAW_CLUSTER_ID").map(String::as_str), Some("c1"));
+        assert_eq!(
+            m.get("CLAW_GATEWAY_DATABASE_URL").map(String::as_str),
+            Some("postgres://db/x")
+        );
+        assert_eq!(
+            m.get(CLAW_TAP_CLIENT_ENV).map(String::as_str),
+            Some("codex")
+        );
+        assert!(!m.contains_key("CLAW_PROJ_ID"));
+    }
+
+    #[test]
+    fn observe_env_vars_project_includes_proj_id() {
+        let m = observe_env_vars("c1", "postgres://db/x", "claude", Some(42));
+        assert_eq!(
+            m.get(CLAW_TAP_CLIENT_ENV).map(String::as_str),
+            Some("claude")
+        );
+        assert_eq!(m.get("CLAW_PROJ_ID").map(String::as_str), Some("42"));
+    }
+
+    #[test]
+    fn observe_env_vars_preserves_tap_client_literal() {
+        let m = observe_env_vars("c", "postgres://x", "openai", None);
+        assert_eq!(
+            m.get(CLAW_TAP_CLIENT_ENV).map(String::as_str),
+            Some("openai")
+        );
+    }
 
     #[test]
     fn guest_nas_mount_probe_lists_mount_dirs() {

@@ -1,4 +1,4 @@
-import { Alert, Button, Form, Select, Space, Table, Tag, Typography, message } from "antd";
+import { Alert, AutoComplete, Button, Form, Space, Table, Tag, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
@@ -17,7 +17,7 @@ type Props = {
   onNext?: () => void;
   /**
    * wizard — cluster init step (shows「下一步」).
-   * ops — post-init Admin：gateway 不变时用 ACR tag 重打 e2b 模板（CLI 升级）。
+   * ops — post-init Admin：gateway 不变时用 CI/镜像 tag 重打 e2b 模板（CLI 升级）。
    */
   mode?: "wizard" | "ops";
 };
@@ -29,7 +29,7 @@ function publishLogLines(job: BootstrapPublishJob | undefined): string[] {
 }
 
 /**
- * Same product path as bootstrap init: async publish from ACR/CI tag.
+ * Same product path as bootstrap init: async publish from CI/镜像 tag.
  * Used in wizard and on e2b 平台 for later CLI/template upgrades. Author: kejiqing
  */
 export default function TemplateBuildStep({
@@ -44,6 +44,7 @@ export default function TemplateBuildStep({
   const [tagsLoading, setTagsLoading] = useState(false);
   const [tagOptions, setTagOptions] = useState<{ value: string; label: string }[]>([]);
   const [tagsMeta, setTagsMeta] = useState<BootstrapCiImageTagsResponse | null>(null);
+  const [tagsLoadError, setTagsLoadError] = useState<string | null>(null);
 
   const job: BootstrapPublishJob | undefined = snap.publishJob;
   const jobRunning = job?.phase === "running";
@@ -64,6 +65,7 @@ export default function TemplateBuildStep({
   const loadTags = useCallback(async () => {
     if (!gatewayBase) return;
     setTagsLoading(true);
+    setTagsLoadError(null);
     try {
       const data = await proxyHttp<BootstrapCiImageTagsResponse>(
         gatewayBase,
@@ -74,13 +76,21 @@ export default function TemplateBuildStep({
       setTagOptions(data.tags.map((t) => ({ value: t, label: t })));
       const current = form.getFieldValue("imageTag") as string | undefined;
       const pick =
-        (current && data.tags.includes(current) && current) ||
+        (current && current.trim()) ||
         data.suggestedTag ||
         snap.suggestedCiImageTag ||
         data.tags[0];
       if (pick) form.setFieldsValue({ imageTag: pick });
     } catch (e) {
-      message.error(e instanceof Error ? e.message : "拉取 ACR tag 清单失败");
+      const msg = e instanceof Error ? e.message : "拉取 tag 清单失败";
+      setTagsLoadError(msg);
+      setTagsMeta(null);
+      setTagOptions([]);
+      const fallback =
+        (form.getFieldValue("imageTag") as string | undefined)?.trim() ||
+        snap.suggestedCiImageTag;
+      if (fallback) form.setFieldsValue({ imageTag: fallback });
+      message.warning(`${msg}（仍可手填 tag 发布）`);
     } finally {
       setTagsLoading(false);
     }
@@ -134,7 +144,7 @@ export default function TemplateBuildStep({
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       {mode === "ops" ? (
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          Gateway 镜像不变时，选新的 CI/ACR tag（含升级后的{" "}
+          Gateway 镜像不变时，选或手填 CI/镜像 tag（含升级后的{" "}
           <Typography.Text code>claw</Typography.Text>
           ）重打 e2b 核心模板（worker / relaxed+OVS / observe / nas-api）。与集群
           Init 里「制作模板」同一条 API；新 build 需项目 worker reset 或沙箱失活后才会换上。
@@ -143,6 +153,7 @@ export default function TemplateBuildStep({
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
           契约：<Typography.Text code>POST</Typography.Text> 只受理任务并立刻返回；进度靠{" "}
           <Typography.Text code>GET /bootstrap/status</Typography.Text> 轮询（约 3s），不走同步长连接。
+          Tag 可从清单选，也可直接手填。
         </Typography.Paragraph>
       )}
 
@@ -152,21 +163,32 @@ export default function TemplateBuildStep({
         </Typography.Text>
       ) : null}
 
+      {tagsLoadError ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="无法拉取 tag 清单"
+          description={`${tagsLoadError}。可手填已知 tag（如 release-v1.8.15）后发布。`}
+        />
+      ) : null}
+
       <Form form={form} layout="inline" style={{ gap: 8 }}>
         <Form.Item
           name="imageTag"
-          label="CI/ACR tag"
-          rules={[{ required: true, message: "请从清单选择 tag" }]}
+          label="镜像 tag"
+          rules={[{ required: true, message: "请选择或手填 tag" }]}
         >
-          <Select
-            showSearch
-            placeholder={tagsLoading ? "加载 tag…" : "选择 release / branch tag"}
+          <AutoComplete
             options={tagOptions}
+            placeholder={tagsLoading ? "加载 tag…" : "选择或手填 release / branch tag"}
             style={{ width: 320 }}
             disabled={jobRunning || accepting}
-            loading={tagsLoading}
-            optionFilterProp="label"
-            notFoundContent={tagsLoading ? "加载中…" : "无可用 tag"}
+            filterOption={(input, option) =>
+              (option?.value ?? "")
+                .toString()
+                .toLowerCase()
+                .includes(input.trim().toLowerCase())
+            }
           />
         </Form.Item>
         <Form.Item>

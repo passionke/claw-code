@@ -240,6 +240,12 @@ pub(crate) async fn apply_project_llm_model_head_handler(
     State(state): State<AppState>,
     AxumPath((proj_id, model_id)): AxumPath<(i64, String)>,
 ) -> Result<Json<gateway_global_settings::ApplyLlmModelResponse>, ApiError> {
+    let old_url = gateway_project_llm::load_active_project_llm_runtime(&state.session_db, proj_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.base_model_url)
+        .unwrap_or_default();
     let resp = gateway_project_llm::apply_project_llm_model_by_id(
         &state.session_db,
         proj_id,
@@ -248,10 +254,7 @@ pub(crate) async fn apply_project_llm_model_head_handler(
     )
     .await
     .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
-    if let Some(client) = state.pool_clients.e2b_sandbox_client() {
-        let _ = gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
-            .await;
-    }
+    maybe_refresh_project_observe_after_llm_apply(&state, proj_id, &old_url).await;
     Ok(Json(resp))
 }
 
@@ -274,6 +277,12 @@ pub(crate) async fn apply_project_llm_model_revision_handler(
     State(state): State<AppState>,
     AxumPath((proj_id, model_id, model_rev)): AxumPath<(i64, String, String)>,
 ) -> Result<Json<gateway_global_settings::ApplyLlmModelResponse>, ApiError> {
+    let old_url = gateway_project_llm::load_active_project_llm_runtime(&state.session_db, proj_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.base_model_url)
+        .unwrap_or_default();
     let resp = gateway_project_llm::apply_project_llm_model_by_id(
         &state.session_db,
         proj_id,
@@ -282,11 +291,50 @@ pub(crate) async fn apply_project_llm_model_revision_handler(
     )
     .await
     .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
-    if let Some(client) = state.pool_clients.e2b_sandbox_client() {
+    maybe_refresh_project_observe_after_llm_apply(&state, proj_id, &old_url).await;
+    Ok(Json(resp))
+}
+
+async fn maybe_refresh_project_observe_after_llm_apply(
+    state: &AppState,
+    proj_id: i64,
+    old_url: &str,
+) {
+    let Some(client) = state.pool_clients.e2b_sandbox_client() else {
+        return;
+    };
+    let new_url = gateway_project_llm::load_active_project_llm_runtime(&state.session_db, proj_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.base_model_url)
+        .unwrap_or_default();
+    if gateway_tap_client::tap_client_changed(old_url, &new_url) {
+        match gateway_project_observe::reset_project_observe(&state.session_db, client, proj_id)
+            .await
+        {
+            Ok(_) => {
+                info!(
+                    target: "gateway_project_llm_apply",
+                    proj_id,
+                    old_tap_client = %gateway_tap_client::tap_client_from_base_model_url(old_url),
+                    new_tap_client = %gateway_tap_client::tap_client_from_base_model_url(&new_url),
+                    "project observe reset after LLM apply tap_client change"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    target: "gateway_project_llm_apply",
+                    proj_id,
+                    error = %e,
+                    "project observe reset after LLM apply failed (best-effort)"
+                );
+            }
+        }
+    } else {
         let _ = gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
             .await;
     }
-    Ok(Json(resp))
 }
 
 #[utoipa::path(
