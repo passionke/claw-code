@@ -372,13 +372,7 @@ async fn ensure_project_observe_inner(
         "create project observe"
     );
     let handle = client
-        .create_observe_proj_singleton(
-            &template,
-            &cluster_id,
-            proj_id,
-            &sandbox_db_url,
-            tap_client,
-        )
+        .create_observe_proj_singleton(&template, &cluster_id, proj_id, &sandbox_db_url, tap_client)
         .await?;
     let live_base = service_base_url(
         client,
