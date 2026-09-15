@@ -640,7 +640,7 @@ mod tests {
         seed_steerable(&db, other).await;
         db.set_project_role(other, "normal").await.unwrap();
         let r = db
-            .inbox_enqueue(&sid, other, "user", "x", None, None, None, None, cap)
+            .inbox_enqueue(&sid, other, "user", "x", None, cap, None, None, None)
             .await;
         assert!(matches!(r, Err(InboxError::Forbidden(_))));
 
@@ -651,10 +651,10 @@ mod tests {
                 "user",
                 &format!("m{i}"),
                 None,
-                None,
-                None,
-                None,
                 cap,
+                None,
+                None,
+                None,
             )
             .await
             .unwrap();
@@ -666,10 +666,10 @@ mod tests {
             "mailbox",
             "m3",
             None,
+            cap,
             Some(&from),
             None,
             None,
-            cap,
         )
         .await
         .unwrap();
@@ -698,10 +698,10 @@ mod tests {
                 "user",
                 "same",
                 Some("k1"),
-                None,
-                None,
-                None,
                 cap,
+                None,
+                None,
+                None,
             )
             .await
             .unwrap();
@@ -712,10 +712,10 @@ mod tests {
                 "user",
                 "same",
                 Some("k1"),
-                None,
-                None,
-                None,
                 cap,
+                None,
+                None,
+                None,
             )
             .await
             .unwrap();
@@ -724,7 +724,7 @@ mod tests {
 
         let big = "x".repeat(cap.body_max_bytes + 1);
         let err = db
-            .inbox_enqueue(&sid, proj_id, "user", &big, None, None, None, None, cap)
+            .inbox_enqueue(&sid, proj_id, "user", &big, None, cap, None, None, None)
             .await;
         assert!(matches!(err, Err(InboxError::BadRequest(_))));
 
@@ -752,10 +752,10 @@ mod tests {
             "user",
             &"a".repeat(30),
             None,
-            None,
-            None,
-            None,
             cap,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -765,10 +765,10 @@ mod tests {
             "user",
             &"b".repeat(30),
             None,
-            None,
-            None,
-            None,
             cap,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -799,7 +799,7 @@ mod tests {
             .unwrap();
         let cap = InboxCapacity::from_parts(8, 1024, Some(4), Some(4096)).unwrap();
         let missing = db
-            .inbox_enqueue(&sid, proj_id, "mailbox", "hi", None, None, None, None, cap)
+            .inbox_enqueue(&sid, proj_id, "mailbox", "hi", None, cap, None, None, None)
             .await;
         assert!(matches!(missing, Err(InboxError::BadRequest(_))));
 
@@ -811,10 +811,10 @@ mod tests {
             "mailbox",
             "reply body",
             None,
+            cap,
             Some(&from),
             Some("msg_a"),
-            Some(&refs),
-            cap,
+            Some(refs.as_slice()),
         )
         .await
         .unwrap();
