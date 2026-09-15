@@ -99,6 +99,8 @@ pub mod session_ovs_api;
 pub mod session_terminal_api;
 pub mod skill_archive;
 pub mod solve_llm_route;
+pub mod session_inbox;
+pub mod inbox_capacity;
 pub mod task_status;
 pub mod turn_id;
 pub mod turn_timeline_api;

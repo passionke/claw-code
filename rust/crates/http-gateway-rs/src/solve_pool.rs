@@ -232,6 +232,13 @@ pub(crate) async fn run_solve_request_docker(
         &mut effective_allowed_tools,
         ask_user_question_enabled,
     );
+    let inbox_enabled = matches!(
+        state.session_db.get_project_role(req.proj_id).await.as_deref(),
+        Ok(crate::master_observer::PROJECT_ROLE_STEERABLE)
+    );
+    if inbox_enabled {
+        gateway_solve_turn::ensure_inbox_reply_in_allowed_tools(&mut effective_allowed_tools);
+    }
     let task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),
@@ -396,13 +403,23 @@ pub(crate) async fn run_solve_request_docker(
     // Tap usage aggregation keys every LLM call by turn. Author: kejiqing
     exec_env.insert("CLAW_SESSION_ID".to_string(), session_id.clone());
     exec_env.insert("CLAW_TURN_ID".to_string(), turn_id.clone());
-    // delegate_project_tool in e2b worker callbacks gateway HTTP APIs. Author: kejiqing
-    if pool_id == E2B_POOL_ID {
-        let base = state.gateway_identity.gateway_base.trim();
-        if !base.is_empty() {
-            exec_env.insert("CLAW_GATEWAY_BASE".to_string(), base.to_string());
+    // Worker callbacks (delegate + inbox drain) need gateway base. Author: kejiqing
+    let base = state.gateway_identity.gateway_base.trim();
+    if !base.is_empty() {
+        exec_env.insert("CLAW_GATEWAY_BASE".to_string(), base.to_string());
+    }
+    exec_env.insert("CLAW_PROJ_ID".to_string(), req.proj_id.to_string());
+    exec_env.insert(
+        "CLAW_CLUSTER_ID".to_string(),
+        state.session_db.cluster_id().to_string(),
+    );
+    if let Ok(role) = state.session_db.get_project_role(req.proj_id).await {
+        if role == crate::master_observer::PROJECT_ROLE_STEERABLE {
+            exec_env.insert(
+                gateway_solve_turn::ENV_INBOX_ENABLED.to_string(),
+                "1".to_string(),
+            );
         }
-        exec_env.insert("CLAW_PROJ_ID".to_string(), req.proj_id.to_string());
     }
     let exec_fut = pool.exec_solve(
         lease_cleanup.lease.as_ref().expect("lease set for exec"),

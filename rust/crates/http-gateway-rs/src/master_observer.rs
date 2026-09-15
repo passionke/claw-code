@@ -20,6 +20,8 @@ pub const PROJECT_ROLE_MASTER: &str = "master";
 pub const PROJECT_ROLE_OBSERVATION: &str = "observation";
 pub const PROJECT_ROLE_ROUTER: &str = "router";
 pub const PROJECT_ROLE_KNOWLEDGE_BASE: &str = "knowledge_base";
+/// Session may open gateway inbox + mid-turn steer drain. Author: kejiqing
+pub const PROJECT_ROLE_STEERABLE: &str = "steerable";
 
 pub const MASTER_MCP_SERVER_NAME: &str = "claw-master-observer";
 pub const MASTER_MCP_HTTP_PATH_PREFIX: &str = "/v1/master";
@@ -399,9 +401,10 @@ pub fn validate_project_role(role: &str) -> Result<&str, String> {
         | PROJECT_ROLE_MASTER
         | PROJECT_ROLE_OBSERVATION
         | PROJECT_ROLE_ROUTER
-        | PROJECT_ROLE_KNOWLEDGE_BASE => Ok(role.trim()),
+        | PROJECT_ROLE_KNOWLEDGE_BASE
+        | PROJECT_ROLE_STEERABLE => Ok(role.trim()),
         other => Err(format!(
-            "invalid project_role={other:?}; expected normal|master|observation|router|knowledge_base"
+            "invalid project_role={other:?}; expected normal|master|observation|router|knowledge_base|steerable"
         )),
     }
 }
@@ -1290,6 +1293,7 @@ mod tests {
         assert_eq!(validate_project_role(" master ").unwrap(), "master");
         assert_eq!(validate_project_role("observation").unwrap(), "observation");
         assert_eq!(validate_project_role("router").unwrap(), "router");
+        assert_eq!(validate_project_role("steerable").unwrap(), "steerable");
         assert!(validate_project_role("boss").is_err());
         assert!(validate_project_role("").is_err());
     }

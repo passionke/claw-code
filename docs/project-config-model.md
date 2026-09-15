@@ -222,7 +222,9 @@ Admin：Rules / Skills / MCP / **CLAUDE.md** 编辑页折叠面板「条目历�
 
 ## Master / 观察空间（观察者 Agent）
 
-**角色**：`project_config.project_role` = `normal` | `master` | `observation`。
+**角色**：`project_config.project_role` = `normal` | `master` | `observation` | `steerable`。
+
+**`steerable`**：session 可开 Gateway inbox（收信/阅读落库）；同 turn 内 mid-turn steer drain；可回信工具 `inbox_reply`（地址 `sessionId@projId.clusterId`）。与 `mailbox` source（投递方）勿混——`mailbox` 不是 role 名。
 
 **配对**：`PUT /v1/projects/{master}/apprentices` body 推荐
 `{ "apprentices": [{ "apprenticeProjId", "gatewayBase?" }] }`（`gatewayBase` 空/省略 = 本 gateway；可填 IP、`host:port` 或 `http(s)://…`）。
