@@ -53,14 +53,14 @@ use tools::{
 
 pub mod agent_orchestration;
 pub mod ask_user;
-pub mod inbox_address;
-pub mod inbox_reply;
-pub mod inbox_steer;
 pub mod complete_router_turn;
 pub mod delegate_project_tool;
 pub mod entity_labels;
 pub mod extra_session_bizdate;
 pub mod gateway_stdout;
+pub mod inbox_address;
+pub mod inbox_reply;
+pub mod inbox_steer;
 #[cfg(test)]
 mod integ_subagent_escape;
 pub mod interaction_mode;
@@ -85,12 +85,6 @@ pub use ask_user::{
     apply_ask_user_tool_gate, ask_user_question_in_agent_from_profile,
     resolve_ask_user_question_enabled, ASK_USER_QUESTION_TOOL_NAME,
 };
-pub use inbox_reply::{
-    ensure_inbox_reply_in_allowed_tools, inbox_reply_tool_definition, run_inbox_reply,
-    InboxReplyInput, INBOX_REPLY_TOOL_NAME,
-};
-pub use inbox_steer::{maybe_http_inbox_steer, ENV_INBOX_ENABLED};
-pub use inbox_address::{parse_mailbox_address, MailboxAddress};
 pub use complete_router_turn::{
     complete_router_turn_tool_definition, run_complete_router_turn, COMPLETE_ROUTER_TURN_TOOL_NAME,
 };
@@ -108,6 +102,12 @@ pub use gateway_stdout::{
     emit_tool_start, parse_stdout_line, reset_delegate_stdout_state, tool_process_kind,
     GATEWAY_STDOUT_LINE_PREFIX,
 };
+pub use inbox_address::{parse_mailbox_address, MailboxAddress};
+pub use inbox_reply::{
+    ensure_inbox_reply_in_allowed_tools, inbox_reply_tool_definition, run_inbox_reply,
+    InboxReplyInput, INBOX_REPLY_TOOL_NAME,
+};
+pub use inbox_steer::{maybe_http_inbox_steer, ENV_INBOX_ENABLED};
 pub use landlock_dsl::{
     default_landlock_dsl, expand_landlock_dsl, landlock_from_global_settings,
     landlock_from_worker_profile_strict, project_has_custom_landlock, resolve_landlock_dsl,

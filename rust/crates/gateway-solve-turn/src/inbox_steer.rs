@@ -77,14 +77,12 @@ impl InboxSteerSource for HttpInboxSteer {
             .send()
             .map_err(|e| format!("POST {url}: {e}"))?;
         let status = resp.status();
-        let text = resp
-            .text()
-            .map_err(|e| format!("read drain body: {e}"))?;
+        let text = resp.text().map_err(|e| format!("read drain body: {e}"))?;
         if !status.is_success() {
             return Err(format!("POST {url} {status}: {text}"));
         }
-        let v: Value = serde_json::from_str(&text)
-            .map_err(|e| format!("drain json: {e}: {text}"))?;
+        let v: Value =
+            serde_json::from_str(&text).map_err(|e| format!("drain json: {e}: {text}"))?;
         let arr = v
             .get("messages")
             .and_then(Value::as_array)

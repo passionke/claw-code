@@ -233,7 +233,11 @@ pub(crate) async fn run_solve_request_docker(
         ask_user_question_enabled,
     );
     let inbox_enabled = matches!(
-        state.session_db.get_project_role(req.proj_id).await.as_deref(),
+        state
+            .session_db
+            .get_project_role(req.proj_id)
+            .await
+            .as_deref(),
         Ok(crate::master_observer::PROJECT_ROLE_STEERABLE)
     );
     if inbox_enabled {

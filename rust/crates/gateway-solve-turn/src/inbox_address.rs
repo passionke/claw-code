@@ -24,7 +24,11 @@ impl MailboxAddress {
     }
 
     /// Build from parts; session_id and cluster_id must be non-empty. Author: kejiqing
-    pub fn new(session_id: impl Into<String>, proj_id: i64, cluster_id: impl Into<String>) -> Result<Self, String> {
+    pub fn new(
+        session_id: impl Into<String>,
+        proj_id: i64,
+        cluster_id: impl Into<String>,
+    ) -> Result<Self, String> {
         let session_id = session_id.into().trim().to_string();
         let cluster_id = cluster_id.into().trim().to_string();
         if session_id.is_empty() {
@@ -56,18 +60,18 @@ pub fn parse_mailbox_address(raw: &str) -> Result<MailboxAddress, String> {
     if raw.is_empty() {
         return Err("empty mailbox address".into());
     }
-    let (session_id, rest) = raw
-        .split_once('@')
-        .ok_or_else(|| format!("invalid mailbox address {raw:?}; expected sessionId@projId.clusterId"))?;
+    let (session_id, rest) = raw.split_once('@').ok_or_else(|| {
+        format!("invalid mailbox address {raw:?}; expected sessionId@projId.clusterId")
+    })?;
     if session_id.is_empty() {
         return Err("mailbox address missing sessionId before '@'".into());
     }
     if session_id.contains('.') {
         return Err("sessionId must not contain '.'".into());
     }
-    let (proj_raw, cluster_id) = rest
-        .split_once('.')
-        .ok_or_else(|| format!("invalid mailbox address {raw:?}; expected sessionId@projId.clusterId"))?;
+    let (proj_raw, cluster_id) = rest.split_once('.').ok_or_else(|| {
+        format!("invalid mailbox address {raw:?}; expected sessionId@projId.clusterId")
+    })?;
     if proj_raw.is_empty() || cluster_id.is_empty() {
         return Err(format!(
             "invalid mailbox address {raw:?}; projId and clusterId required"

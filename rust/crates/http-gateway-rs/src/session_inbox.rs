@@ -209,7 +209,8 @@ impl GatewaySessionDb {
             return Err(InboxError::BadRequest(
                 "fromAddress is required when source=mailbox".into(),
             ));
-        }        let in_reply_to = in_reply_to
+        }
+        let in_reply_to = in_reply_to
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
@@ -644,9 +645,19 @@ mod tests {
         assert!(matches!(r, Err(InboxError::Forbidden(_))));
 
         for i in 0..3 {
-            db.inbox_enqueue(&sid, proj_id, "user", &format!("m{i}"), None, None, None, None, cap)
-                .await
-                .unwrap();
+            db.inbox_enqueue(
+                &sid,
+                proj_id,
+                "user",
+                &format!("m{i}"),
+                None,
+                None,
+                None,
+                None,
+                cap,
+            )
+            .await
+            .unwrap();
         }
         let from = format!("peer@1.{}", db.cluster_id());
         db.inbox_enqueue(
@@ -660,8 +671,8 @@ mod tests {
             None,
             cap,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         let summary = db.inbox_summary(&sid, proj_id, cap).await.unwrap();
         assert_eq!(summary.queued, 3);
         assert!(summary.dropped >= 1);
@@ -671,27 +682,41 @@ mod tests {
             .await
             .unwrap();
 
-        let d1 = db
-            .inbox_drain(&sid, proj_id, &tid, 1, cap)
-            .await
-            .unwrap();
+        let d1 = db.inbox_drain(&sid, proj_id, &tid, 1, cap).await.unwrap();
         assert_eq!(d1.messages.len(), 2);
         assert_eq!(d1.remaining_queued, 1);
         assert_eq!(d1.messages[0].status, INBOX_STATUS_CONSUMED);
 
-        let d2 = db
-            .inbox_drain(&sid, proj_id, &tid, 2, cap)
-            .await
-            .unwrap();
+        let d2 = db.inbox_drain(&sid, proj_id, &tid, 2, cap).await.unwrap();
         assert_eq!(d2.messages.len(), 1);
         assert_eq!(d2.remaining_queued, 0);
 
         let a = db
-            .inbox_enqueue(&sid, proj_id, "user", "same", Some("k1"), None, None, None, cap)
+            .inbox_enqueue(
+                &sid,
+                proj_id,
+                "user",
+                "same",
+                Some("k1"),
+                None,
+                None,
+                None,
+                cap,
+            )
             .await
             .unwrap();
         let b = db
-            .inbox_enqueue(&sid, proj_id, "user", "same", Some("k1"), None, None, None, cap)
+            .inbox_enqueue(
+                &sid,
+                proj_id,
+                "user",
+                "same",
+                Some("k1"),
+                None,
+                None,
+                None,
+                cap,
+            )
             .await
             .unwrap();
         assert!(b.idempotent_hit);
@@ -721,20 +746,37 @@ mod tests {
             .await
             .unwrap();
         let cap = InboxCapacity::from_parts(32, 100, Some(8), Some(50)).unwrap();
-        db.inbox_enqueue(&sid, proj_id, "user", &"a".repeat(30), None, None, None, None, cap)
-            .await
-            .unwrap();
-        db.inbox_enqueue(&sid, proj_id, "user", &"b".repeat(30), None, None, None, None, cap)
-            .await
-            .unwrap();
+        db.inbox_enqueue(
+            &sid,
+            proj_id,
+            "user",
+            &"a".repeat(30),
+            None,
+            None,
+            None,
+            None,
+            cap,
+        )
+        .await
+        .unwrap();
+        db.inbox_enqueue(
+            &sid,
+            proj_id,
+            "user",
+            &"b".repeat(30),
+            None,
+            None,
+            None,
+            None,
+            cap,
+        )
+        .await
+        .unwrap();
         let tid = format!("T_{}", uuid::Uuid::new_v4().simple());
         db.insert_turn(&tid, &sid, proj_id, "running", t, None, None, None)
             .await
             .unwrap();
-        let d = db
-            .inbox_drain(&sid, proj_id, &tid, 1, cap)
-            .await
-            .unwrap();
+        let d = db.inbox_drain(&sid, proj_id, &tid, 1, cap).await.unwrap();
         assert_eq!(d.messages.len(), 1);
         assert_eq!(d.remaining_queued, 1);
         let _ = db.delete_project_config(proj_id).await;
@@ -743,7 +785,9 @@ mod tests {
     #[tokio::test]
     async fn inbox_mailbox_threading_fields_roundtrip() {
         let Some(db) = connect_gateway_test_db().await else {
-            eprintln!("skip inbox_mailbox_threading_fields_roundtrip: set CLAW_GATEWAY_TEST_DATABASE_URL");
+            eprintln!(
+                "skip inbox_mailbox_threading_fields_roundtrip: set CLAW_GATEWAY_TEST_DATABASE_URL"
+            );
             return;
         };
         let proj_id = ephemeral_proj();
@@ -778,10 +822,7 @@ mod tests {
         db.insert_turn(&tid, &sid, proj_id, "running", t, None, None, None)
             .await
             .unwrap();
-        let d = db
-            .inbox_drain(&sid, proj_id, &tid, 0, cap)
-            .await
-            .unwrap();
+        let d = db.inbox_drain(&sid, proj_id, &tid, 0, cap).await.unwrap();
         assert_eq!(d.messages.len(), 1);
         let m = &d.messages[0];
         assert_eq!(m.from_address.as_deref(), Some(from.as_str()));

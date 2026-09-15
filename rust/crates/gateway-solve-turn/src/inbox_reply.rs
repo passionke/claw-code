@@ -80,15 +80,15 @@ pub fn ensure_inbox_reply_in_allowed_tools(tools: &mut Vec<String>) {
 }
 
 fn local_from_address() -> Result<MailboxAddress, ToolError> {
-    let session_id = std::env::var("CLAW_SESSION_ID")
-        .map_err(|_| ToolError::new("CLAW_SESSION_ID not set"))?;
+    let session_id =
+        std::env::var("CLAW_SESSION_ID").map_err(|_| ToolError::new("CLAW_SESSION_ID not set"))?;
     let proj_id: i64 = std::env::var("CLAW_PROJ_ID")
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|&id| id >= 1)
         .ok_or_else(|| ToolError::new("CLAW_PROJ_ID not set"))?;
-    let cluster_id = std::env::var("CLAW_CLUSTER_ID")
-        .map_err(|_| ToolError::new("CLAW_CLUSTER_ID not set"))?;
+    let cluster_id =
+        std::env::var("CLAW_CLUSTER_ID").map_err(|_| ToolError::new("CLAW_CLUSTER_ID not set"))?;
     MailboxAddress::new(session_id, proj_id, cluster_id).map_err(ToolError::new)
 }
 
@@ -164,8 +164,7 @@ pub fn run_inbox_reply(input: &InboxReplyInput) -> Result<String, ToolError> {
     if !status.is_success() {
         return Err(ToolError::new(format!("POST {url} {status}: {text}")));
     }
-    let v: Value = serde_json::from_str(&text)
-        .unwrap_or_else(|_| json!({ "raw": text }));
+    let v: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
     Ok(json!({
         "ok": true,
         "to": to.format(),
@@ -183,7 +182,12 @@ mod tests {
     fn tool_schema_requires_in_reply_to() {
         let def = inbox_reply_tool_definition();
         assert_eq!(def.name, INBOX_REPLY_TOOL_NAME);
-        let req = def.input_schema.get("required").unwrap().as_array().unwrap();
+        let req = def
+            .input_schema
+            .get("required")
+            .unwrap()
+            .as_array()
+            .unwrap();
         assert!(req.iter().any(|v| v.as_str() == Some("inReplyTo")));
         assert!(req.iter().any(|v| v.as_str() == Some("to")));
     }

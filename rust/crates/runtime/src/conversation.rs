@@ -1638,13 +1638,13 @@ impl ToolExecutor for StaticToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_assistant_message, join_remaining_background_jobs, merge_tool_loop_directives,
-        parse_auto_compaction_threshold, validate_control_only_assistant, ApiClient, ApiRequest,
-        AssistantEvent, AutoCompactionEvent, BackgroundToolJob, ConversationRuntime, HookRunResult,
-        PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
+        build_assistant_message, format_steer_envelope, join_remaining_background_jobs,
+        merge_tool_loop_directives, parse_auto_compaction_threshold,
+        validate_control_only_assistant, ApiClient, ApiRequest, AssistantEvent,
+        AutoCompactionEvent, BackgroundToolJob, ConversationRuntime, HookRunResult,
+        InboxSteerSource, PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
         SteerInboxMessage, ToolExecuteRawOutcome, ToolExecutor, ToolLoopDirective, ToolOutcome,
-        TurnCompletionReason, DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD, format_steer_envelope,
-        InboxSteerSource,
+        TurnCompletionReason, DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
     };
     use crate::compact::CompactionConfig;
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};
@@ -2589,10 +2589,7 @@ mod tests {
             saw_steer: bool,
         }
         impl ApiClient for CapturingApi {
-            fn stream(
-                &mut self,
-                request: ApiRequest,
-            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 let joined: String = request
                     .messages
                     .iter()
