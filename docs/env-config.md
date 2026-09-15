@@ -72,6 +72,21 @@ e2b workers receive LLM env via **one gateway entry** — `prepare_e2b_worker_ll
 | `PLAYGROUND_ADMIN_USER` / `PLAYGROUND_ADMIN_PASSWORD` | Seed first `system_admin` when cluster has zero accounts; then `/admin` login uses gateway `POST /v1/admin/auth/login` (multi-account RBAC by `proj_id`) |
 | `CLAW_IMAGE_PREFIX` / `CLAW_IMAGE_REGISTRY` | Release image namespace |
 
+### Session inbox (steerable project_role)
+
+Gateway-held bounded inbox for mid-turn steer (`project_role=steerable`). Defaults apply when unset; invalid values refuse gateway start.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CLAW_INBOX_QUEUE_LIMIT` | `32` | Max queued messages per session |
+| `CLAW_INBOX_BODY_MAX_BYTES` | `32768` (32 KiB) | Max body bytes per message (reject on exceed) |
+| `CLAW_INBOX_DRAIN_BATCH` | `QUEUE_LIMIT/4` → `8` | Max messages drained per LLM round (FIFO oldest-first) |
+| `CLAW_INBOX_DRAIN_MAX_BYTES` | `2×BODY_MAX` → `65536` | Max total body bytes per drain |
+
+APIs: `POST/GET /v1/sessions/{id}/inbox`, `POST /v1/sessions/{id}/inbox/drain`.
+
+Mailbox address: `sessionId@projId.clusterId`（不可省略 sessionId）。`source=mailbox` 时 POST body 必填 `fromAddress`；可选 `inReplyTo` / `references`。Steerable turn 会注入 `inbox_reply` 工具与 `CLAW_CLUSTER_ID`（与 gateway 同 cluster）。
+
 ### Deprecated (no consumers — safe to remove from `.env`)
 
 | Variable | Was |

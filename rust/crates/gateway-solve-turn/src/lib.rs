@@ -58,6 +58,9 @@ pub mod delegate_project_tool;
 pub mod entity_labels;
 pub mod extra_session_bizdate;
 pub mod gateway_stdout;
+pub mod inbox_address;
+pub mod inbox_reply;
+pub mod inbox_steer;
 #[cfg(test)]
 mod integ_subagent_escape;
 pub mod interaction_mode;
@@ -99,6 +102,12 @@ pub use gateway_stdout::{
     emit_tool_start, parse_stdout_line, reset_delegate_stdout_state, tool_process_kind,
     GATEWAY_STDOUT_LINE_PREFIX,
 };
+pub use inbox_address::{parse_mailbox_address, MailboxAddress};
+pub use inbox_reply::{
+    ensure_inbox_reply_in_allowed_tools, inbox_reply_tool_definition, run_inbox_reply,
+    InboxReplyInput, INBOX_REPLY_TOOL_NAME,
+};
+pub use inbox_steer::{maybe_http_inbox_steer, ENV_INBOX_ENABLED};
 pub use landlock_dsl::{
     default_landlock_dsl, expand_landlock_dsl, landlock_from_global_settings,
     landlock_from_worker_profile_strict, project_has_custom_landlock, resolve_landlock_dsl,
@@ -666,6 +675,9 @@ impl DirectApiClient {
         if is_tool_allowed(COMPLETE_ROUTER_TURN_TOOL_NAME, allowed_tools) {
             tools.push(complete_router_turn_tool_definition());
         }
+        if is_tool_allowed(INBOX_REPLY_TOOL_NAME, allowed_tools) {
+            tools.push(inbox_reply_tool_definition());
+        }
         let tools = dedupe_tool_definitions_by_name(tools);
         Ok(Self {
             model,
@@ -855,6 +867,11 @@ impl DirectToolExecutorInner {
                 Some(self.ask_user_timeout_secs),
             )
             .map_err(ToolError::new);
+        }
+        if tool_name == INBOX_REPLY_TOOL_NAME {
+            let parsed: InboxReplyInput = serde_json::from_str(input)
+                .map_err(|e| ToolError::new(format!("invalid inbox_reply input: {e}")))?;
+            return run_inbox_reply(&parsed);
         }
         if tool_name == REPORT_PROGRESS_TOOL_NAME {
             let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
@@ -1840,6 +1857,10 @@ pub fn run_gateway_solve_turn(
         COMPLETE_ROUTER_TURN_TOOL_NAME.to_string(),
         PermissionMode::ReadOnly,
     );
+    policy = policy.with_tool_requirement(
+        INBOX_REPLY_TOOL_NAME.to_string(),
+        PermissionMode::DangerFullAccess,
+    );
 
     if let (Some(plan_id), Some(md)) = (
         turn_opts.sealed_plan_id.as_deref(),
@@ -1885,11 +1906,22 @@ pub fn run_gateway_solve_turn(
     if let Some(section) = gateway_pool_layout_prompt_section() {
         system_prompt.push(section);
     }
+    let inbox_steer = crate::inbox_steer::maybe_http_inbox_steer();
+    if inbox_steer.is_some() {
+        system_prompt.push(
+            "Mid-turn steering: messages wrapped in [steer source=…][/steer] may appear while you work; treat them as direction corrections and prefer the latest steer. \
+             To reply to another agent, call inbox_reply with to=sessionId@projId.clusterId, inReplyTo=<message id>, and optional references."
+                .to_string(),
+        );
+    }
 
     let mut runtime =
         ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
     runtime = runtime.with_max_iterations(max_iterations);
     runtime = runtime.with_turn_timing(turn_timing);
+    if let Some(steer) = inbox_steer {
+        runtime = runtime.with_inbox_steer(steer);
+    }
     if router_protocol_enabled {
         runtime = runtime.with_control_tool_allowlist([
             DELEGATE_PROJECT_TOOL_NAME,

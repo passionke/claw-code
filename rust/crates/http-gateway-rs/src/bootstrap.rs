@@ -357,6 +357,12 @@ pub async fn run() {
         terminal_registry: session_terminal_api::TerminalSessionRegistry::new(),
         nas_api,
         gateway_identity: Arc::clone(&gateway_identity),
+        inbox_capacity: Arc::new(
+            crate::inbox_capacity::InboxCapacity::from_env().unwrap_or_else(|e| {
+                eprintln!("http-gateway-rs: invalid inbox capacity env: {e}");
+                std::process::exit(1);
+            }),
+        ),
     };
 
     run_startup_project_config_apply(&state).await;

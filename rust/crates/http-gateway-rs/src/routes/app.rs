@@ -109,6 +109,7 @@ include!("fragments/mcp.rs");
 include!("fragments/pools.rs");
 include!("fragments/plan_mode.rs");
 include!("fragments/ask_user.rs");
+include!("fragments/inbox.rs");
 
 #[cfg(test)]
 mod tests {

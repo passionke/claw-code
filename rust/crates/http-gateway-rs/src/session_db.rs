@@ -969,12 +969,8 @@ impl GatewaySessionDb {
         sqlx::query("ALTER TABLE project_config ADD COLUMN IF NOT EXISTS max_iterations INT")
             .execute(pool)
             .await?;
-        sqlx::query(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_config_code_unique \
-             ON project_config (cluster_id, project_code) WHERE project_code <> ''",
-        )
-        .execute(pool)
-        .await?;
+        // idx_project_config_code_unique needs cluster_id — created after 006_cluster_id_scoping
+        // (and again in 014_project_metadata). Do not create it here on fresh DBs. Author: kejiqing
         sqlx::query(
             "UPDATE project_config SET stable_content_rev = content_rev WHERE stable_content_rev IS NULL OR stable_content_rev = ''",
         )
@@ -1352,6 +1348,18 @@ impl GatewaySessionDb {
         )
         .await?;
         Self::run_sql_migration_file(pool, include_str!("../migrations/027_admin_accounts.sql"))
+            .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/028_session_inbox_messages.sql"),
+        )
+        .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/029_session_inbox_threading.sql"),
+        )
+        .await?;
+        Self::run_sql_migration_file(pool, include_str!("../migrations/030_steerable_role.sql"))
             .await?;
         Self::migrate_cluster_id_phase3(pool).await?;
 

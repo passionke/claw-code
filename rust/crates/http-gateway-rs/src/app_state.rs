@@ -64,6 +64,8 @@ pub(crate) struct AppState {
     pub(crate) nas_api: Arc<pool::E2bNasApiSingleton>,
     /// This process's gateway ingress identity (multi-gateway same clusterId). Author: kejiqing
     pub(crate) gateway_identity: Arc<crate::gateway_endpoint::GatewayEndpointIdentity>,
+    /// Session inbox capacity from gateway parameter space. Author: kejiqing
+    pub(crate) inbox_capacity: Arc<crate::inbox_capacity::InboxCapacity>,
 }
 
 impl AppState {

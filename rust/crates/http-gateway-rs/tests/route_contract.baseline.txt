@@ -136,6 +136,9 @@ GET	/v1/sessions/{session_id}/agent/ws	agent_ws_handler
 GET	/v1/sessions/{session_id}/conversation_translate	get_conversation_translate
 POST	/v1/sessions/{session_id}/conversation_translate	rebuild_conversation_translate
 GET	/v1/sessions/{session_id}/execution	get_session_execution
+GET	/v1/sessions/{session_id}/inbox	get_session_inbox
+POST	/v1/sessions/{session_id}/inbox	post_session_inbox
+POST	/v1/sessions/{session_id}/inbox/drain	post_session_inbox_drain
 POST	/v1/sessions/{session_id}/files	session_upload::upload_session_files
 GET	/v1/sessions/{session_id}/plans	list_session_plans
 GET	/v1/sessions/{session_id}/plans/{plan_id}	get_session_plan

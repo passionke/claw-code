@@ -451,6 +451,23 @@ pub(crate) async fn get_session_execution(
         read_trace_tail(&trace_paths, 20, false)
     };
 
+    let inbox = match state.session_db.get_project_role(query.proj_id).await {
+        Ok(role) if role == master_observer::PROJECT_ROLE_STEERABLE => {
+            match state
+                .session_db
+                .inbox_summary(&session_id, query.proj_id, *state.inbox_capacity)
+                .await
+            {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    warn!(error = %e, "inbox_summary failed");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+
     info!(
         request_id = %http_request_id.0,
         session_id = %session_id,
@@ -468,6 +485,7 @@ pub(crate) async fn get_session_execution(
         progress_history,
         queue,
         trace_tail,
+        inbox,
     }))
 }
 

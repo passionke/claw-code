@@ -75,9 +75,10 @@ pub use config_validate::{
     DiagnosticKind, ValidationResult,
 };
 pub use conversation::{
-    auto_compaction_threshold_from_env, ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent,
-    ConversationRuntime, PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
-    ToolError, ToolExecutor, ToolLoopDirective, ToolOutcome, TurnCompletionReason, TurnSummary,
+    auto_compaction_threshold_from_env, format_steer_envelope, ApiClient, ApiRequest,
+    AssistantEvent, AutoCompactionEvent, ConversationRuntime, InboxSteerSource, PromptCacheEvent,
+    RuntimeError, SharedToolExecutor, StaticToolExecutor, SteerInboxMessage, ToolError,
+    ToolExecutor, ToolLoopDirective, ToolOutcome, TurnCompletionReason, TurnSummary,
     TOOL_DISPATCH_GUARD_REASON,
 };
 pub use file_ops::{

@@ -124,6 +124,9 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::app::ovs_workspace_handler,
         crate::routes::app::list_project_sessions,
         crate::routes::app::get_session_execution,
+        crate::routes::app::post_session_inbox,
+        crate::routes::app::get_session_inbox,
+        crate::routes::app::post_session_inbox_drain,
         crate::routes::app::post_gateway_translate,
         crate::routes::app::get_conversation_translate,
         crate::routes::app::rebuild_conversation_translate,
@@ -202,7 +205,14 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::gateway_admin_mcp_token::IssueAdminMcpTokenInput,
         crate::gateway_admin_mcp_token::IssueAdminMcpTokenResponse,
         crate::gateway_admin_mcp_token::AdminMcpTokenPublic,
-        crate::gateway_admin_mcp_token::AdminMcpTokenKind
+        crate::gateway_admin_mcp_token::AdminMcpTokenKind,
+        crate::session_inbox::InboxEnqueueResult,
+        crate::session_inbox::InboxDrainResult,
+        crate::session_inbox::InboxMessageRow,
+        crate::session_inbox::InboxSummary,
+        crate::session_inbox::InboxLimitsView,
+        crate::session_execution::SessionExecutionResponse,
+        crate::session_execution::SessionExecutionTask
     )),
     tags(
         (name = "System", description = "Gateway health and API metadata"),

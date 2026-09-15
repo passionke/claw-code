@@ -26,6 +26,9 @@ pub struct SessionExecutionResponse {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schema(value_type = Vec<Object>)]
     pub trace_tail: Vec<Value>,
+    /// Gateway inbox snapshot when project is steerable. Author: kejiqing
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inbox: Option<crate::session_inbox::InboxSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]

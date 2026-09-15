@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write as _};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -141,6 +141,53 @@ impl ToolOutcome {
     }
 }
 
+/// One drained inbox steer message (Codex-style mid-turn user input). Author: kejiqing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SteerInboxMessage {
+    pub message_id: String,
+    pub source: String,
+    pub body: String,
+    pub from_address: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
+}
+
+/// Mid-turn inbox drain hook; called before each LLM request. Author: kejiqing
+pub trait InboxSteerSource: Send {
+    fn drain_before_llm(&mut self, iteration: usize) -> Result<Vec<SteerInboxMessage>, String>;
+}
+
+/// Format steer envelope injected as user text. Author: kejiqing
+#[must_use]
+pub fn format_steer_envelope(msg: &SteerInboxMessage) -> String {
+    let mut meta = format!(
+        "[steer source={} id={}",
+        msg.source.trim(),
+        msg.message_id.trim()
+    );
+    if let Some(from) = msg
+        .from_address
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let _ = write!(meta, " from={from}");
+    }
+    if let Some(irt) = msg
+        .in_reply_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let _ = write!(meta, " inReplyTo={irt}");
+    }
+    if !msg.references.is_empty() {
+        let _ = write!(meta, " references={}", msg.references.join(","));
+    }
+    meta.push(']');
+    format!("{meta}\n{}\n[/steer]", msg.body)
+}
+
 /// Why a turn ended. Author: kejiqing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnCompletionReason {
@@ -255,6 +302,8 @@ pub struct ConversationRuntime<C, T> {
     control_only_next_iteration: bool,
     /// When set, control-only iterations may only call these tool names. Author: kejiqing
     control_tool_allowlist: Option<std::collections::HashSet<String>>,
+    /// Optional mid-turn inbox steer (Codex turn/steer). Author: kejiqing
+    inbox_steer: Option<Box<dyn InboxSteerSource>>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -307,6 +356,7 @@ where
             turn_timing: None,
             control_only_next_iteration: false,
             control_tool_allowlist: None,
+            inbox_steer: None,
         }
     }
 
@@ -357,6 +407,13 @@ where
         tools: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.control_tool_allowlist = Some(tools.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Enable mid-turn inbox steer drain before each LLM call. Author: kejiqing
+    #[must_use]
+    pub fn with_inbox_steer(mut self, source: Box<dyn InboxSteerSource>) -> Self {
+        self.inbox_steer = Some(source);
         self
     }
 
@@ -548,6 +605,24 @@ where
                 );
                 self.record_turn_failed(iterations, &error);
                 return Err(error);
+            }
+
+            // Mid-turn steer: drain gateway inbox before assembling ApiRequest. Author: kejiqing
+            if let Some(ref mut steer) = self.inbox_steer {
+                match steer.drain_before_llm(iterations) {
+                    Ok(msgs) => {
+                        for msg in &msgs {
+                            let text = format_steer_envelope(msg);
+                            if let Err(error) = self.session.push_user_text(text) {
+                                return Err(RuntimeError::new(error.to_string()));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Do not abort turn; never mark consumed without inject (drain is remote).
+                        eprintln!("inbox steer drain skipped (iteration={iterations}): {e}");
+                    }
+                }
             }
 
             let request = ApiRequest {
@@ -1563,12 +1638,13 @@ impl ToolExecutor for StaticToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_assistant_message, join_remaining_background_jobs, merge_tool_loop_directives,
-        parse_auto_compaction_threshold, validate_control_only_assistant, ApiClient, ApiRequest,
-        AssistantEvent, AutoCompactionEvent, BackgroundToolJob, ConversationRuntime, HookRunResult,
-        PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
-        ToolExecuteRawOutcome, ToolExecutor, ToolLoopDirective, ToolOutcome, TurnCompletionReason,
-        DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
+        build_assistant_message, format_steer_envelope, join_remaining_background_jobs,
+        merge_tool_loop_directives, parse_auto_compaction_threshold,
+        validate_control_only_assistant, ApiClient, ApiRequest, AssistantEvent,
+        AutoCompactionEvent, BackgroundToolJob, ConversationRuntime, HookRunResult,
+        InboxSteerSource, PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
+        SteerInboxMessage, ToolExecuteRawOutcome, ToolExecutor, ToolLoopDirective, ToolOutcome,
+        TurnCompletionReason, DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
     };
     use crate::compact::CompactionConfig;
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};
@@ -2482,6 +2558,99 @@ mod tests {
 
         // then
         assert_eq!(error.to_string(), "unknown tool: missing");
+    }
+
+    #[test]
+    fn mid_turn_inbox_steer_injects_user_envelope_before_llm() {
+        struct OnceSteer {
+            drained: bool,
+        }
+        impl InboxSteerSource for OnceSteer {
+            fn drain_before_llm(
+                &mut self,
+                _iteration: usize,
+            ) -> Result<Vec<SteerInboxMessage>, String> {
+                if self.drained {
+                    return Ok(vec![]);
+                }
+                self.drained = true;
+                Ok(vec![SteerInboxMessage {
+                    message_id: "sim_1".into(),
+                    source: "mailbox".into(),
+                    body: "focus tests".into(),
+                    from_address: Some("peer@9.cluster-a".into()),
+                    in_reply_to: None,
+                    references: vec![],
+                }])
+            }
+        }
+
+        struct CapturingApi {
+            saw_steer: bool,
+        }
+        impl ApiClient for CapturingApi {
+            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                let joined: String = request
+                    .messages
+                    .iter()
+                    .filter(|m| m.role == MessageRole::User)
+                    .flat_map(|m| m.blocks.iter())
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.saw_steer = joined.contains("[steer source=mailbox id=sim_1]");
+                Ok(vec![
+                    AssistantEvent::TextDelta("ok".into()),
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let env = format_steer_envelope(&SteerInboxMessage {
+            message_id: "sim_1".into(),
+            source: "mailbox".into(),
+            body: "focus tests".into(),
+            from_address: Some("peer@9.cluster-a".into()),
+            in_reply_to: Some("parent_1".into()),
+            references: vec!["parent_1".into(), "parent_2".into()],
+        });
+        assert!(env.contains("from=peer@9.cluster-a"));
+        assert!(env.contains("inReplyTo=parent_1"));
+        assert!(env.contains("references=parent_1,parent_2"));
+        assert!(env.contains("[/steer]"));
+
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            CapturingApi { saw_steer: false },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".into()],
+        )
+        .with_inbox_steer(Box::new(OnceSteer { drained: false }));
+        runtime.run_turn("hello", None).expect("turn");
+        // CapturingApi is moved into runtime — re-check via session messages instead.
+        let texts: Vec<_> = runtime
+            .session()
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::User)
+            .flat_map(|m| m.blocks.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|t| {
+                t.contains("[steer source=mailbox id=sim_1")
+                    && t.contains("from=peer@9.cluster-a")
+                    && t.contains("focus tests")
+            }),
+            "expected steer envelope in session: {texts:?}"
+        );
     }
 
     #[test]
