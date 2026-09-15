@@ -1359,11 +1359,8 @@ impl GatewaySessionDb {
             include_str!("../migrations/029_session_inbox_threading.sql"),
         )
         .await?;
-        Self::run_sql_migration_file(
-            pool,
-            include_str!("../migrations/030_steerable_role.sql"),
-        )
-        .await?;
+        Self::run_sql_migration_file(pool, include_str!("../migrations/030_steerable_role.sql"))
+            .await?;
         Self::migrate_cluster_id_phase3(pool).await?;
 
         Ok(())
