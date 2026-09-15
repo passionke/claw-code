@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write as _};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -171,7 +171,7 @@ pub fn format_steer_envelope(msg: &SteerInboxMessage) -> String {
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        meta.push_str(&format!(" from={from}"));
+        let _ = write!(meta, " from={from}");
     }
     if let Some(irt) = msg
         .in_reply_to
@@ -179,10 +179,10 @@ pub fn format_steer_envelope(msg: &SteerInboxMessage) -> String {
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        meta.push_str(&format!(" inReplyTo={irt}"));
+        let _ = write!(meta, " inReplyTo={irt}");
     }
     if !msg.references.is_empty() {
-        meta.push_str(&format!(" references={}", msg.references.join(",")));
+        let _ = write!(meta, " references={}", msg.references.join(","));
     }
     meta.push(']');
     format!("{meta}\n{}\n[/steer]", msg.body)

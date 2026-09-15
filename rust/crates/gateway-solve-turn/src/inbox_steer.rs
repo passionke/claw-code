@@ -68,7 +68,7 @@ impl InboxSteerSource for HttpInboxSteer {
         let body = serde_json::json!({
             "projId": self.proj_id,
             "turnId": self.turn_id,
-            "iteration": iteration as i32,
+            "iteration": i32::try_from(iteration).unwrap_or(i32::MAX),
         });
         let resp = self
             .client
