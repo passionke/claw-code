@@ -12,14 +12,19 @@ manage PG lifecycle. The gateway binary performs migration at startup (unless
 
 ## Migration
 
-Migrations are embedded in the gateway binary (`GatewaySessionDb::open()`). To run migrations
-without starting the full gateway:
+Schema migrations are versioned SQL files under
+`rust/crates/http-gateway-rs/migrations/` (sequential integers: `1_baseline.sql`,
+`2_…`, …), embedded via `sqlx::migrate!` and applied at gateway startup
+(`GatewaySessionDb::open` → `db_migrate::run`), unless
+`CLAW_GATEWAY_SKIP_DB_MIGRATE=1` is set for secondary instances sharing the same PG.
 
-```bash
-# Run embedded migrations via gateway --migrate-only (CLI mode)
-CLAW_GATEWAY_SKIP_DB_MIGRATE=0 ./target/release/http-gateway-rs --migrate-only
-```
+Applied versions are recorded in PostgreSQL table `_sqlx_migrations`.
+Legacy databases that already have business tables but no `_sqlx_migrations`
+rows are **stamped** at version `1` (baseline not re-executed).
 
+There is no separate `--migrate-only` / `admin-migrate` CLI: restart the primary
+gateway with migrate enabled, or point a one-shot process at the same
+`CLAW_GATEWAY_DATABASE_URL` and let startup migrate.
 ## Tables
 
 | Table | Owner | Description |

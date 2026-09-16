@@ -30,6 +30,7 @@ pub mod claw_tap_cluster_state;
 pub mod client_origin;
 pub mod cluster_identity;
 pub mod cluster_scope;
+pub mod db_migrate;
 pub mod delegate_fanin;
 pub mod delegate_router;
 pub mod deploy_image;
