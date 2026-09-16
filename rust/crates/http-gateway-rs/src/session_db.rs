@@ -4822,15 +4822,12 @@ mod tests {
 
     #[tokio::test]
     async fn cluster_scoped_tables_have_cluster_primary_keys() {
-        let Some(url) = gateway_integration_database_url() else {
+        let Some(db) = test_db().await else {
             eprintln!(
                 "skip cluster_scoped_tables_have_cluster_primary_keys: set CLAW_GATEWAY_TEST_DATABASE_URL"
             );
             return;
         };
-        let db = GatewaySessionDb::connect(&url)
-            .await
-            .expect("cluster schema migration must succeed");
         // Tables that carry cluster_id for filtering but intentionally keep a
         // non-cluster primary key (legacy baseline / OpenAI map / admin auth). Author: kejiqing
         const CLUSTER_ID_NOT_IN_PK_OK: &[&str] = &[
