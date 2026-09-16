@@ -560,12 +560,6 @@ async fn fetch_by_idempotency(
     Ok(row.as_ref().map(row_from_sql))
 }
 
-/// Exposed for migration wiring. Author: kejiqing
-#[allow(dead_code)]
-pub fn inbox_migration_sql() -> &'static str {
-    include_str!("../migrations/028_session_inbox_messages.sql")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

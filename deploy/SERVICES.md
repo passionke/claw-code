@@ -26,7 +26,7 @@ Gateway ──(creates)───> e2b Sandboxes (workers / singletons)
 
 - **Gateway changes**: `gateway.sh pack-deploy` rebuilds the gateway image; does NOT rebuild e2b templates
 - **Worker template changes**: `deploy/e2b/build-claw-worker-*.py` rebuilds e2b templates; gateway does NOT need restart unless API contract changes
-- **PG changes**: Run migration via `gateway.sh admin-migrate` or restart gateway with `CLAW_GATEWAY_SKIP_DB_MIGRATE=0`
+- **PG changes**: Restart the primary gateway with `CLAW_GATEWAY_SKIP_DB_MIGRATE=0` (versioned `sqlx` migrate at startup; no `admin-migrate` subcommand)
 
 ## Key Principle
 

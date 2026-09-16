@@ -93,6 +93,7 @@ pub mod project_relation;
 pub mod project_tools;
 pub mod responses_hub_stream;
 pub mod session_agent_api;
+pub mod db_migrate;
 pub mod session_db;
 pub mod session_execution;
 pub mod session_inbox;

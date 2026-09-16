@@ -29,7 +29,7 @@ This document aligns runtime behavior with the **Claw persistence design** plan 
 | `worker_name` | Leased e2b worker id while `running` (e.g. `e2b:sbx_…`). |
 | `solve_timing_jsonb` | `progressEvents`, `taskProgress`, `solveTimingEvents`, … — HTTP `progressHistory` / timeline source; updated on running nas-api sync + terminal readback. |
 
-Schema is applied at gateway startup via `GatewaySessionDb::migrate` (`ALTER TABLE ... IF NOT EXISTS` for new columns). Per-`proj_id` agent bundle storage lives in **`project_config`** (see `docs/project-config-model.md`).
+Schema is applied at gateway startup via versioned `sqlx` migrations (`crate::db_migrate`, table `_sqlx_migrations`). Empty DBs run `migrations/1_baseline.sql` then later integer revisions; existing DBs from the legacy replay-all migrator are stamped at version 1 without re-running baseline. Per-`proj_id` agent bundle storage lives in **`project_config`** (see `docs/project-config-model.md`).
 
 ## Gateway process restart
 
@@ -82,4 +82,4 @@ This matches the rule: after restart, an “in-flight” DB row is not trustwort
 
 ## Future (not in this KISS slice)
 
-- Versioned SQL migrations directory, `cc_messages`, dedicated `gateway_async_tasks` table, transcript HTTP API — see the design plan Phase 1–2 items; implement when multi-node SoT for every message is required.
+- Dedicated `gateway_async_tasks` table, transcript HTTP API — see the design plan Phase 1–2 items; implement when multi-node SoT for every message is required. Versioned SQL migrations are live (`migrations/1_baseline.sql` + `_sqlx_migrations`).
