@@ -13,8 +13,9 @@ _CN_APT_MIRROR = "mirrors.aliyun.com"
 _ACR_IMAGE_PREFIX = "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke"
 _GHCR_IMAGE_PREFIX = "ghcr.io/passionke"
 _DEFAULT_WORKER_RELEASE = "release-v1.6.17"
-_DEFAULT_TAP_TAG_GLOBAL = "v0.0.11"
-_DEFAULT_TAP_TAG_CN = "latest"
+# Rust claude-tap / claw-tap release (idle TraceWriter FD reclaim). Author: kejiqing
+_DEFAULT_TAP_TAG_GLOBAL = "v0.0.18"
+_DEFAULT_TAP_TAG_CN = "v0.0.18"
 
 
 def _env(name: str) -> str:
@@ -102,7 +103,7 @@ def template_image_prefix() -> str:
 
 
 def template_claude_tap_image() -> str:
-    """claw-observe FROM; region=china → ACR claw-tap:latest. CLAUDE_TAP_IMAGE overrides."""
+    """claw-observe FROM; region=china → ACR claw-tap:<tag>. CLAUDE_TAP_IMAGE overrides."""
     explicit = _env("CLAUDE_TAP_IMAGE")
     if explicit:
         return explicit
