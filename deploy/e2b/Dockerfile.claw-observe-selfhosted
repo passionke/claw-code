@@ -1,6 +1,6 @@
 # claw-observe: FROM claude-tap image (like worker FROM claw-gateway-worker). Author: kejiqing
 # Local: podman build → push ACR → e2b Template.from_image
-ARG TAP_BASE_IMAGE=ghcr.io/passionke/claude-tap:v0.0.11
+ARG TAP_BASE_IMAGE=ghcr.io/passionke/claude-tap:v0.0.18
 ARG OBSERVE_LIVE_PORT=3000
 # region=china → mirrors.aliyun.com apt in build scripts (e2b_template_registry.py). Author: kejiqing
 ARG DEBIAN_APT_MIRROR=

@@ -36,7 +36,7 @@ class RegionSwitchTests(unittest.TestCase):
         self.assertEqual(template_debian_apt_mirror(), "mirrors.aliyun.com")
         self.assertEqual(
             template_claude_tap_image(),
-            "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-tap:latest",
+            "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-tap:v0.0.18",
         )
         self.assertIn("crpi-", template_gateway_worker_image())
 
@@ -44,7 +44,7 @@ class RegionSwitchTests(unittest.TestCase):
         self.assertFalse(region_is_china())
         self.assertEqual(template_debian_base_image(), "debian:bookworm-slim")
         self.assertEqual(template_debian_apt_mirror(), "")
-        self.assertEqual(template_claude_tap_image(), "ghcr.io/passionke/claw-tap:v0.0.11")
+        self.assertEqual(template_claude_tap_image(), "ghcr.io/passionke/claw-tap:v0.0.18")
         self.assertEqual(
             template_gateway_worker_image(),
             "ghcr.io/passionke/claw-gateway-worker:release-v1.6.17",
