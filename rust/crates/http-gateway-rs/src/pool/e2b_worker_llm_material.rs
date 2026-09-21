@@ -39,6 +39,17 @@ fn extend_env_from_gateway_process(
     env
 }
 
+fn apply_context_window_env(env: &mut BTreeMap<String, String>, tokens: Option<u32>) {
+    match tokens.filter(|n| *n > 0) {
+        Some(n) => {
+            env.insert("CLAW_CONTEXT_WINDOW_TOKENS".to_string(), n.to_string());
+        }
+        None => {
+            env.remove("CLAW_CONTEXT_WINDOW_TOKENS");
+        }
+    }
+}
+
 fn log_sse_env_passthrough(proj_id: i64, env: &BTreeMap<String, String>) {
     let pairs: Vec<String> = E2B_SOLVE_PASSTHROUGH_ENV_KEYS
         .iter()
@@ -127,6 +138,7 @@ pub async fn prepare_e2b_worker_llm_material(
     );
     let mut env = BTreeMap::new();
     env.insert("CLAW_DEFAULT_MODEL".to_string(), claw_model.clone());
+    apply_context_window_env(&mut env, active.context_window_tokens);
     env = extend_env_from_gateway_process(env, E2B_SOLVE_PASSTHROUGH_ENV_KEYS);
     log_sse_env_passthrough(proj_id, &env);
     let env = e2b_worker_llm_env(env, &proxy_base);
@@ -210,5 +222,19 @@ mod tests {
         std::env::remove_var("CLAW_SSE_DEBUG");
         std::env::remove_var("CLAW_SSE_LOG_FILE");
         std::env::remove_var("CLAW_SSE_DEBUG_PREVIEW_CHARS");
+    }
+
+    #[test]
+    fn apply_context_window_env_sets_and_clears() {
+        let mut env = BTreeMap::new();
+        apply_context_window_env(&mut env, Some(991_808));
+        assert_eq!(
+            env.get("CLAW_CONTEXT_WINDOW_TOKENS").map(String::as_str),
+            Some("991808")
+        );
+        apply_context_window_env(&mut env, None);
+        assert!(!env.contains_key("CLAW_CONTEXT_WINDOW_TOKENS"));
+        apply_context_window_env(&mut env, Some(0));
+        assert!(!env.contains_key("CLAW_CONTEXT_WINDOW_TOKENS"));
     }
 }

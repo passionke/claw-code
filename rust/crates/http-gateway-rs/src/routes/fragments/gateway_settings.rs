@@ -472,6 +472,41 @@ pub(crate) async fn test_gateway_llm_model_handler(
 
 #[utoipa::path(
     post,
+    path = "/v1/gateway/global-settings/llm-models/context-window/lookup",
+    tag = "Gateway Settings",
+    operation_id = "lookup_gateway_llm_context_window_handler",
+    summary = "Hint the model input window from the card's LLM gateway",
+    request_body = llm_context_window::ContextWindowLookupRequest,
+    responses(
+        (status = 200, description = "Lookup hint; ok=false still 200", body = llm_context_window::ContextWindowLookupResponse)
+    )
+)]
+pub(crate) async fn lookup_gateway_llm_context_window_handler(
+    Json(req): Json<llm_context_window::ContextWindowLookupRequest>,
+) -> Json<llm_context_window::ContextWindowLookupResponse> {
+    Json(llm_context_window::lookup_context_window(req).await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/gateway/global-settings/llm-models/context-window/verify",
+    tag = "Gateway Settings",
+    operation_id = "verify_gateway_llm_context_window_handler",
+    summary = "First-write probe for a context window number",
+    request_body = llm_context_window::ContextWindowVerifyRequest,
+    responses(
+        (status = 200, description = "Verify result; failure is ok=false", body = llm_context_window::ContextWindowVerifyResponse)
+    )
+)]
+pub(crate) async fn verify_gateway_llm_context_window_handler(
+    State(state): State<AppState>,
+    Json(req): Json<llm_context_window::ContextWindowVerifyRequest>,
+) -> Json<llm_context_window::ContextWindowVerifyResponse> {
+    Json(llm_context_window::verify_context_window(&state.session_db, req, None).await)
+}
+
+#[utoipa::path(
+    post,
     path = "/v1/gateway/global-settings/llm-models",
     tag = "Gateway Settings",
     operation_id = "upsert_gateway_llm_model_handler",

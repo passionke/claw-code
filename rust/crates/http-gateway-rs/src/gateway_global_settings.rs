@@ -78,6 +78,19 @@ pub struct LlmModelPublic {
     pub supports_video: bool,
     #[serde(rename = "supportsAudio", default)]
     pub supports_audio: bool,
+    /// Max **input** tokens for this model; unset = solve does not compact. Author: kejiqing
+    #[serde(
+        rename = "contextWindowTokens",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub context_window_tokens: Option<u32>,
+    #[serde(
+        rename = "contextWindowRejectedReason",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub context_window_rejected_reason: Option<String>,
     #[serde(rename = "currentRev", skip_serializing_if = "String::is_empty")]
     pub current_rev: String,
     #[serde(rename = "apiKeySet")]
@@ -140,6 +153,7 @@ pub struct ActiveLlmRuntime {
     pub supports_video: bool,
     pub supports_audio: bool,
     pub applied_at_ms: Option<i64>,
+    pub context_window_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -331,6 +345,8 @@ pub struct PutLlmModelInput {
     pub api_key: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
+    #[serde(default, rename = "contextWindowTokens")]
+    pub context_window_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -485,6 +501,7 @@ async fn ensure_llm_model_versions_backfilled(
             supports_video: entry.supports_video,
             supports_audio: entry.supports_audio,
             note: None,
+            context_window_tokens: None,
         };
         db.upsert_llm_cluster_revision(&row).await?;
         if let Some(k) = store.api_keys.remove(&entry.id) {
@@ -573,6 +590,14 @@ pub async fn upsert_llm_model(
     let api_key =
         resolve_llm_api_key_on_save(&store, &id, &prev_rev, input.api_key.as_deref(), is_new)?;
 
+    let (window, rejected) = crate::llm_context_window::resolve_window_for_save(
+        db,
+        &base,
+        &model,
+        &api_key,
+        input.context_window_tokens,
+    )
+    .await;
     let now = now_ms();
     let rev = format_model_rev_local_ms(now);
     let row = GatewayLlmModelRevisionRow {
@@ -587,6 +612,7 @@ pub async fn upsert_llm_model(
         supports_video: input.supports_video,
         supports_audio: input.supports_audio,
         note: normalize_revision_note(input.note),
+        context_window_tokens: crate::llm_context_window::window_i32(window),
     };
     db.upsert_llm_cluster_revision(&row)
         .await
@@ -638,9 +664,11 @@ pub async fn upsert_llm_model(
         .iter()
         .find(|m| m.id == id)
         .ok_or_else(|| "llm model missing after save".to_string())?;
-    llm_entry_to_public(db, entry, &store)
+    let mut public = llm_entry_to_public(db, entry, &store)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    public.context_window_rejected_reason = rejected;
+    Ok(public)
 }
 
 /// 兼容旧客户端：更新当前/首条模型并设为 active。Author: kejiqing
@@ -682,6 +710,7 @@ pub async fn put_active_llm_config(
             supports_audio: false,
             api_key: input.api_key,
             note: input.note,
+            context_window_tokens: None,
         },
     )
     .await?;
@@ -730,6 +759,7 @@ pub async fn load_llm_runtime_for_model_id(
         supports_video: row.supports_video,
         supports_audio: row.supports_audio,
         applied_at_ms: None,
+        context_window_tokens: crate::llm_context_window::window_u32(row.context_window_tokens),
     })
 }
 
@@ -762,6 +792,7 @@ pub async fn load_active_llm_runtime(
         supports_video: row.supports_video,
         supports_audio: row.supports_audio,
         applied_at_ms: store.active_applied_at_ms,
+        context_window_tokens: crate::llm_context_window::window_u32(row.context_window_tokens),
     }))
 }
 
@@ -797,39 +828,28 @@ async fn llm_entry_to_public(
     } else {
         entry.current_rev.clone()
     };
-    let (name, base_model_url, model_name, supports_vision, supports_video, supports_audio) =
-        if let Some(cluster_id) = resolve_llm_cluster_id() {
-            match db
-                .get_llm_cluster_revision(&cluster_id, &entry.id, &current_rev)
-                .await?
-            {
-                Some(row) => (
-                    row.name,
-                    row.base_model_url,
-                    row.model_name,
-                    row.supports_vision,
-                    row.supports_video,
-                    row.supports_audio,
-                ),
-                None => (
-                    entry.name.clone(),
-                    entry.base_model_url.clone(),
-                    entry.model_name.clone(),
-                    entry.supports_vision,
-                    entry.supports_video,
-                    entry.supports_audio,
-                ),
-            }
-        } else {
-            (
-                entry.name.clone(),
-                entry.base_model_url.clone(),
-                entry.model_name.clone(),
-                entry.supports_vision,
-                entry.supports_video,
-                entry.supports_audio,
-            )
-        };
+    let mut name = entry.name.clone();
+    let mut base_model_url = entry.base_model_url.clone();
+    let mut model_name = entry.model_name.clone();
+    let mut supports_vision = entry.supports_vision;
+    let mut supports_video = entry.supports_video;
+    let mut supports_audio = entry.supports_audio;
+    let mut context_window_tokens = None;
+    if let Some(cluster_id) = resolve_llm_cluster_id() {
+        if let Some(row) = db
+            .get_llm_cluster_revision(&cluster_id, &entry.id, &current_rev)
+            .await?
+        {
+            name = row.name;
+            base_model_url = row.base_model_url;
+            model_name = row.model_name;
+            supports_vision = row.supports_vision;
+            supports_video = row.supports_video;
+            supports_audio = row.supports_audio;
+            context_window_tokens =
+                crate::llm_context_window::window_u32(row.context_window_tokens);
+        }
+    }
     let is_active_model = !store.active_id.is_empty() && store.active_id == entry.id;
     let api_key_set = llm_api_key_for(store, &entry.id, &current_rev).is_some();
     Ok(LlmModelPublic {
@@ -840,6 +860,8 @@ async fn llm_entry_to_public(
         supports_vision,
         supports_video,
         supports_audio,
+        context_window_tokens,
+        context_window_rejected_reason: None,
         current_rev,
         api_key_set,
         active: is_active_model,

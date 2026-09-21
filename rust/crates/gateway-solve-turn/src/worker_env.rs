@@ -33,6 +33,7 @@ pub const WORKER_ENV_KEYS: &[&str] = &[
     "XAI_API_KEY",
     "OPENROUTER_API_KEY",
     "CLAW_DEFAULT_MODEL",
+    "CLAW_CONTEXT_WINDOW_TOKENS",
     "ANTHROPIC_MODEL",
     "CLAW_OPENAI_FALLBACK_MODEL",
     "CLAW_PREFER_OPENAI_PREFIX",
@@ -296,5 +297,10 @@ mod tests {
         let sh = build_write_gateway_record_session_script("ovs-chat-3-afc29");
         assert!(sh.contains(GATEWAY_RECORD_SESSION_ID_GUEST));
         assert!(sh.contains("base64 -d"));
+    }
+
+    #[test]
+    fn worker_env_keys_include_context_window() {
+        assert!(WORKER_ENV_KEYS.contains(&"CLAW_CONTEXT_WINDOW_TOKENS"));
     }
 }

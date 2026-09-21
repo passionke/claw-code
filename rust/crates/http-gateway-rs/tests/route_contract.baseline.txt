@@ -50,6 +50,8 @@ PUT	/v1/gateway/global-settings/e2b-worker	put_gateway_e2b_worker_settings_handl
 POST	/v1/gateway/global-settings/git-pats	upsert_gateway_git_pat_handler
 DELETE	/v1/gateway/global-settings/git-pats/{pat_id}	delete_gateway_git_pat_handler
 POST	/v1/gateway/global-settings/llm-models	upsert_gateway_llm_model_handler
+POST	/v1/gateway/global-settings/llm-models/context-window/lookup	lookup_gateway_llm_context_window_handler
+POST	/v1/gateway/global-settings/llm-models/context-window/verify	verify_gateway_llm_context_window_handler
 POST	/v1/gateway/global-settings/llm-models/test	test_gateway_llm_model_handler
 DELETE	/v1/gateway/global-settings/llm-models/{model_id}	delete_gateway_llm_model_handler
 POST	/v1/gateway/global-settings/llm-models/{model_id}/apply	apply_gateway_llm_model_head_handler
@@ -112,6 +114,8 @@ POST	/v1/projects/{proj_id}/e2b-worker/reset	reset_project_e2b_worker_handler
 POST	/v1/projects/{proj_id}/git/pull	pull_project_git
 GET	/v1/projects/{proj_id}/inference	get_project_inference_handler
 POST	/v1/projects/{proj_id}/inference/llm-models	upsert_project_llm_model_handler
+POST	/v1/projects/{proj_id}/inference/llm-models/context-window/lookup	lookup_project_llm_context_window_handler
+POST	/v1/projects/{proj_id}/inference/llm-models/context-window/verify	verify_project_llm_context_window_handler
 POST	/v1/projects/{proj_id}/inference/llm-models/test	test_project_llm_model_handler
 DELETE	/v1/projects/{proj_id}/inference/llm-models/{model_id}	delete_project_llm_model_handler
 POST	/v1/projects/{proj_id}/inference/llm-models/{model_id}/apply	apply_project_llm_model_head_handler

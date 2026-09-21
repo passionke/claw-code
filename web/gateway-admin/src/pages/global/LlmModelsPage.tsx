@@ -19,12 +19,13 @@ import {
   message,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 import type { GlobalSettingsResponse, LlmModelRow } from "../../types/globalSettings";
 import type { LlmTestResponse, ThinkingMode } from "../../types/llmTest";
 import { testLlmModel, thinkingModeToApi } from "../../utils/llmTest";
+import { savedContextWindowForEndpoint } from "../../utils/llmContextWindow";
 import {
   findLlmPresetByEndpoint,
   groupLlmPresetsByProvider,
@@ -85,7 +86,20 @@ export default function LlmModelsPage({
   const [editing, setEditing] = useState<LlmModelRow | null>(null);
   const [form] = Form.useForm();
   const presetId = Form.useWatch("presetId", form);
+  const watchedBaseUrl = Form.useWatch("baseModelUrl", form) as string | undefined;
+  const watchedModelName = Form.useWatch("modelName", form) as string | undefined;
   const isCustomPreset = !presetId || presetId === LLM_PROVIDER_CUSTOM_ID;
+  const [globalModels, setGlobalModels] = useState<LlmModelRow[]>([]);
+  const [windowHint, setWindowHint] = useState<{
+    ok: boolean;
+    suggestedTokens?: number;
+    message: string;
+  } | null>(null);
+  const [windowError, setWindowError] = useState<string | null>(null);
+  const [lookingUpWindow, setLookingUpWindow] = useState(false);
+  const [fillingWindow, setFillingWindow] = useState(false);
+  const userTouchedWindow = useRef(false);
+  const isProjectPage = apiPrefix.includes("/projects/");
   const [testModalOpen, setTestModalOpen] = useState(false);
   const [testingRow, setTestingRow] = useState<LlmModelRow | null>(null);
   const [testing, setTesting] = useState(false);
@@ -130,17 +144,37 @@ export default function LlmModelsPage({
     });
   }, [load]);
 
+  useEffect(() => {
+    if (!isProjectPage) {
+      setGlobalModels([]);
+      return;
+    }
+    proxyHttp<{ llmModels?: LlmModelRow[] }>(
+      gatewayBase,
+      "GET",
+      "/v1/gateway/global-settings"
+    )
+      .then((r) => setGlobalModels(r.llmModels || []))
+      .catch(() => setGlobalModels([]));
+  }, [gatewayBase, isProjectPage]);
+
   const openCreate = () => {
     setEditing(null);
+    userTouchedWindow.current = false;
+    setWindowHint(null);
+    setWindowError(null);
     form.resetFields();
     const preset = LLM_PROVIDER_PRESETS.find((p) => p.presetId === DEFAULT_PRESET_ID);
-    form.setFieldsValue({ presetId: DEFAULT_PRESET_ID });
+    form.setFieldsValue({ presetId: DEFAULT_PRESET_ID, contextWindowTokens: undefined });
     if (preset) applyPresetToForm(form, preset);
     setModalOpen(true);
   };
 
   const openEdit = (row: LlmModelRow) => {
     setEditing(row);
+    userTouchedWindow.current = false;
+    setWindowHint(null);
+    setWindowError(null);
     const pid = presetIdForRow(row);
     form.setFieldsValue({
       presetId: pid,
@@ -150,6 +184,10 @@ export default function LlmModelsPage({
       supportsVision: Boolean(row.supportsVision),
       supportsVideo: Boolean(row.supportsVideo),
       supportsAudio: Boolean(row.supportsAudio),
+      contextWindowTokens:
+        typeof row.contextWindowTokens === "number" && row.contextWindowTokens > 0
+          ? row.contextWindowTokens
+          : undefined,
       apiKey: "",
     });
     setModalOpen(true);
@@ -161,12 +199,112 @@ export default function LlmModelsPage({
     if (preset) applyPresetToForm(form, preset);
   };
 
+  useEffect(() => {
+    if (!modalOpen || userTouchedWindow.current) return;
+    const current = form.getFieldValue("contextWindowTokens");
+    if (typeof current === "number" && current > 0) return;
+    const url = (watchedBaseUrl || "").trim();
+    const model = (watchedModelName || "").trim();
+    if (!url || !model) return;
+    const saved =
+      savedContextWindowForEndpoint(models, url, model) ??
+      savedContextWindowForEndpoint(globalModels, url, model);
+    if (saved) {
+      form.setFieldsValue({ contextWindowTokens: saved });
+    }
+  }, [modalOpen, watchedBaseUrl, watchedModelName, models, globalModels, form]);
+
+  useEffect(() => {
+    if (!modalOpen) return;
+    const url = (watchedBaseUrl || "").trim();
+    const model = (watchedModelName || "").trim();
+    if (!url || !model) {
+      setWindowHint(null);
+      return;
+    }
+    let cancelled = false;
+    setLookingUpWindow(true);
+    const apiKey = String(form.getFieldValue("apiKey") || "").trim();
+    const body: { baseModelUrl: string; modelName: string; apiKey?: string } = {
+      baseModelUrl: url,
+      modelName: model,
+    };
+    if (apiKey) body.apiKey = apiKey;
+    proxyHttp<{ ok: boolean; suggestedTokens?: number; message: string }>(
+      gatewayBase,
+      "POST",
+      `${modelsPath}/context-window/lookup`,
+      body
+    )
+      .then((r) => {
+        if (!cancelled) setWindowHint(r);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setWindowHint({
+            ok: false,
+            message: `未查到建议值（${String(e)}），可手动填写`,
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLookingUpWindow(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [modalOpen, watchedBaseUrl, watchedModelName, gatewayBase, modelsPath, form]);
+
+  const fillSuggestedWindow = async () => {
+    const suggested = windowHint?.suggestedTokens;
+    if (!suggested) return;
+    const url = (form.getFieldValue("baseModelUrl") || "").trim();
+    const model = (form.getFieldValue("modelName") || "").trim();
+    const apiKey = (form.getFieldValue("apiKey") || "").trim();
+    setFillingWindow(true);
+    setWindowError(null);
+    try {
+      const body: {
+        baseModelUrl: string;
+        modelName: string;
+        contextWindowTokens: number;
+        apiKey?: string;
+        modelId?: string;
+      } = {
+        baseModelUrl: url,
+        modelName: model,
+        contextWindowTokens: suggested,
+      };
+      if (apiKey) body.apiKey = apiKey;
+      if (editing) body.modelId = editing.id;
+      const r = await proxyHttp<{
+        ok: boolean;
+        contextWindowTokens?: number;
+        message: string;
+      }>(gatewayBase, "POST", `${modelsPath}/context-window/verify`, body);
+      if (!r.ok) {
+        setWindowError(r.message || "探测失败，未填入该数字");
+        return;
+      }
+      userTouchedWindow.current = true;
+      form.setFieldsValue({ contextWindowTokens: r.contextWindowTokens ?? suggested });
+    } catch (e) {
+      setWindowError(String(e));
+    } finally {
+      setFillingWindow(false);
+    }
+  };
+
   const saveModel = async () => {
     const v = await form.validateFields();
     const name = (v.name || "").trim();
     const baseModelUrl = (v.baseModelUrl || "").trim();
     const modelName = (v.modelName || "").trim();
     const apiKey = (v.apiKey || "").trim();
+    const windowTokens =
+      typeof v.contextWindowTokens === "number" && v.contextWindowTokens > 0
+        ? Math.floor(v.contextWindowTokens)
+        : undefined;
     if (!name || !baseModelUrl || !modelName) {
       message.error("请填写名称、Base URL 与模型 ID");
       return;
@@ -176,6 +314,7 @@ export default function LlmModelsPage({
       return;
     }
     setSaving(true);
+    setWindowError(null);
     try {
       const body: {
         id?: string;
@@ -186,6 +325,7 @@ export default function LlmModelsPage({
         supportsVideo?: boolean;
         supportsAudio?: boolean;
         apiKey?: string;
+        contextWindowTokens?: number | null;
       } = {
         name,
         baseModelUrl,
@@ -193,10 +333,17 @@ export default function LlmModelsPage({
         supportsVision: Boolean(v.supportsVision),
         supportsVideo: Boolean(v.supportsVideo),
         supportsAudio: Boolean(v.supportsAudio),
+        contextWindowTokens: windowTokens ?? null,
       };
       if (editing) body.id = editing.id;
       if (apiKey) body.apiKey = apiKey;
-      await proxyHttp<LlmModelRow>(gatewayBase, "POST", modelsPath, body);
+      const saved = await proxyHttp<LlmModelRow>(gatewayBase, "POST", modelsPath, body);
+      if (saved.contextWindowRejectedReason) {
+        setWindowError(saved.contextWindowRejectedReason);
+        message.warning(`模型已保存，但窗口数字未写入：${saved.contextWindowRejectedReason}`);
+        await load();
+        return;
+      }
       message.success(editing ? "模型已更新" : "模型已添加");
       setModalOpen(false);
       await load();
@@ -319,6 +466,13 @@ export default function LlmModelsPage({
       ellipsis: true,
     },
     { title: "模型 ID", dataIndex: "modelName", width: 160, ellipsis: true },
+    {
+      title: "窗口",
+      dataIndex: "contextWindowTokens",
+      width: 96,
+      render: (v: number | undefined) =>
+        typeof v === "number" && v > 0 ? v.toLocaleString() : "—",
+    },
     {
       title: "视觉",
       dataIndex: "supportsVision",
@@ -514,6 +668,50 @@ export default function LlmModelsPage({
               placeholder="model-name"
               readOnly={!isCustomPreset}
               variant={isCustomPreset ? undefined : "borderless"}
+            />
+          </Form.Item>
+          <Form.Item
+            name="contextWindowTokens"
+            label="上下文窗口（输入 token）"
+            tooltip="solve 发请求前按此数字压历史。留空则不压不拦。"
+            extra={
+              <div>
+                {lookingUpWindow ? (
+                  <Typography.Text type="secondary">正在查询网关建议值…</Typography.Text>
+                ) : windowHint ? (
+                  <Space wrap size={8}>
+                    <Typography.Text type={windowHint.ok ? "secondary" : "warning"}>
+                      {windowHint.message}
+                    </Typography.Text>
+                    {windowHint.suggestedTokens ? (
+                      <Button
+                        size="small"
+                        type="link"
+                        loading={fillingWindow}
+                        onClick={() => fillSuggestedWindow().catch(() => {})}
+                      >
+                        填入 {windowHint.suggestedTokens.toLocaleString()}
+                      </Button>
+                    ) : null}
+                  </Space>
+                ) : (
+                  <Typography.Text type="secondary">可手动填写；查询失败不挡保存</Typography.Text>
+                )}
+                {windowError ? (
+                  <div>
+                    <Typography.Text type="danger">{windowError}</Typography.Text>
+                  </div>
+                ) : null}
+              </div>
+            }
+          >
+            <InputNumber
+              min={1}
+              style={{ width: "100%" }}
+              placeholder="例如 991808"
+              onChange={() => {
+                userTouchedWindow.current = true;
+              }}
             />
           </Form.Item>
           <Form.Item

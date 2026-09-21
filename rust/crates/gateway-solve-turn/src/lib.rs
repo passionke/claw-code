@@ -70,6 +70,7 @@ pub mod mcp_call_context;
 pub mod multi_agent;
 mod otel_solve_turn;
 pub mod ovs_interactive;
+pub mod pre_send_compact;
 pub mod preflight_runner;
 pub mod project_language_pipeline;
 pub mod project_orchestration;
@@ -151,6 +152,7 @@ pub use worker_env::{
 };
 
 pub(crate) const HTTP_INTERNAL: u16 = 500;
+pub(crate) const HTTP_BAD_REQUEST: u16 = 400;
 
 /// Suffix appended to the LLM-facing description when MCP `tools/list` annotations allow concurrent calls.
 /// Author: kejiqing
@@ -686,6 +688,11 @@ impl DirectApiClient {
             clawcode_session_id,
             stream_report_deltas: true,
         })
+    }
+
+    #[must_use]
+    pub(crate) fn tool_definitions(&self) -> &[ToolDefinition] {
+        &self.tools
     }
 
     #[must_use]
@@ -1914,6 +1921,13 @@ pub fn run_gateway_solve_turn(
                 .to_string(),
         );
     }
+
+    session = crate::pre_send_compact::maybe_compact_before_llm(
+        session,
+        &gateway_jsonl,
+        &system_prompt,
+        api_client.tool_definitions(),
+    )?;
 
     let mut runtime =
         ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);

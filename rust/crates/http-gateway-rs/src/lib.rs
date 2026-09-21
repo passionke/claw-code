@@ -17,7 +17,7 @@
 )]
 
 /// Bump when an `include!` route fragment changes its wire contract. Author: kejiqing
-pub const ROUTE_FRAGMENT_CONTRACT_VERSION: u32 = 1;
+pub const ROUTE_FRAGMENT_CONTRACT_VERSION: u32 = 2;
 
 pub mod admin_auth;
 pub mod admin_mcp_http;
@@ -68,6 +68,7 @@ pub mod gateway_tap_client;
 pub mod gateway_translate;
 pub mod inbox_capacity;
 pub mod live_report_audit;
+pub mod llm_context_window;
 pub mod llm_probe;
 pub mod master_apprentice_access;
 pub mod master_mcp;

@@ -36,6 +36,44 @@ pub fn estimate_session_tokens(session: &Session) -> usize {
     session.messages.iter().map(estimate_message_tokens).sum()
 }
 
+/// Conservative prompt-size units: UTF-8 bytes, no `/4`. Prefer this when
+/// comparing against a model input window (Chinese/logs otherwise under-count).
+/// Author: kejiqing
+#[must_use]
+pub fn estimate_session_prompt_units(session: &Session) -> usize {
+    session
+        .messages
+        .iter()
+        .map(estimate_message_prompt_units)
+        .sum()
+}
+
+fn estimate_message_prompt_units(message: &ConversationMessage) -> usize {
+    message
+        .blocks
+        .iter()
+        .map(|block| match block {
+            ContentBlock::Text { text } | ContentBlock::ReasoningContent { text } => text.len(),
+            ContentBlock::Image { path, mime, name }
+            | ContentBlock::Video {
+                path, mime, name, ..
+            }
+            | ContentBlock::Audio {
+                path, mime, name, ..
+            } => path.len() + mime.len() + name.as_ref().map_or(0, String::len),
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => id.len() + name.len() + input.len(),
+            ContentBlock::ToolResult {
+                tool_use_id,
+                tool_name,
+                output,
+                ..
+            } => tool_use_id.len() + tool_name.len() + output.len(),
+        })
+        .sum()
+}
+
 /// Returns `true` when the session exceeds the configured compaction budget.
 #[must_use]
 pub fn should_compact(session: &Session, config: CompactionConfig) -> bool {
@@ -591,7 +629,7 @@ fn extract_summary_timeline(summary: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_key_files, compact_session, format_compact_summary,
+        collect_key_files, compact_session, estimate_session_prompt_units, format_compact_summary,
         get_compact_continuation_message, infer_pending_work, should_compact, CompactionConfig,
     };
     use crate::session::{ContentBlock, ConversationMessage, MessageRole, Session};
@@ -858,5 +896,14 @@ mod tests {
         ]);
         assert_eq!(pending.len(), 1);
         assert!(pending[0].contains("Next: update tests"));
+    }
+
+    #[test]
+    fn prompt_units_count_utf8_bytes_not_bytes_over_four() {
+        let zh = "中文日志块SLS".repeat(20);
+        let mut session = Session::new();
+        session.messages = vec![ConversationMessage::user_text(zh.clone())];
+        assert_eq!(estimate_session_prompt_units(&session), zh.len());
+        assert!(estimate_session_prompt_units(&session) > zh.len() / 4);
     }
 }

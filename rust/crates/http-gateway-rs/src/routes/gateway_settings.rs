@@ -8,7 +8,7 @@ use crate::routes::app::{
     get_gateway_bootstrap_status_handler, get_gateway_e2b_singletons_handler,
     get_gateway_e2b_templates_handler, get_gateway_global_settings_handler,
     issue_gateway_admin_mcp_token_handler, list_gateway_llm_model_versions_handler,
-    post_gateway_bootstrap_apply_deploy_env_handler,
+    lookup_gateway_llm_context_window_handler, post_gateway_bootstrap_apply_deploy_env_handler,
     post_gateway_bootstrap_apply_llm_from_env_handler, post_gateway_bootstrap_complete_handler,
     post_gateway_bootstrap_ensure_core_handler, post_gateway_bootstrap_publish_templates_handler,
     post_gateway_bootstrap_reopen_handler, post_gateway_bootstrap_reset_handler,
@@ -18,6 +18,7 @@ use crate::routes::app::{
     reset_gateway_e2b_singleton_handler, reset_gateway_observe_tap_handler,
     revoke_gateway_admin_mcp_token_handler, test_gateway_llm_model_handler,
     upsert_gateway_git_pat_handler, upsert_gateway_llm_model_handler,
+    verify_gateway_llm_context_window_handler,
 };
 use axum::routing::{delete, get, post, put};
 use axum::Router;
@@ -116,6 +117,14 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/v1/gateway/global-settings/llm-models/test",
             post(test_gateway_llm_model_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/context-window/lookup",
+            post(lookup_gateway_llm_context_window_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/context-window/verify",
+            post(verify_gateway_llm_context_window_handler),
         )
         .route(
             "/v1/gateway/global-settings/llm-models/{model_id}",

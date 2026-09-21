@@ -107,6 +107,7 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
             supports_audio: false,
             api_key: None,
             note: None,
+            context_window_tokens: None,
         },
     )
     .await
@@ -131,6 +132,7 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
             supports_audio: false,
             api_key: Some("sk-mock-alt".into()),
             note: None,
+            context_window_tokens: None,
         },
     )
     .await
@@ -146,6 +148,91 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
         .expect("active");
     assert_eq!(active.model_id, second.id);
     assert_eq!(active.model_name, "mock-model-alt");
+
+    let _ = db.delete_llm_cluster_all(&test_cluster).await;
+}
+
+#[tokio::test]
+async fn first_write_window_probe_failure_rejects_number_only() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    ensure_test_env(tmp.path());
+    let test_cluster = std::env::var("CLAW_CLUSTER_ID").expect("CLAW_CLUSTER_ID");
+    let Some(db) = try_open_integration_database().await else {
+        eprintln!("[global_llm_api] skip window probe test: PostgreSQL not reachable");
+        return;
+    };
+    let _ = db.delete_llm_cluster_all(&test_cluster).await;
+
+    let saved = gateway_global_settings::upsert_llm_model(
+        &db,
+        PutLlmModelInput {
+            id: None,
+            name: "probe-fail".into(),
+            base_model_url: "http://127.0.0.1:1/v1".into(),
+            model_name: "missing-model".into(),
+            supports_vision: false,
+            supports_video: false,
+            supports_audio: false,
+            api_key: Some("sk-mock-probe".into()),
+            note: None,
+            context_window_tokens: Some(991_808),
+        },
+    )
+    .await
+    .expect("upsert should succeed for other fields");
+    assert!(
+        saved.context_window_tokens.is_none(),
+        "failed probe must not persist the window"
+    );
+    assert!(
+        saved
+            .context_window_rejected_reason
+            .as_deref()
+            .is_some_and(|s| !s.is_empty()),
+        "rejected reason must be returned"
+    );
+
+    let loaded = gateway_global_settings::load_llm_runtime_for_model_id(&db, &saved.id)
+        .await
+        .expect("load saved model");
+    assert!(loaded.context_window_tokens.is_none());
+
+    db.upsert_llm_cluster_revision(&http_gateway_rs::session_db::GatewayLlmModelRevisionRow {
+        cluster_id: test_cluster.clone(),
+        model_id: saved.id.clone(),
+        model_rev: saved.current_rev.clone(),
+        created_at_ms: saved.updated_at_ms,
+        name: saved.name.clone(),
+        base_model_url: saved.base_model_url.clone(),
+        model_name: saved.model_name.clone(),
+        supports_vision: false,
+        supports_video: false,
+        supports_audio: false,
+        note: None,
+        context_window_tokens: Some(991_808),
+    })
+    .await
+    .expect("seed saved window");
+
+    let second = gateway_global_settings::upsert_llm_model(
+        &db,
+        PutLlmModelInput {
+            id: None,
+            name: "same-endpoint".into(),
+            base_model_url: "http://127.0.0.1:1/v1".into(),
+            model_name: "missing-model".into(),
+            supports_vision: false,
+            supports_video: false,
+            supports_audio: false,
+            api_key: Some("sk-mock-probe-2".into()),
+            note: None,
+            context_window_tokens: Some(1000),
+        },
+    )
+    .await
+    .expect("second card same url+id skips probe");
+    assert_eq!(second.context_window_tokens, Some(1000));
+    assert!(second.context_window_rejected_reason.is_none());
 
     let _ = db.delete_llm_cluster_all(&test_cluster).await;
 }
