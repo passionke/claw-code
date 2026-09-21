@@ -48,6 +48,10 @@ export interface LlmModelRow {
   supportsVideo?: boolean;
   /** When true, solve accepts audio attachments (`input_audio` wire). Author: kejiqing */
   supportsAudio?: boolean;
+  /** Max input tokens; unset = solve does not compact. Author: kejiqing */
+  contextWindowTokens?: number | null;
+  /** Present on save when the window number was rejected (other fields still saved). */
+  contextWindowRejectedReason?: string;
   apiKeySet: boolean;
   active?: boolean;
   /** Head revision after last save. */

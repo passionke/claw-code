@@ -183,28 +183,25 @@ async fn llm_entry_to_public(
     } else {
         entry.current_rev.clone()
     };
-    let (name, base_model_url, model_name, supports_vision, supports_video, supports_audio) =
-        match db
-            .get_llm_project_revision(cluster_id, proj_id, &entry.id, &current_rev)
-            .await?
-        {
-            Some(row) => (
-                row.name,
-                row.base_model_url,
-                row.model_name,
-                row.supports_vision,
-                row.supports_video,
-                row.supports_audio,
-            ),
-            None => (
-                entry.name.clone(),
-                entry.base_model_url.clone(),
-                entry.model_name.clone(),
-                entry.supports_vision,
-                entry.supports_video,
-                entry.supports_audio,
-            ),
-        };
+    let mut name = entry.name.clone();
+    let mut base_model_url = entry.base_model_url.clone();
+    let mut model_name = entry.model_name.clone();
+    let mut supports_vision = entry.supports_vision;
+    let mut supports_video = entry.supports_video;
+    let mut supports_audio = entry.supports_audio;
+    let mut context_window_tokens = None;
+    if let Some(row) = db
+        .get_llm_project_revision(cluster_id, proj_id, &entry.id, &current_rev)
+        .await?
+    {
+        name = row.name;
+        base_model_url = row.base_model_url;
+        model_name = row.model_name;
+        supports_vision = row.supports_vision;
+        supports_video = row.supports_video;
+        supports_audio = row.supports_audio;
+        context_window_tokens = crate::llm_context_window::window_u32(row.context_window_tokens);
+    }
     let is_active_model = !store.active_id.is_empty() && store.active_id == entry.id;
     Ok(LlmModelPublic {
         id: entry.id.clone(),
@@ -214,6 +211,8 @@ async fn llm_entry_to_public(
         supports_vision,
         supports_video,
         supports_audio,
+        context_window_tokens,
+        context_window_rejected_reason: None,
         current_rev: current_rev.clone(),
         api_key_set: llm_api_key_for(store, &entry.id, &current_rev).is_some(),
         active: is_active_model,
@@ -268,6 +267,7 @@ pub async fn load_active_project_llm_runtime(
         supports_video: row.supports_video,
         supports_audio: row.supports_audio,
         applied_at_ms: store.active_applied_at_ms,
+        context_window_tokens: crate::llm_context_window::window_u32(row.context_window_tokens),
     }))
 }
 
@@ -345,6 +345,7 @@ pub async fn load_llm_runtime_for_project_model_id(
         supports_video: row.supports_video,
         supports_audio: row.supports_audio,
         applied_at_ms: None,
+        context_window_tokens: crate::llm_context_window::window_u32(row.context_window_tokens),
     })
 }
 
@@ -444,6 +445,14 @@ pub async fn upsert_project_llm_model(
     let api_key =
         resolve_llm_api_key_on_save(&store, &id, &prev_rev, input.api_key.as_deref(), is_new)?;
 
+    let (window, rejected) = crate::llm_context_window::resolve_window_for_save(
+        db,
+        &base,
+        &model,
+        &api_key,
+        input.context_window_tokens,
+    )
+    .await;
     let now = now_ms();
     let rev = format_model_rev_local_ms(now);
     let row = GatewayLlmProjectRevisionRow {
@@ -459,6 +468,7 @@ pub async fn upsert_project_llm_model(
         supports_video: input.supports_video,
         supports_audio: input.supports_audio,
         note: normalize_revision_note(input.note),
+        context_window_tokens: crate::llm_context_window::window_i32(window),
     };
     db.upsert_llm_project_revision(&row)
         .await
@@ -506,9 +516,11 @@ pub async fn upsert_project_llm_model(
         .iter()
         .find(|m| m.id == id)
         .ok_or_else(|| "llm model missing after save".to_string())?;
-    llm_entry_to_public(db, &cluster_id, proj_id, entry, &store)
+    let mut public = llm_entry_to_public(db, &cluster_id, proj_id, entry, &store)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    public.context_window_rejected_reason = rejected;
+    Ok(public)
 }
 
 pub async fn delete_project_llm_model(

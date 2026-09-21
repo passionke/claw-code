@@ -63,6 +63,7 @@ async fn proj1_qwen_plus_then_max_then_inherit_global() {
             supports_audio: false,
             api_key: Some("sk-global-mock".into()),
             note: None,
+            context_window_tokens: None,
         },
     )
     .await
@@ -121,6 +122,7 @@ async fn proj1_qwen_plus_then_max_then_inherit_global() {
             supports_audio: true,
             api_key: Some("sk-proj1-plus".into()),
             note: None,
+            context_window_tokens: None,
         },
     )
     .await
@@ -198,6 +200,7 @@ async fn proj1_qwen_plus_then_max_then_inherit_global() {
             supports_audio: false,
             api_key: Some("sk-proj1-max".into()),
             note: None,
+            context_window_tokens: None,
         },
     )
     .await

@@ -162,7 +162,7 @@ pub async fn probe_project_llm_model(
     probe_with_runtime(runtime, req).await
 }
 
-async fn probe_with_runtime(
+pub(crate) async fn probe_with_runtime(
     runtime: gateway_global_settings::ActiveLlmRuntime,
     req: LlmTestRequest,
 ) -> Result<LlmTestResponse, String> {

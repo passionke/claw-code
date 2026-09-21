@@ -149,6 +149,42 @@ pub(crate) async fn test_project_llm_model_handler(
 }
 
 #[utoipa::path(
+    post,
+    path = "/v1/projects/{proj_id}/inference/llm-models/context-window/lookup",
+    tag = "ProjectInference",
+    operation_id = "lookup_project_llm_context_window_handler",
+    params(("proj_id" = i64, Path, description = "Project ID")),
+    request_body = llm_context_window::ContextWindowLookupRequest,
+    responses(
+        (status = 200, description = "Lookup hint; ok=false still 200", body = llm_context_window::ContextWindowLookupResponse)
+    )
+)]
+pub(crate) async fn lookup_project_llm_context_window_handler(
+    Json(req): Json<llm_context_window::ContextWindowLookupRequest>,
+) -> Json<llm_context_window::ContextWindowLookupResponse> {
+    Json(llm_context_window::lookup_context_window(req).await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{proj_id}/inference/llm-models/context-window/verify",
+    tag = "ProjectInference",
+    operation_id = "verify_project_llm_context_window_handler",
+    params(("proj_id" = i64, Path, description = "Project ID")),
+    request_body = llm_context_window::ContextWindowVerifyRequest,
+    responses(
+        (status = 200, description = "Verify result; failure is ok=false", body = llm_context_window::ContextWindowVerifyResponse)
+    )
+)]
+pub(crate) async fn verify_project_llm_context_window_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+    Json(req): Json<llm_context_window::ContextWindowVerifyRequest>,
+) -> Json<llm_context_window::ContextWindowVerifyResponse> {
+    Json(llm_context_window::verify_context_window(&state.session_db, req, Some(proj_id)).await)
+}
+
+#[utoipa::path(
     delete,
     path = "/v1/projects/{proj_id}/inference/llm-models/{model_id}",
     tag = "ProjectInference",

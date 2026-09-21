@@ -4,9 +4,10 @@ use crate::routes::app::{
     apply_project_llm_model_head_handler, apply_project_llm_model_revision_handler,
     delete_project_llm_model_handler, get_project_e2b_worker_handler,
     get_project_inference_handler, get_project_observe_handler,
-    list_project_llm_model_versions_handler, reset_project_e2b_worker_handler,
-    reset_project_observe_handler, test_project_llm_model_handler,
-    upsert_project_llm_model_handler,
+    list_project_llm_model_versions_handler, lookup_project_llm_context_window_handler,
+    reset_project_e2b_worker_handler, reset_project_observe_handler,
+    test_project_llm_model_handler, upsert_project_llm_model_handler,
+    verify_project_llm_context_window_handler,
 };
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -32,6 +33,14 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/v1/projects/{proj_id}/inference/llm-models/test",
             post(test_project_llm_model_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/inference/llm-models/context-window/lookup",
+            post(lookup_project_llm_context_window_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/inference/llm-models/context-window/verify",
+            post(verify_project_llm_context_window_handler),
         )
         .route(
             "/v1/projects/{proj_id}/inference/llm-models/{model_id}",

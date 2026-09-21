@@ -275,6 +275,7 @@ pub struct GatewayLlmModelRevisionRow {
     pub supports_video: bool,
     pub supports_audio: bool,
     pub note: Option<String>,
+    pub context_window_tokens: Option<i32>,
 }
 
 impl GatewayLlmModelRevisionRow {
@@ -367,6 +368,7 @@ pub struct GatewayLlmProjectRevisionRow {
     pub supports_video: bool,
     pub supports_audio: bool,
     pub note: Option<String>,
+    pub context_window_tokens: Option<i32>,
 }
 
 /// Per-project observe singleton state (`gateway_llm_project_observe`). Author: kejiqing
@@ -794,6 +796,7 @@ impl GatewaySessionDb {
             supports_video: false,
             supports_audio: false,
             note: row.try_get("note")?,
+            context_window_tokens: None,
         }))
     }
 
@@ -824,6 +827,7 @@ impl GatewaySessionDb {
                     supports_video: false,
                     supports_audio: false,
                     note: row.try_get("note")?,
+                    context_window_tokens: None,
                 })
             })
             .collect()
@@ -1032,7 +1036,7 @@ impl GatewaySessionDb {
             r"SELECT cluster_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
                      COALESCE(supports_vision, FALSE) AS supports_vision,
                      COALESCE(supports_video, FALSE) AS supports_video,
-                     COALESCE(supports_audio, FALSE) AS supports_audio, note
+                     COALESCE(supports_audio, FALSE) AS supports_audio, note, context_window_tokens
                FROM gateway_llm_cluster_revision
                WHERE cluster_id = $1 AND model_id = $2 AND model_rev = $3",
         )
@@ -1053,6 +1057,7 @@ impl GatewaySessionDb {
             supports_video: row.try_get("supports_video").unwrap_or(false),
             supports_audio: row.try_get("supports_audio").unwrap_or(false),
             note: row.try_get("note").ok(),
+            context_window_tokens: row.try_get("context_window_tokens").ok().flatten(),
         }))
     }
 
@@ -1063,8 +1068,8 @@ impl GatewaySessionDb {
         sqlx::query(
             r"INSERT INTO gateway_llm_cluster_revision (
                  cluster_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
-                 supports_vision, supports_video, supports_audio, note
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                 supports_vision, supports_video, supports_audio, note, context_window_tokens
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                ON CONFLICT (cluster_id, model_id, model_rev) DO UPDATE SET
                  name = EXCLUDED.name,
                  base_model_url = EXCLUDED.base_model_url,
@@ -1073,7 +1078,8 @@ impl GatewaySessionDb {
                  supports_video = EXCLUDED.supports_video,
                  supports_audio = EXCLUDED.supports_audio,
                  note = EXCLUDED.note,
-                 created_at_ms = EXCLUDED.created_at_ms",
+                 created_at_ms = EXCLUDED.created_at_ms,
+                 context_window_tokens = EXCLUDED.context_window_tokens",
         )
         .bind(&row.cluster_id)
         .bind(&row.model_id)
@@ -1086,6 +1092,7 @@ impl GatewaySessionDb {
         .bind(row.supports_video)
         .bind(row.supports_audio)
         .bind(&row.note)
+        .bind(row.context_window_tokens)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1269,7 +1276,7 @@ impl GatewaySessionDb {
             r"SELECT cluster_id, proj_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
                      COALESCE(supports_vision, FALSE) AS supports_vision,
                      COALESCE(supports_video, FALSE) AS supports_video,
-                     COALESCE(supports_audio, FALSE) AS supports_audio, note
+                     COALESCE(supports_audio, FALSE) AS supports_audio, note, context_window_tokens
                FROM gateway_llm_project_revision
                WHERE cluster_id = $1 AND proj_id = $2 AND model_id = $3 AND model_rev = $4",
         )
@@ -1292,6 +1299,7 @@ impl GatewaySessionDb {
             supports_video: row.try_get("supports_video").unwrap_or(false),
             supports_audio: row.try_get("supports_audio").unwrap_or(false),
             note: row.try_get("note").ok(),
+            context_window_tokens: row.try_get("context_window_tokens").ok().flatten(),
         }))
     }
 
@@ -1302,8 +1310,8 @@ impl GatewaySessionDb {
         sqlx::query(
             r"INSERT INTO gateway_llm_project_revision (
                  cluster_id, proj_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
-                 supports_vision, supports_video, supports_audio, note
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                 supports_vision, supports_video, supports_audio, note, context_window_tokens
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                ON CONFLICT (cluster_id, proj_id, model_id, model_rev) DO UPDATE SET
                  name = EXCLUDED.name,
                  base_model_url = EXCLUDED.base_model_url,
@@ -1312,7 +1320,8 @@ impl GatewaySessionDb {
                  supports_video = EXCLUDED.supports_video,
                  supports_audio = EXCLUDED.supports_audio,
                  note = EXCLUDED.note,
-                 created_at_ms = EXCLUDED.created_at_ms",
+                 created_at_ms = EXCLUDED.created_at_ms,
+                 context_window_tokens = EXCLUDED.context_window_tokens",
         )
         .bind(&row.cluster_id)
         .bind(row.proj_id)
@@ -1326,9 +1335,46 @@ impl GatewaySessionDb {
         .bind(row.supports_video)
         .bind(row.supports_audio)
         .bind(&row.note)
+        .bind(row.context_window_tokens)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Any saved positive window for the same Base URL + model ID in this cluster. Author: kejiqing
+    pub async fn find_saved_context_window(
+        &self,
+        cluster_id: &str,
+        base_model_url: &str,
+        model_name: &str,
+    ) -> Result<Option<i32>, SqlxError> {
+        let url_key = base_model_url.trim().trim_end_matches('/');
+        let model = model_name.trim();
+        sqlx::query_scalar::<_, i32>(
+            r"SELECT context_window_tokens FROM (
+                 SELECT context_window_tokens
+                   FROM gateway_llm_cluster_revision
+                  WHERE cluster_id = $1
+                    AND rtrim(base_model_url, '/') = $2
+                    AND model_name = $3
+                    AND context_window_tokens IS NOT NULL
+                    AND context_window_tokens > 0
+                 UNION ALL
+                 SELECT context_window_tokens
+                   FROM gateway_llm_project_revision
+                  WHERE cluster_id = $1
+                    AND rtrim(base_model_url, '/') = $2
+                    AND model_name = $3
+                    AND context_window_tokens IS NOT NULL
+                    AND context_window_tokens > 0
+               ) t
+               LIMIT 1",
+        )
+        .bind(cluster_id)
+        .bind(url_key)
+        .bind(model)
+        .fetch_optional(&self.pool)
+        .await
     }
 
     pub async fn delete_llm_project_revisions(
