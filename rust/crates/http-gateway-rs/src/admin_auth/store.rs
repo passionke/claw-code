@@ -155,6 +155,7 @@ pub async fn principal_from_account(
         system_admin: account.is_system_admin(),
         project_ids,
         legacy_unbound_camt: false,
+        project_access_key: false,
     })
 }
 

@@ -4,7 +4,7 @@ use sqlx::Row;
 
 use crate::session_db::GatewaySessionDb;
 
-const TOKEN_PREFIX: &str = "ngmk_";
+pub(crate) const TOKEN_PREFIX: &str = "ngmk_";
 
 #[derive(Debug, Clone)]
 pub struct ProjectModelApiKeyRow {
@@ -178,17 +178,53 @@ impl GatewaySessionDb {
     }
 
     pub async fn revoke_project_model_api_key(&self, token_id: &str) -> Result<bool, String> {
+        self.revoke_project_model_api_key_filtered(token_id, None)
+            .await
+    }
+
+    /// Revoke only when the key row belongs to `proj_id`. Author: kejiqing
+    pub async fn revoke_project_model_api_key_in_proj(
+        &self,
+        token_id: &str,
+        proj_id: i64,
+    ) -> Result<bool, String> {
+        self.revoke_project_model_api_key_filtered(token_id, Some(proj_id))
+            .await
+    }
+
+    async fn revoke_project_model_api_key_filtered(
+        &self,
+        token_id: &str,
+        proj_id: Option<i64>,
+    ) -> Result<bool, String> {
         let now = now_ms();
-        let res = sqlx::query(
-            r"UPDATE gateway_project_model_api_key
-               SET status = 'revoked', revoked_at_ms = $1
-               WHERE id = $2 AND cluster_id = $3 AND status = 'active'",
-        )
-        .bind(now)
-        .bind(token_id.trim())
-        .bind(self.cluster_id())
-        .execute(self.pg_pool())
-        .await
+        let res = match proj_id {
+            Some(proj_id) => {
+                sqlx::query(
+                    r"UPDATE gateway_project_model_api_key
+                       SET status = 'revoked', revoked_at_ms = $1
+                       WHERE id = $2 AND cluster_id = $3 AND proj_id = $4 AND status = 'active'",
+                )
+                .bind(now)
+                .bind(token_id.trim())
+                .bind(self.cluster_id())
+                .bind(proj_id)
+                .execute(self.pg_pool())
+                .await
+            }
+            None => {
+                sqlx::query(
+                    r"UPDATE gateway_project_model_api_key
+                       SET status = 'revoked', revoked_at_ms = $1
+                       WHERE id = $2 AND cluster_id = $3 AND status = 'active'",
+                )
+                .bind(now)
+                .bind(token_id.trim())
+                .bind(self.cluster_id())
+                .execute(self.pg_pool())
+                .await
+            }
+        }
         .map_err(|e| e.to_string())?;
         Ok(res.rows_affected() > 0)
     }

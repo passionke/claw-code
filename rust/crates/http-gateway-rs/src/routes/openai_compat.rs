@@ -20,8 +20,8 @@ use crate::agent_completion::{
 use crate::api_error::ApiError;
 use crate::app_state::{AppState, HttpRequestId, SolveRequest};
 use crate::client_origin;
-use crate::gateway_admin_mcp_token::extract_bearer_token;
-use crate::project_model_api_key::ProjectModelApiKeyRow;
+use crate::gateway_admin_mcp_token::{extract_bearer_token, TOKEN_PREFIX as CAMT_PREFIX};
+use crate::project_model_api_key::{ProjectModelApiKeyRow, TOKEN_PREFIX as NGMK_PREFIX};
 use crate::responses_hub_stream::responses_hub_sse_response;
 use crate::routes::app::{admin_mcp_run_solve_sync, enqueue_solve_async, validate_solve_request};
 use crate::session_merge;
@@ -456,20 +456,51 @@ pub(crate) struct IssueKeyBody {
     model_alias: Option<String>,
 }
 
-async fn require_admin_or_open(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
-    // Prefer admin MCP token when provided; otherwise allow trusted internal network (existing solve pattern).
-    if let Some(tok) = extract_bearer_token(
+/// Who may list/issue/revoke project model keys.
+/// No bearer: trusted internal (open). `camt_`: admin MCP token. `ngmk_`: that key's project only.
+/// Author: kejiqing
+enum ModelKeyAdmin {
+    Open,
+    AdminMcp,
+    AccessKey,
+}
+
+async fn require_admin_or_open(
+    state: &AppState,
+    headers: &HeaderMap,
+    proj_id: i64,
+) -> Result<ModelKeyAdmin, ApiError> {
+    let Some(tok) = extract_bearer_token(
         headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok()),
-    ) {
-        if tok.starts_with("camt_") {
-            crate::gateway_admin_mcp_token::verify_admin_mcp_token(&state.session_db, &tok)
-                .await
-                .map_err(|e| ApiError::new(StatusCode::UNAUTHORIZED, e))?;
-        }
+    ) else {
+        return Ok(ModelKeyAdmin::Open);
+    };
+    if tok.starts_with(CAMT_PREFIX) {
+        crate::gateway_admin_mcp_token::verify_admin_mcp_token(&state.session_db, &tok)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::UNAUTHORIZED, e))?;
+        return Ok(ModelKeyAdmin::AdminMcp);
     }
-    Ok(())
+    if tok.starts_with(NGMK_PREFIX) {
+        let key = state
+            .session_db
+            .verify_project_model_api_key(&tok)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::UNAUTHORIZED, e))?;
+        if key.proj_id != proj_id {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                format!(
+                    "access key is bound to projId={}; path projId={proj_id}",
+                    key.proj_id
+                ),
+            ));
+        }
+        return Ok(ModelKeyAdmin::AccessKey);
+    }
+    Ok(ModelKeyAdmin::Open)
 }
 
 #[utoipa::path(
@@ -485,7 +516,7 @@ pub(crate) async fn list_model_api_keys(
     headers: HeaderMap,
     axum::extract::Path(proj_id): axum::extract::Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_admin_or_open(&state, &headers).await?;
+    require_admin_or_open(&state, &headers, proj_id).await?;
     let list = state
         .session_db
         .list_project_model_api_keys(proj_id)
@@ -509,7 +540,7 @@ pub(crate) async fn issue_model_api_key(
     axum::extract::Path(proj_id): axum::extract::Path<i64>,
     Json(body): Json<IssueKeyBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_admin_or_open(&state, &headers).await?;
+    require_admin_or_open(&state, &headers, proj_id).await?;
     if state
         .session_db
         .get_project_config(proj_id)
@@ -549,14 +580,24 @@ pub(crate) async fn issue_model_api_key(
 pub(crate) async fn revoke_model_api_key(
     State(state): State<AppState>,
     headers: HeaderMap,
-    axum::extract::Path((_proj_id, token_id)): axum::extract::Path<(i64, String)>,
+    axum::extract::Path((proj_id, token_id)): axum::extract::Path<(i64, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_admin_or_open(&state, &headers).await?;
-    let ok = state
-        .session_db
-        .revoke_project_model_api_key(&token_id)
-        .await
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let auth = require_admin_or_open(&state, &headers, proj_id).await?;
+    let ok = match auth {
+        ModelKeyAdmin::AccessKey => {
+            state
+                .session_db
+                .revoke_project_model_api_key_in_proj(&token_id, proj_id)
+                .await
+        }
+        ModelKeyAdmin::Open | ModelKeyAdmin::AdminMcp => {
+            state
+                .session_db
+                .revoke_project_model_api_key(&token_id)
+                .await
+        }
+    }
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     if !ok {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "token not found"));
     }
