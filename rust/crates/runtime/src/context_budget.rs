@@ -73,7 +73,7 @@ pub fn compact_session_for_stream(
     session: Session,
     system_prompt: &[String],
     auxiliary_units: usize,
-) -> Result<Session, (Session, String)> {
+) -> Result<Session, Box<(Session, String)>> {
     let Some(window) = context_window_tokens_from_env() else {
         return Ok(session);
     };
@@ -94,21 +94,21 @@ pub fn compact_session_for_stream(
     if result.removed_message_count > 0 {
         if let Some(path) = compacted.persistence_path().map(Path::to_path_buf) {
             if let Err(e) = compacted.save_to_path(&path) {
-                return Err((
+                return Err(Box::new((
                     compacted,
                     format!("rewrite compacted session jsonl failed: {e}"),
-                ));
+                )));
             }
         }
     }
     let after = prompt_units(&compacted, system_prompt, auxiliary_units);
     if after > window_usize {
-        return Err((
+        return Err(Box::new((
             compacted,
             format!(
                 "session exceeds model context window {window}: estimated {after} prompt units after compact (before compact {before}); shorten history or set a larger Admin contextWindowTokens"
             ),
-        ));
+        )));
     }
     Ok(compacted)
 }

@@ -1139,7 +1139,7 @@ where
     }
 
     fn compact_before_stream(&mut self, auxiliary_units: usize) -> Result<(), RuntimeError> {
-        let session = std::mem::replace(&mut self.session, Session::new());
+        let session = std::mem::take(&mut self.session);
         match crate::context_budget::compact_session_for_stream(
             session,
             &self.system_prompt,
@@ -1149,7 +1149,8 @@ where
                 self.session = session;
                 Ok(())
             }
-            Err((session, message)) => {
+            Err(boxed) => {
+                let (session, message) = *boxed;
                 self.session = session;
                 Err(RuntimeError::new(message))
             }
