@@ -1,7 +1,11 @@
 //! Derive claude-tap `--tap-client` from active LLM `baseModelUrl` path. Author: kejiqing
+//!
+//! Values must be `claude-tap` `ClientName`: `claude` | `codex` | `opencode` | `cursor`.
+//! There is no `openai` variant. OpenAI-compat and `/responses` are both `codex`
+//! (reverse proxy, `Authorization: Bearer`). `/messages` is `claude` (`x-api-key`).
 
-/// Default when URL has no Messages/Responses endpoint suffix (Admin `…/v1`).
-pub const DEFAULT_TAP_CLIENT: &str = "openai";
+/// Default for Admin `…/v1` and `/chat/completions` (claude-tap `ClientName::Codex`).
+pub const DEFAULT_TAP_CLIENT: &str = "codex";
 
 /// Map `baseModelUrl` path → `CLAW_TAP_CLIENT` / `--tap-client` value.
 ///
@@ -10,7 +14,7 @@ pub const DEFAULT_TAP_CLIENT: &str = "openai";
 pub fn tap_client_from_base_model_url(raw: &str) -> &'static str {
     let path = normalize_url_path(raw);
     if path_ends_with(&path, "/chat/completions") {
-        return "openai";
+        return DEFAULT_TAP_CLIENT;
     }
     if path_ends_with(&path, "/messages") {
         return "claude";
@@ -92,26 +96,26 @@ mod tests {
     }
 
     #[test]
-    fn chat_completions_path_is_openai() {
+    fn chat_completions_path_is_codex() {
         assert_eq!(
             tap_client_from_base_model_url("https://api.openai.com/v1/chat/completions"),
-            "openai"
+            "codex"
         );
     }
 
     #[test]
-    fn bare_v1_is_openai() {
+    fn bare_v1_is_codex() {
         assert_eq!(
             tap_client_from_base_model_url("https://api.deepseek.com/v1"),
-            "openai"
+            "codex"
         );
     }
 
     #[test]
-    fn trailing_slash_compatible_mode_v1_is_openai() {
+    fn trailing_slash_compatible_mode_v1_is_codex() {
         assert_eq!(
             tap_client_from_base_model_url("https://dashscope.aliyuncs.com/compatible-mode/v1/"),
-            "openai"
+            "codex"
         );
     }
 
@@ -128,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_or_invalid_defaults_openai() {
+    fn empty_or_invalid_defaults_codex() {
         assert_eq!(tap_client_from_base_model_url(""), DEFAULT_TAP_CLIENT);
         assert_eq!(
             tap_client_from_base_model_url("not-a-url"),
@@ -144,7 +148,7 @@ mod tests {
     fn chat_completions_not_confused_with_other_suffixes() {
         assert_eq!(
             tap_client_from_base_model_url("https://x.example/v1/chat/completions"),
-            "openai"
+            "codex"
         );
         assert_ne!(
             tap_client_from_base_model_url("https://x.example/v1/chat/completions"),
@@ -181,6 +185,14 @@ mod tests {
         assert!(!tap_client_changed(
             "https://api.openai.com/v1/chat/completions",
             "https://api.openai.com/v1"
+        ));
+    }
+
+    #[test]
+    fn chat_completions_and_responses_are_the_same_client() {
+        assert!(!tap_client_changed(
+            "https://api.openai.com/v1/chat/completions",
+            "https://api.openai.com/v1/responses"
         ));
     }
 }
