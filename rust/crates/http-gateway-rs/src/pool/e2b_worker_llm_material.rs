@@ -44,18 +44,15 @@ fn apply_context_budget_env(
     tokens: Option<u32>,
     ratio_percent: u32,
 ) {
-    match tokens.filter(|n| *n > 0) {
-        Some(n) => {
-            env.insert("CLAW_CONTEXT_WINDOW_TOKENS".to_string(), n.to_string());
-            env.insert(
-                "CLAW_CONTEXT_COMPACT_RATIO_PERCENT".to_string(),
-                runtime::normalize_compact_ratio_percent(Some(ratio_percent)).to_string(),
-            );
-        }
-        None => {
-            env.remove("CLAW_CONTEXT_WINDOW_TOKENS");
-            env.remove("CLAW_CONTEXT_COMPACT_RATIO_PERCENT");
-        }
+    if let Some(n) = tokens.filter(|n| *n > 0) {
+        env.insert("CLAW_CONTEXT_WINDOW_TOKENS".to_string(), n.to_string());
+        env.insert(
+            "CLAW_CONTEXT_COMPACT_RATIO_PERCENT".to_string(),
+            runtime::normalize_compact_ratio_percent(Some(ratio_percent)).to_string(),
+        );
+    } else {
+        env.remove("CLAW_CONTEXT_WINDOW_TOKENS");
+        env.remove("CLAW_CONTEXT_COMPACT_RATIO_PERCENT");
     }
 }
 
