@@ -340,19 +340,21 @@ pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
 }
 
 pub fn preflight_message_request(request: &MessageRequest) -> Result<(), ApiError> {
-    let Some(limit) = model_token_limit(&request.model) else {
+    let configured = runtime::context_window_tokens_from_env();
+    let table = model_token_limit(&request.model);
+    let Some(window) = configured.or_else(|| table.map(|limit| limit.context_window_tokens)) else {
         return Ok(());
     };
 
     let estimated_input_tokens = estimate_message_request_input_tokens(request);
     let estimated_total_tokens = estimated_input_tokens.saturating_add(request.max_tokens);
-    if estimated_total_tokens > limit.context_window_tokens {
+    if estimated_total_tokens > window {
         return Err(ApiError::ContextWindowExceeded {
             model: resolve_model_alias(&request.model),
             estimated_input_tokens,
             requested_output_tokens: request.max_tokens,
             estimated_total_tokens,
-            context_window_tokens: limit.context_window_tokens,
+            context_window_tokens: window,
         });
     }
 
@@ -809,6 +811,8 @@ mod tests {
 
     #[test]
     fn preflight_blocks_requests_that_exceed_the_model_context_window() {
+        let _lock = env_lock();
+        let _window = EnvVarGuard::set(runtime::CONTEXT_WINDOW_ENV, None);
         let request = MessageRequest {
             model: "claude-sonnet-4-6".to_string(),
             max_tokens: 64_000,
@@ -855,6 +859,8 @@ mod tests {
 
     #[test]
     fn preflight_skips_unknown_models() {
+        let _lock = env_lock();
+        let _window = EnvVarGuard::set(runtime::CONTEXT_WINDOW_ENV, None);
         let request = MessageRequest {
             model: "unknown-model".to_string(),
             max_tokens: 64_000,
@@ -873,6 +879,36 @@ mod tests {
 
         preflight_message_request(&request)
             .expect("models without context metadata should skip the guarded preflight");
+    }
+
+    #[test]
+    fn preflight_uses_configured_window_for_unknown_models() {
+        let _lock = env_lock();
+        let _window = EnvVarGuard::set(runtime::CONTEXT_WINDOW_ENV, Some("1000"));
+        let request = MessageRequest {
+            model: "qwen3.8-max".to_string(),
+            max_tokens: 64_000,
+            messages: vec![InputMessage {
+                role: "user".to_string(),
+                content: vec![InputContentBlock::Text {
+                    text: "x".repeat(8_000),
+                }],
+            }],
+            system: None,
+            tools: None,
+            tool_choice: None,
+            stream: true,
+            ..Default::default()
+        };
+        let error = preflight_message_request(&request)
+            .expect_err("configured window must gate models missing from model_token_limit");
+        match error {
+            ApiError::ContextWindowExceeded {
+                context_window_tokens,
+                ..
+            } => assert_eq!(context_window_tokens, 1000),
+            other => panic!("expected context-window preflight failure, got {other:?}"),
+        }
     }
 
     #[test]

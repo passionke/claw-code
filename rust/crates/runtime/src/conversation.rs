@@ -67,6 +67,11 @@ pub trait ApiClient {
     fn set_user_visible_text_stream(&mut self, enabled: bool) {
         let _ = enabled;
     }
+
+    /// Bytes of tool schemas sent with every model request. Author: kejiqing
+    fn auxiliary_prompt_units(&self) -> usize {
+        0
+    }
 }
 
 /// Trait implemented by tool dispatchers that execute model-requested tools.
@@ -625,6 +630,12 @@ where
                 }
             }
 
+            let auxiliary_units = self.api_client.auxiliary_prompt_units();
+            if let Err(error) = self.compact_before_stream(auxiliary_units) {
+                self.record_turn_failed(iterations, &error);
+                return Err(error);
+            }
+
             let request = ApiRequest {
                 system_prompt: self.system_prompt.clone(),
                 messages: self.session.messages.clone(),
@@ -1113,12 +1124,36 @@ where
                 || post_hook_result.is_cancelled(),
         );
 
+        let output = crate::context_budget::spill_tool_output_for_context(
+            self.session.persistence_path(),
+            tool_use_id,
+            tool_name,
+            output,
+        );
         ConversationMessage::tool_result(
             tool_use_id.to_string(),
             tool_name.to_string(),
             output,
             is_error,
         )
+    }
+
+    fn compact_before_stream(&mut self, auxiliary_units: usize) -> Result<(), RuntimeError> {
+        let session = std::mem::replace(&mut self.session, Session::new());
+        match crate::context_budget::compact_session_for_stream(
+            session,
+            &self.system_prompt,
+            auxiliary_units,
+        ) {
+            Ok(session) => {
+                self.session = session;
+                Ok(())
+            }
+            Err((session, message)) => {
+                self.session = session;
+                Err(RuntimeError::new(message))
+            }
+        }
     }
 
     fn maybe_auto_compact(&mut self) -> Option<AutoCompactionEvent> {
@@ -4213,5 +4248,145 @@ mod tests {
             ),
             ToolLoopDirective::CompleteTurn
         );
+    }
+
+    #[test]
+    fn second_stream_sees_spilled_path_not_tool_body() {
+        use std::sync::Mutex;
+
+        let _lock = crate::context_budget::context_budget_test_env_lock();
+        std::env::set_var(crate::CONTEXT_WINDOW_ENV, "60000");
+        std::env::set_var(crate::COMPACT_RATIO_ENV, "80");
+
+        let marker = "MIDDLE_ONLY_ON_DISK";
+        let dump = format!("{}{marker}{}", "a".repeat(5_000), "b".repeat(5_000));
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        struct TwoStep {
+            n: u8,
+            seen: Arc<Mutex<Vec<String>>>,
+        }
+        impl ApiClient for TwoStep {
+            fn stream(
+                &mut self,
+                request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                let text = request
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.blocks.iter())
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        ContentBlock::ToolResult { output, .. } => Some(output.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.seen.lock().expect("seen").push(text);
+                if self.n == 0 {
+                    self.n = 1;
+                    return Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "sls-1".to_string(),
+                            name: "sls".to_string(),
+                            input: "{}".to_string(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]);
+                }
+                Ok(vec![
+                    AssistantEvent::TextDelta("done".to_string()),
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let path = temp_session_path("spill-before-second-stream");
+        let session = Session::new().with_persistence_path(path.clone());
+        session.save_to_path(&path).expect("bootstrap jsonl");
+        let body = dump.clone();
+        let mut runtime = ConversationRuntime::new(
+            session,
+            TwoStep {
+                n: 0,
+                seen: Arc::clone(&seen),
+            },
+            StaticToolExecutor::new().register("sls", move |_input| Ok(body.clone())),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+        runtime
+            .run_turn("查日志", None)
+            .expect("spilled tool turn should finish");
+
+        let captured = seen.lock().expect("seen");
+        assert_eq!(captured.len(), 2);
+        assert!(
+            !captured[1].contains(marker),
+            "second stream must not carry the spilled body: {}",
+            captured[1]
+        );
+        assert!(
+            captured[1].contains("tool-outputs/sls-1.txt"),
+            "{}",
+            captured[1]
+        );
+        let disk = fs::read_to_string(path.parent().expect("dir").join("tool-outputs/sls-1.txt"))
+            .expect("spilled file");
+        assert!(disk.contains(marker));
+        let _ = fs::remove_file(&path);
+        std::env::remove_var(crate::CONTEXT_WINDOW_ENV);
+        std::env::remove_var(crate::COMPACT_RATIO_ENV);
+    }
+
+    #[test]
+    fn over_window_does_not_call_stream() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let _lock = crate::context_budget::context_budget_test_env_lock();
+        std::env::set_var(crate::CONTEXT_WINDOW_ENV, "100");
+        std::env::set_var(crate::COMPACT_RATIO_ENV, "80");
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        struct SharedCount {
+            calls: Arc<AtomicUsize>,
+        }
+        impl ApiClient for SharedCount {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![
+                    AssistantEvent::TextDelta("nope".to_string()),
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let dump = "中文日志块".repeat(40);
+        let mut session = Session::new();
+        session.messages = vec![
+            ConversationMessage::user_text(dump.clone()),
+            ConversationMessage::assistant(vec![ContentBlock::Text { text: dump.clone() }]),
+            ConversationMessage::user_text(dump.clone()),
+            ConversationMessage::assistant(vec![ContentBlock::Text { text: dump }]),
+        ];
+        let mut runtime = ConversationRuntime::new(
+            session,
+            SharedCount {
+                calls: Arc::clone(&calls),
+            },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+        let error = runtime
+            .run_turn_after_user_message(None)
+            .expect_err("over-window session must fail before send");
+        assert!(error.to_string().contains("context window"), "{error}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        std::env::remove_var(crate::CONTEXT_WINDOW_ENV);
+        std::env::remove_var(crate::COMPACT_RATIO_ENV);
     }
 }

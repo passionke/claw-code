@@ -21,6 +21,7 @@ tracing = "0.1"
 [dev-dependencies]
 api = { path = "../api" }
 serde_json.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

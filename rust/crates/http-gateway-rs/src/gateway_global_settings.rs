@@ -85,6 +85,9 @@ pub struct LlmModelPublic {
         skip_serializing_if = "Option::is_none"
     )]
     pub context_window_tokens: Option<u32>,
+    /// Compact when the prompt reaches this percent of `context_window_tokens`. Author: kejiqing
+    #[serde(rename = "compactRatioPercent")]
+    pub compact_ratio_percent: u32,
     #[serde(
         rename = "contextWindowRejectedReason",
         default,
@@ -154,6 +157,7 @@ pub struct ActiveLlmRuntime {
     pub supports_audio: bool,
     pub applied_at_ms: Option<i64>,
     pub context_window_tokens: Option<u32>,
+    pub compact_ratio_percent: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -347,6 +351,9 @@ pub struct PutLlmModelInput {
     pub note: Option<String>,
     #[serde(default, rename = "contextWindowTokens")]
     pub context_window_tokens: Option<u32>,
+    /// Omit to store the default 80. Author: kejiqing
+    #[serde(default, rename = "compactRatioPercent")]
+    pub compact_ratio_percent: Option<u32>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -502,6 +509,7 @@ async fn ensure_llm_model_versions_backfilled(
             supports_audio: entry.supports_audio,
             note: None,
             context_window_tokens: None,
+            compact_ratio_percent: None,
         };
         db.upsert_llm_cluster_revision(&row).await?;
         if let Some(k) = store.api_keys.remove(&entry.id) {
@@ -598,6 +606,11 @@ pub async fn upsert_llm_model(
         input.context_window_tokens,
     )
     .await;
+    let ratio = crate::llm_context_window::ratio_u32(
+        input
+            .compact_ratio_percent
+            .and_then(|n| i32::try_from(n).ok()),
+    );
     let now = now_ms();
     let rev = format_model_rev_local_ms(now);
     let row = GatewayLlmModelRevisionRow {
@@ -613,6 +626,7 @@ pub async fn upsert_llm_model(
         supports_audio: input.supports_audio,
         note: normalize_revision_note(input.note),
         context_window_tokens: crate::llm_context_window::window_i32(window),
+        compact_ratio_percent: crate::llm_context_window::ratio_i32(ratio),
     };
     db.upsert_llm_cluster_revision(&row)
         .await
@@ -711,6 +725,7 @@ pub async fn put_active_llm_config(
             api_key: input.api_key,
             note: input.note,
             context_window_tokens: None,
+            compact_ratio_percent: None,
         },
     )
     .await?;
@@ -760,6 +775,7 @@ pub async fn load_llm_runtime_for_model_id(
         supports_audio: row.supports_audio,
         applied_at_ms: None,
         context_window_tokens: crate::llm_context_window::window_u32(row.context_window_tokens),
+        compact_ratio_percent: crate::llm_context_window::ratio_u32(row.compact_ratio_percent),
     })
 }
 
@@ -793,6 +809,7 @@ pub async fn load_active_llm_runtime(
         supports_audio: row.supports_audio,
         applied_at_ms: store.active_applied_at_ms,
         context_window_tokens: crate::llm_context_window::window_u32(row.context_window_tokens),
+        compact_ratio_percent: crate::llm_context_window::ratio_u32(row.compact_ratio_percent),
     }))
 }
 
@@ -835,6 +852,7 @@ async fn llm_entry_to_public(
     let mut supports_video = entry.supports_video;
     let mut supports_audio = entry.supports_audio;
     let mut context_window_tokens = None;
+    let mut compact_ratio_percent = crate::llm_context_window::ratio_u32(None);
     if let Some(cluster_id) = resolve_llm_cluster_id() {
         if let Some(row) = db
             .get_llm_cluster_revision(&cluster_id, &entry.id, &current_rev)
@@ -848,6 +866,8 @@ async fn llm_entry_to_public(
             supports_audio = row.supports_audio;
             context_window_tokens =
                 crate::llm_context_window::window_u32(row.context_window_tokens);
+            compact_ratio_percent =
+                crate::llm_context_window::ratio_u32(row.compact_ratio_percent);
         }
     }
     let is_active_model = !store.active_id.is_empty() && store.active_id == entry.id;
@@ -861,6 +881,7 @@ async fn llm_entry_to_public(
         supports_video,
         supports_audio,
         context_window_tokens,
+        compact_ratio_percent,
         context_window_rejected_reason: None,
         current_rev,
         api_key_set,

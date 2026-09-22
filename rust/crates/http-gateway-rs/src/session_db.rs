@@ -276,6 +276,8 @@ pub struct GatewayLlmModelRevisionRow {
     pub supports_audio: bool,
     pub note: Option<String>,
     pub context_window_tokens: Option<i32>,
+    /// Percent of `context_window_tokens` at which solve compacts. NULL = 80. Author: kejiqing
+    pub compact_ratio_percent: Option<i32>,
 }
 
 impl GatewayLlmModelRevisionRow {
@@ -369,6 +371,8 @@ pub struct GatewayLlmProjectRevisionRow {
     pub supports_audio: bool,
     pub note: Option<String>,
     pub context_window_tokens: Option<i32>,
+    /// Percent of `context_window_tokens` at which solve compacts. NULL = 80. Author: kejiqing
+    pub compact_ratio_percent: Option<i32>,
 }
 
 /// Per-project observe singleton state (`gateway_llm_project_observe`). Author: kejiqing
@@ -797,6 +801,7 @@ impl GatewaySessionDb {
             supports_audio: false,
             note: row.try_get("note")?,
             context_window_tokens: None,
+            compact_ratio_percent: None,
         }))
     }
 
@@ -828,6 +833,7 @@ impl GatewaySessionDb {
                     supports_audio: false,
                     note: row.try_get("note")?,
                     context_window_tokens: None,
+                    compact_ratio_percent: None,
                 })
             })
             .collect()
@@ -1036,7 +1042,8 @@ impl GatewaySessionDb {
             r"SELECT cluster_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
                      COALESCE(supports_vision, FALSE) AS supports_vision,
                      COALESCE(supports_video, FALSE) AS supports_video,
-                     COALESCE(supports_audio, FALSE) AS supports_audio, note, context_window_tokens
+                     COALESCE(supports_audio, FALSE) AS supports_audio, note, context_window_tokens,
+                     compact_ratio_percent
                FROM gateway_llm_cluster_revision
                WHERE cluster_id = $1 AND model_id = $2 AND model_rev = $3",
         )
@@ -1058,6 +1065,7 @@ impl GatewaySessionDb {
             supports_audio: row.try_get("supports_audio").unwrap_or(false),
             note: row.try_get("note").ok(),
             context_window_tokens: row.try_get("context_window_tokens").ok().flatten(),
+            compact_ratio_percent: row.try_get("compact_ratio_percent").ok().flatten(),
         }))
     }
 
@@ -1068,8 +1076,9 @@ impl GatewaySessionDb {
         sqlx::query(
             r"INSERT INTO gateway_llm_cluster_revision (
                  cluster_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
-                 supports_vision, supports_video, supports_audio, note, context_window_tokens
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                 supports_vision, supports_video, supports_audio, note, context_window_tokens,
+                 compact_ratio_percent
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                ON CONFLICT (cluster_id, model_id, model_rev) DO UPDATE SET
                  name = EXCLUDED.name,
                  base_model_url = EXCLUDED.base_model_url,
@@ -1079,7 +1088,8 @@ impl GatewaySessionDb {
                  supports_audio = EXCLUDED.supports_audio,
                  note = EXCLUDED.note,
                  created_at_ms = EXCLUDED.created_at_ms,
-                 context_window_tokens = EXCLUDED.context_window_tokens",
+                 context_window_tokens = EXCLUDED.context_window_tokens,
+                 compact_ratio_percent = EXCLUDED.compact_ratio_percent",
         )
         .bind(&row.cluster_id)
         .bind(&row.model_id)
@@ -1093,6 +1103,7 @@ impl GatewaySessionDb {
         .bind(row.supports_audio)
         .bind(&row.note)
         .bind(row.context_window_tokens)
+        .bind(row.compact_ratio_percent)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1276,7 +1287,8 @@ impl GatewaySessionDb {
             r"SELECT cluster_id, proj_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
                      COALESCE(supports_vision, FALSE) AS supports_vision,
                      COALESCE(supports_video, FALSE) AS supports_video,
-                     COALESCE(supports_audio, FALSE) AS supports_audio, note, context_window_tokens
+                     COALESCE(supports_audio, FALSE) AS supports_audio, note, context_window_tokens,
+                     compact_ratio_percent
                FROM gateway_llm_project_revision
                WHERE cluster_id = $1 AND proj_id = $2 AND model_id = $3 AND model_rev = $4",
         )
@@ -1300,6 +1312,7 @@ impl GatewaySessionDb {
             supports_audio: row.try_get("supports_audio").unwrap_or(false),
             note: row.try_get("note").ok(),
             context_window_tokens: row.try_get("context_window_tokens").ok().flatten(),
+            compact_ratio_percent: row.try_get("compact_ratio_percent").ok().flatten(),
         }))
     }
 
@@ -1310,8 +1323,9 @@ impl GatewaySessionDb {
         sqlx::query(
             r"INSERT INTO gateway_llm_project_revision (
                  cluster_id, proj_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
-                 supports_vision, supports_video, supports_audio, note, context_window_tokens
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                 supports_vision, supports_video, supports_audio, note, context_window_tokens,
+                 compact_ratio_percent
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                ON CONFLICT (cluster_id, proj_id, model_id, model_rev) DO UPDATE SET
                  name = EXCLUDED.name,
                  base_model_url = EXCLUDED.base_model_url,
@@ -1321,7 +1335,8 @@ impl GatewaySessionDb {
                  supports_audio = EXCLUDED.supports_audio,
                  note = EXCLUDED.note,
                  created_at_ms = EXCLUDED.created_at_ms,
-                 context_window_tokens = EXCLUDED.context_window_tokens",
+                 context_window_tokens = EXCLUDED.context_window_tokens,
+                 compact_ratio_percent = EXCLUDED.compact_ratio_percent",
         )
         .bind(&row.cluster_id)
         .bind(row.proj_id)
@@ -1336,6 +1351,7 @@ impl GatewaySessionDb {
         .bind(row.supports_audio)
         .bind(&row.note)
         .bind(row.context_window_tokens)
+        .bind(row.compact_ratio_percent)
         .execute(&self.pool)
         .await?;
         Ok(())

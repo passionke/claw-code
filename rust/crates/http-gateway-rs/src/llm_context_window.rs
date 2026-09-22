@@ -95,6 +95,17 @@ pub fn window_i32(tokens: Option<u32>) -> Option<i32> {
 }
 
 #[must_use]
+pub fn ratio_i32(percent: u32) -> Option<i32> {
+    i32::try_from(runtime::normalize_compact_ratio_percent(Some(percent))).ok()
+}
+
+#[must_use]
+pub fn ratio_u32(raw: Option<i32>) -> u32 {
+    let parsed = raw.and_then(|n| u32::try_from(n).ok());
+    runtime::normalize_compact_ratio_percent(parsed)
+}
+
+#[must_use]
 pub fn window_u32(tokens: Option<i32>) -> Option<u32> {
     tokens
         .and_then(|n| u32::try_from(n).ok())
@@ -262,6 +273,7 @@ fn draft_runtime(base: String, model: String, api_key: String) -> ActiveLlmRunti
         supports_audio: false,
         applied_at_ms: None,
         context_window_tokens: None,
+        compact_ratio_percent: crate::llm_context_window::ratio_u32(None),
     }
 }
 

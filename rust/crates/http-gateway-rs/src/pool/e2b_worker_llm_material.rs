@@ -39,13 +39,22 @@ fn extend_env_from_gateway_process(
     env
 }
 
-fn apply_context_window_env(env: &mut BTreeMap<String, String>, tokens: Option<u32>) {
+fn apply_context_budget_env(
+    env: &mut BTreeMap<String, String>,
+    tokens: Option<u32>,
+    ratio_percent: u32,
+) {
     match tokens.filter(|n| *n > 0) {
         Some(n) => {
             env.insert("CLAW_CONTEXT_WINDOW_TOKENS".to_string(), n.to_string());
+            env.insert(
+                "CLAW_CONTEXT_COMPACT_RATIO_PERCENT".to_string(),
+                runtime::normalize_compact_ratio_percent(Some(ratio_percent)).to_string(),
+            );
         }
         None => {
             env.remove("CLAW_CONTEXT_WINDOW_TOKENS");
+            env.remove("CLAW_CONTEXT_COMPACT_RATIO_PERCENT");
         }
     }
 }
@@ -138,7 +147,11 @@ pub async fn prepare_e2b_worker_llm_material(
     );
     let mut env = BTreeMap::new();
     env.insert("CLAW_DEFAULT_MODEL".to_string(), claw_model.clone());
-    apply_context_window_env(&mut env, active.context_window_tokens);
+    apply_context_budget_env(
+        &mut env,
+        active.context_window_tokens,
+        active.compact_ratio_percent,
+    );
     env = extend_env_from_gateway_process(env, E2B_SOLVE_PASSTHROUGH_ENV_KEYS);
     log_sse_env_passthrough(proj_id, &env);
     let env = e2b_worker_llm_env(env, &proxy_base);
@@ -225,16 +238,23 @@ mod tests {
     }
 
     #[test]
-    fn apply_context_window_env_sets_and_clears() {
+    fn apply_context_budget_env_sets_window_and_ratio() {
         let mut env = BTreeMap::new();
-        apply_context_window_env(&mut env, Some(991_808));
+        apply_context_budget_env(&mut env, Some(991_808), 80);
         assert_eq!(
             env.get("CLAW_CONTEXT_WINDOW_TOKENS").map(String::as_str),
             Some("991808")
         );
-        apply_context_window_env(&mut env, None);
+        assert_eq!(
+            env.get("CLAW_CONTEXT_COMPACT_RATIO_PERCENT")
+                .map(String::as_str),
+            Some("80")
+        );
+        apply_context_budget_env(&mut env, None, 80);
         assert!(!env.contains_key("CLAW_CONTEXT_WINDOW_TOKENS"));
-        apply_context_window_env(&mut env, Some(0));
+        assert!(!env.contains_key("CLAW_CONTEXT_COMPACT_RATIO_PERCENT"));
+        apply_context_budget_env(&mut env, Some(0), 80);
         assert!(!env.contains_key("CLAW_CONTEXT_WINDOW_TOKENS"));
+        assert!(!env.contains_key("CLAW_CONTEXT_COMPACT_RATIO_PERCENT"));
     }
 }

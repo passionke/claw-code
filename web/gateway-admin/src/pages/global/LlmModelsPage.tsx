@@ -165,7 +165,11 @@ export default function LlmModelsPage({
     setWindowError(null);
     form.resetFields();
     const preset = LLM_PROVIDER_PRESETS.find((p) => p.presetId === DEFAULT_PRESET_ID);
-    form.setFieldsValue({ presetId: DEFAULT_PRESET_ID, contextWindowTokens: undefined });
+    form.setFieldsValue({
+      presetId: DEFAULT_PRESET_ID,
+      contextWindowTokens: undefined,
+      compactRatioPercent: 80,
+    });
     if (preset) applyPresetToForm(form, preset);
     setModalOpen(true);
   };
@@ -188,6 +192,12 @@ export default function LlmModelsPage({
         typeof row.contextWindowTokens === "number" && row.contextWindowTokens > 0
           ? row.contextWindowTokens
           : undefined,
+      compactRatioPercent:
+        typeof row.compactRatioPercent === "number" &&
+        row.compactRatioPercent >= 1 &&
+        row.compactRatioPercent <= 100
+          ? row.compactRatioPercent
+          : 80,
       apiKey: "",
     });
     setModalOpen(true);
@@ -305,6 +315,12 @@ export default function LlmModelsPage({
       typeof v.contextWindowTokens === "number" && v.contextWindowTokens > 0
         ? Math.floor(v.contextWindowTokens)
         : undefined;
+    const compactRatioPercent =
+      typeof v.compactRatioPercent === "number" &&
+      v.compactRatioPercent >= 1 &&
+      v.compactRatioPercent <= 100
+        ? Math.floor(v.compactRatioPercent)
+        : 80;
     if (!name || !baseModelUrl || !modelName) {
       message.error("请填写名称、Base URL 与模型 ID");
       return;
@@ -326,6 +342,7 @@ export default function LlmModelsPage({
         supportsAudio?: boolean;
         apiKey?: string;
         contextWindowTokens?: number | null;
+        compactRatioPercent?: number;
       } = {
         name,
         baseModelUrl,
@@ -334,6 +351,7 @@ export default function LlmModelsPage({
         supportsVideo: Boolean(v.supportsVideo),
         supportsAudio: Boolean(v.supportsAudio),
         contextWindowTokens: windowTokens ?? null,
+        compactRatioPercent,
       };
       if (editing) body.id = editing.id;
       if (apiKey) body.apiKey = apiKey;
@@ -673,7 +691,7 @@ export default function LlmModelsPage({
           <Form.Item
             name="contextWindowTokens"
             label="上下文窗口（输入 token）"
-            tooltip="solve 发请求前按此数字压历史。留空则不压不拦。"
+            tooltip="每次 stream 前按此数字的压缩比例压历史。留空则不压不拦。"
             extra={
               <div>
                 {lookingUpWindow ? (
@@ -713,6 +731,14 @@ export default function LlmModelsPage({
                 userTouchedWindow.current = true;
               }}
             />
+          </Form.Item>
+          <Form.Item
+            name="compactRatioPercent"
+            label="压缩比例（%）"
+            tooltip="估算达到上下文窗口的这个百分比时，在下一次 stream 前压缩更早的消息。默认 80。"
+            initialValue={80}
+          >
+            <InputNumber min={1} max={100} style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item
             name="supportsVision"

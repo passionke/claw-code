@@ -70,7 +70,6 @@ pub mod mcp_call_context;
 pub mod multi_agent;
 mod otel_solve_turn;
 pub mod ovs_interactive;
-pub mod pre_send_compact;
 pub mod preflight_runner;
 pub mod project_language_pipeline;
 pub mod project_orchestration;
@@ -152,7 +151,6 @@ pub use worker_env::{
 };
 
 pub(crate) const HTTP_INTERNAL: u16 = 500;
-pub(crate) const HTTP_BAD_REQUEST: u16 = 400;
 
 /// Suffix appended to the LLM-facing description when MCP `tools/list` annotations allow concurrent calls.
 /// Author: kejiqing
@@ -691,11 +689,6 @@ impl DirectApiClient {
     }
 
     #[must_use]
-    pub(crate) fn tool_definitions(&self) -> &[ToolDefinition] {
-        &self.tools
-    }
-
-    #[must_use]
     pub(crate) fn with_stream_report_deltas(mut self, enabled: bool) -> Self {
         self.stream_report_deltas = enabled;
         self
@@ -711,7 +704,17 @@ fn dedupe_tool_definitions_by_name(tools: Vec<ToolDefinition>) -> Vec<ToolDefini
         .collect()
 }
 
+fn tool_prompt_units(tool: &ToolDefinition) -> usize {
+    tool.name.len()
+        + tool.description.as_deref().map_or(0, str::len)
+        + tool.input_schema.to_string().len()
+}
+
 impl RuntimeApiClient for DirectApiClient {
+    fn auxiliary_prompt_units(&self) -> usize {
+        self.tools.iter().map(tool_prompt_units).sum()
+    }
+
     fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
         let system =
             (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n"));
@@ -1922,15 +1925,10 @@ pub fn run_gateway_solve_turn(
         );
     }
 
-    session = crate::pre_send_compact::maybe_compact_before_llm(
-        session,
-        &gateway_jsonl,
-        &system_prompt,
-        api_client.tool_definitions(),
-    )?;
-
     let mut runtime =
         ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
+    // Gateway solve uses the Admin window. The legacy 100k end-of-turn threshold is not a second budget. Author: kejiqing
+    runtime = runtime.with_auto_compaction_input_tokens_threshold(u32::MAX);
     runtime = runtime.with_max_iterations(max_iterations);
     runtime = runtime.with_turn_timing(turn_timing);
     if let Some(steer) = inbox_steer {

@@ -9,6 +9,7 @@ pub mod bash_validation;
 mod bootstrap;
 pub mod branch_lock;
 mod compact;
+mod context_budget;
 mod config;
 pub mod config_validate;
 mod conversation;
@@ -62,6 +63,12 @@ pub use compact::{
     compact_session, estimate_session_prompt_units, estimate_session_tokens,
     format_compact_summary, get_compact_continuation_message, should_compact, CompactionConfig,
     CompactionResult,
+};
+pub use context_budget::{
+    compact_ratio_percent_from_env, compact_session_for_stream, compact_trigger_units,
+    context_window_tokens_from_env, normalize_compact_ratio_percent, spill_tool_output_for_context,
+    tool_result_inline_limit, COMPACT_RATIO_ENV, CONTEXT_WINDOW_ENV, DEFAULT_COMPACT_RATIO_PERCENT,
+    TOOL_RESULT_INLINE_WINDOW_PERCENT,
 };
 pub use config::{
     apply_config_env_if_unset, ConfigEntry, ConfigError, ConfigLoader, ConfigSource,

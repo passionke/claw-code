@@ -108,6 +108,7 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
             api_key: None,
             note: None,
             context_window_tokens: None,
+            compact_ratio_percent: None,
         },
     )
     .await
@@ -133,6 +134,7 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
             api_key: Some("sk-mock-alt".into()),
             note: None,
             context_window_tokens: None,
+            compact_ratio_percent: None,
         },
     )
     .await
@@ -176,6 +178,7 @@ async fn first_write_window_probe_failure_rejects_number_only() {
             api_key: Some("sk-mock-probe".into()),
             note: None,
             context_window_tokens: Some(991_808),
+            compact_ratio_percent: None,
         },
     )
     .await
@@ -208,9 +211,10 @@ async fn first_write_window_probe_failure_rejects_number_only() {
         supports_vision: false,
         supports_video: false,
         supports_audio: false,
-        note: None,
-        context_window_tokens: Some(991_808),
-    })
+            note: None,
+            context_window_tokens: Some(991_808),
+            compact_ratio_percent: None,
+        })
     .await
     .expect("seed saved window");
 
@@ -227,6 +231,7 @@ async fn first_write_window_probe_failure_rejects_number_only() {
             api_key: Some("sk-mock-probe-2".into()),
             note: None,
             context_window_tokens: Some(1000),
+            compact_ratio_percent: None,
         },
     )
     .await
