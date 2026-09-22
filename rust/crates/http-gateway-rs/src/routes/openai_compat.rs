@@ -187,27 +187,32 @@ async fn resolve_session(
     Ok(req)
 }
 
+fn solve_request_from_agent(proj_id: i64, req: &AgentCompletionRequest) -> SolveRequest {
+    SolveRequest {
+        proj_id,
+        user_prompt: req.user_prompt.clone(),
+        session_id: req.session_id.clone(),
+        model: None,
+        timeout_seconds: req.timeout_seconds,
+        extra_session: req.extra_session.clone(),
+        allowed_tools: None,
+        max_iterations: None,
+        attachments: None,
+        compat_images: req.images.clone(),
+        interaction_mode: None,
+        sealed_plan_id: None,
+        sealed_plan_markdown: None,
+        force_single_turn: None,
+    }
+}
+
 async fn run_agent_completion(
     state: &AppState,
     key: &ProjectModelApiKeyRow,
     req: AgentCompletionRequest,
 ) -> Result<(String, String, String), Response> {
     let session_hint = req.session_id.clone();
-    let solve_req = SolveRequest {
-        proj_id: key.proj_id,
-        user_prompt: req.user_prompt,
-        session_id: session_hint.clone(),
-        model: None,
-        timeout_seconds: req.timeout_seconds,
-        extra_session: req.extra_session,
-        allowed_tools: None,
-        max_iterations: None,
-        attachments: None,
-        interaction_mode: None,
-        sealed_plan_id: None,
-        sealed_plan_markdown: None,
-        force_single_turn: None,
-    };
+    let solve_req = solve_request_from_agent(key.proj_id, &req);
     validate_solve_request(&state.session_db, &solve_req)
         .await
         .map_err(|e: ApiError| {
@@ -362,21 +367,7 @@ pub(crate) async fn responses(
     if stream {
         // True stream: open SSE, enqueue async solve, pump LiveReportHub. Author: kejiqing
         let session_hint = norm.session_id.clone();
-        let mut solve_req = SolveRequest {
-            proj_id: key.proj_id,
-            user_prompt: norm.user_prompt,
-            session_id: session_hint.clone(),
-            model: None,
-            timeout_seconds: norm.timeout_seconds,
-            extra_session: norm.extra_session,
-            allowed_tools: None,
-            max_iterations: None,
-            attachments: None,
-            interaction_mode: None,
-            sealed_plan_id: None,
-            sealed_plan_markdown: None,
-            force_single_turn: None,
-        };
+        let mut solve_req = solve_request_from_agent(key.proj_id, &norm);
         if session_hint.is_none() {
             solve_req.session_id = None;
         }

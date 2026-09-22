@@ -183,6 +183,94 @@ fn safe_original_name(name: &str) -> String {
     }
 }
 
+/// Write bytes to session `uploads/` (NAS + local cache + optional OSS). Author: kejiqing
+pub(crate) async fn persist_session_upload_bytes(
+    state: &AppState,
+    proj_id: i64,
+    session_id: &str,
+    local_home: &Path,
+    original_name: &str,
+    mime: &str,
+    bytes: &[u8],
+) -> Result<SolveAttachment, ApiError> {
+    if bytes.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty file upload"));
+    }
+    if bytes.len() > MAX_UPLOAD_BYTES {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("file too large (max {MAX_UPLOAD_BYTES} bytes)"),
+        ));
+    }
+    let kind = classify_attachment(mime, original_name)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let safe = safe_original_name(original_name);
+    let short = &Uuid::new_v4().simple().to_string()[..8];
+    let file_leaf = format!("{short}_{safe}");
+    let rel_under = format!("uploads/{file_leaf}");
+    if Path::new(&rel_under)
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::RootDir))
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid upload path",
+        ));
+    }
+    let cluster_id = gateway_cluster_id().map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("cluster id: {e}"),
+        )
+    })?;
+    let segment = session_merge::sessions_directory_segment(session_id);
+    let nas_rel = format!(
+        "{}/{rel_under}",
+        session_rel(&cluster_id, proj_id, &segment)
+    );
+    let uploads_dir = format!("{}/uploads", session_rel(&cluster_id, proj_id, &segment));
+    let _ = state.nas_api.mkdir(&uploads_dir, true).await;
+    state.nas_api.put_file(&nas_rel, bytes).await.map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("NAS put_file failed: {e}"),
+        )
+    })?;
+    let local = local_home.join(&rel_under);
+    if let Some(parent) = local.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let _ = tokio::fs::write(&local, bytes).await;
+
+    let oss = OssConfig::from_env();
+    let mut oss_key = None;
+    let mut oss_url = None;
+    let mut oss_retain_until_ms = None;
+    if oss.enabled() {
+        let key = oss.build_attachment_key(&cluster_id, proj_id, session_id, &file_leaf);
+        oss.put_object(&key, bytes, mime).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("OSS put_object failed: {e}"),
+            )
+        })?;
+        oss_url = Some(oss.object_url(&key));
+        oss_retain_until_ms = Some(oss.retain_until_ms(Utc::now()));
+        oss_key = Some(key);
+    }
+    Ok(SolveAttachment {
+        path: rel_under,
+        mime: mime.to_string(),
+        kind,
+        name: Some(original_name.to_string()),
+        size: Some(bytes.len() as u64),
+        oss_key,
+        oss_url,
+        oss_retain_until_ms,
+        url: None,
+    })
+}
+
 fn mime_for_name(name: &str, provided: Option<&str>) -> String {
     if let Some(m) = provided.map(str::trim).filter(|s| !s.is_empty()) {
         return m.to_string();
@@ -256,13 +344,6 @@ pub(crate) async fn upload_session_files(
         })?;
     session_merge::validate_session_home_rel(&home_rel)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid session_home in registry"))?;
-    let segment = session_merge::sessions_directory_segment(&session_id);
-    let cluster_id = gateway_cluster_id().map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("cluster id: {e}"),
-        )
-    })?;
     let local_home = session_merge::join_session_home_from_rel(&state.cfg.work_root, &home_rel);
     let oss = OssConfig::from_env();
     let mut uploaded: Vec<SolveAttachment> = Vec::new();
@@ -288,81 +369,18 @@ pub(crate) async fn upload_session_files(
                 format!("read upload bytes failed: {e}"),
             )
         })?;
-        if bytes.is_empty() {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty file upload"));
-        }
-        if bytes.len() > MAX_UPLOAD_BYTES {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                format!("file too large (max {MAX_UPLOAD_BYTES} bytes)"),
-            ));
-        }
         let mime = mime_for_name(&original, provided_mime.as_deref());
-        let kind = classify_attachment(&mime, &original)
-            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
-        let safe = safe_original_name(&original);
-        let short = &Uuid::new_v4().simple().to_string()[..8];
-        let file_leaf = format!("{short}_{safe}");
-        let rel_under = format!("uploads/{file_leaf}");
-        if Path::new(&rel_under)
-            .components()
-            .any(|c| matches!(c, Component::ParentDir | Component::RootDir))
-        {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "invalid upload path",
-            ));
-        }
-        let nas_rel = format!(
-            "{}/{rel_under}",
-            session_rel(&cluster_id, q.proj_id, &segment)
-        );
-        // Ensure uploads/ on NAS then put file.
-        let uploads_dir = format!("{}/uploads", session_rel(&cluster_id, q.proj_id, &segment));
-        let _ = state.nas_api.mkdir(&uploads_dir, true).await;
-        state
-            .nas_api
-            .put_file(&nas_rel, &bytes)
-            .await
-            .map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("NAS put_file failed: {e}"),
-                )
-            })?;
-        let local = local_home.join(&rel_under);
-        if let Some(parent) = local.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        let _ = tokio::fs::write(&local, &bytes).await;
-
-        let mut oss_key = None;
-        let mut oss_url = None;
-        let mut oss_retain_until_ms = None;
-        if oss.enabled() {
-            let key = oss.build_attachment_key(&cluster_id, q.proj_id, &session_id, &file_leaf);
-            oss.put_object(&key, &bytes, &mime).await.map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("OSS put_object failed: {e}"),
-                )
-            })?;
-            oss_url = Some(oss.object_url(&key));
-            oss_retain_until_ms = Some(oss.retain_until_ms(Utc::now()));
-            oss_key = Some(key);
-        }
-
-        uploaded.push(SolveAttachment {
-            path: rel_under,
-            mime,
-            kind,
-            name: Some(original),
-            size: Some(bytes.len() as u64),
-            oss_key,
-            oss_url,
-            oss_retain_until_ms,
-            url: None,
-        });
+        let att = persist_session_upload_bytes(
+            &state,
+            q.proj_id,
+            &session_id,
+            &local_home,
+            &original,
+            &mime,
+            &bytes,
+        )
+        .await?;
+        uploaded.push(att);
     }
 
     if uploaded.is_empty() {

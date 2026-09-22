@@ -215,7 +215,36 @@ pub(crate) async fn run_solve_request_docker(
         state.cfg.default_max_iterations,
     )
     .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
-    let mut attachments = req.attachments.clone();
+    let mut attachment_list = req.attachments.clone().unwrap_or_default();
+    if !req.compat_images.is_empty() {
+        for src in &req.compat_images {
+            let (mime, name, bytes) = crate::agent_completion::load_compat_image_bytes(src)
+                .await
+                .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+            let att = crate::session_upload::persist_session_upload_bytes(
+                &state,
+                req.proj_id,
+                &session_id,
+                &session_home,
+                &name,
+                &mime,
+                &bytes,
+            )
+            .await?;
+            attachment_list.push(att);
+        }
+        if let Ok(value) = serde_json::to_value(&attachment_list) {
+            let _ = state
+                .session_db
+                .patch_turn_entry_attachments(&turn_id, &value)
+                .await;
+        }
+    }
+    let mut attachments = if attachment_list.is_empty() {
+        None
+    } else {
+        Some(attachment_list)
+    };
     if let Some(ref mut atts) = attachments {
         crate::session_upload::enrich_media_attachment_urls(
             atts,

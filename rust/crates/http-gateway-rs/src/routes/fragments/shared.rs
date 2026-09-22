@@ -680,6 +680,7 @@ mod max_iterations_entry_params_tests {
             allowed_tools: None,
             max_iterations,
             attachments: None,
+            compat_images: Vec::new(),
             interaction_mode: None,
             sealed_plan_id: None,
             sealed_plan_markdown: None,

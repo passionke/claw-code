@@ -3621,6 +3621,30 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    /// Replace `entry_params_json.attachments` after compat images are stored. Author: kejiqing
+    pub async fn patch_turn_entry_attachments(
+        &self,
+        turn_id: &str,
+        attachments: &Value,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"UPDATE gateway_turns
+              SET entry_params_json = jsonb_set(
+                    COALESCE(entry_params_json, '{}'::jsonb),
+                    '{attachments}',
+                    $1::jsonb,
+                    true
+                  )
+              WHERE turn_id = $2 AND cluster_id = $3",
+        )
+        .bind(Json(attachments))
+        .bind(turn_id)
+        .bind(self.cluster_id())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn get_turn_client_origin(
         &self,
         turn_id: &str,

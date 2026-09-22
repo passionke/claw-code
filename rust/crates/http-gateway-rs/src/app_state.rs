@@ -152,6 +152,11 @@ pub(crate) struct SolveRequest {
     /// Session-relative attachments (uploaded via `/v1/sessions/{id}/files`). Author: kejiqing
     #[serde(default, rename = "attachments")]
     pub(crate) attachments: Option<Vec<gateway_solve_turn::SolveAttachment>>,
+    /// OpenAI compat images. Written to session `uploads/` before the task file. Not a JSON field.
+    /// Author: kejiqing
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub(crate) compat_images: Vec<crate::agent_completion::CompatImageSource>,
     /// `agent` (default) or `plan` (read-only alignment; relaxed only). Author: kejiqing
     #[serde(default, rename = "interactionMode")]
     pub(crate) interaction_mode: Option<String>,
