@@ -339,7 +339,8 @@ fn ip_blocked(ip: IpAddr) -> bool {
 
 fn https_host_blocked(host: &str) -> bool {
     let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
-    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
+    let label = host.rsplit('.').next().unwrap_or("");
+    if host == "localhost" || label == "localhost" || label == "local" {
         return true;
     }
     host.parse::<IpAddr>().is_ok_and(ip_blocked)
