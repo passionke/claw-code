@@ -8,9 +8,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::admin_auth::{
-    create_account, delete_project_member, list_accounts, login, patch_account,
-    require_members_manager, require_principal, require_system_admin, require_system_admin_or_open,
-    resolve_optional_principal, revoke_session_by_token, upsert_project_member, AccountPublic,
+    create_account, create_session, delete_project_member, list_accounts,
+    list_sessions_for_account, login, patch_account, require_members_manager, require_principal,
+    require_system_admin, require_system_admin_or_open, resolve_optional_principal,
+    revoke_session_by_token, revoke_session_for_account, upsert_project_member, AccountPublic,
+    SESSION_TOKEN_PREFIX,
 };
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
@@ -44,6 +46,14 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/v1/admin/me/mcp-tokens/{token_id}",
             delete(revoke_my_mcp_token_handler),
+        )
+        .route(
+            "/v1/admin/me/sessions",
+            get(list_my_sessions_handler).post(issue_my_session_handler),
+        )
+        .route(
+            "/v1/admin/me/sessions/{session_id}",
+            delete(revoke_my_session_handler),
         )
 }
 
@@ -417,6 +427,120 @@ pub(crate) async fn revoke_my_mcp_token_handler(
             "admin MCP token not found",
         ))
     }
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminSessionPublic {
+    pub session_id: String,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub current: bool,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ListSessionsResponse {
+    pub sessions: Vec<AdminSessionPublic>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueSessionResponse {
+    pub token: String,
+    pub session_id: String,
+    pub expires_at_ms: i64,
+}
+
+fn require_named_account(p: &crate::admin_auth::AuthPrincipal) -> Result<(), ApiError> {
+    if p.account_id.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "legacy token cannot manage login sessions",
+        ));
+    }
+    Ok(())
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/admin/me/sessions",
+    tag = "Admin Auth",
+    operation_id = "list_my_sessions_handler",
+    responses((status = 200, description = "Own login sessions", body = ListSessionsResponse))
+)]
+pub(crate) async fn list_my_sessions_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ListSessionsResponse>, ApiError> {
+    let p = require_principal(&state.session_db, &headers).await?;
+    require_named_account(&p)?;
+    let current = extract_bearer_token(
+        headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok()),
+    )
+    .filter(|t| t.starts_with(SESSION_TOKEN_PREFIX));
+    let rows = list_sessions_for_account(&state.session_db, &p.account_id, current.as_deref())
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(ListSessionsResponse {
+        sessions: rows
+            .into_iter()
+            .map(|row| AdminSessionPublic {
+                session_id: row.session_id,
+                created_at_ms: row.created_at_ms,
+                expires_at_ms: row.expires_at_ms,
+                current: row.current,
+            })
+            .collect(),
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/me/sessions",
+    tag = "Admin Auth",
+    operation_id = "issue_my_session_handler",
+    responses((status = 200, description = "Login token issued", body = IssueSessionResponse))
+)]
+pub(crate) async fn issue_my_session_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<IssueSessionResponse>, ApiError> {
+    let p = require_principal(&state.session_db, &headers).await?;
+    require_named_account(&p)?;
+    let (token, session_id, expires_at_ms) = create_session(&state.session_db, &p.account_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(IssueSessionResponse {
+        token,
+        session_id,
+        expires_at_ms,
+    }))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/v1/admin/me/sessions/{session_id}",
+    tag = "Admin Auth",
+    operation_id = "revoke_my_session_handler",
+    params(("session_id" = String, Path, description = "Login session id")),
+    responses((status = 200, description = "Login session revoked"))
+)]
+pub(crate) async fn revoke_my_session_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let p = require_principal(&state.session_db, &headers).await?;
+    require_named_account(&p)?;
+    let revoked = revoke_session_for_account(&state.session_db, &session_id, &p.account_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if !revoked {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "session not found"));
+    }
+    Ok(Json(json!({ "revoked": true, "sessionId": session_id })))
 }
 
 /// Used by global admin-mcp-tokens issue: require system_admin when auth present;

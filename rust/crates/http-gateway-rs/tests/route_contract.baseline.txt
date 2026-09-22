@@ -15,6 +15,9 @@ POST	/v1/admin/mcp	admin_mcp_http_handler
 GET	/v1/admin/me/mcp-tokens	list_my_mcp_tokens_handler
 POST	/v1/admin/me/mcp-tokens	issue_my_mcp_token_handler
 DELETE	/v1/admin/me/mcp-tokens/{token_id}	revoke_my_mcp_token_handler
+GET	/v1/admin/me/sessions	list_my_sessions_handler
+POST	/v1/admin/me/sessions	issue_my_session_handler
+DELETE	/v1/admin/me/sessions/{session_id}	revoke_my_session_handler
 GET	/v1/ag-ui/runs	get_ag_ui_run
 GET	/v1/agent/feedback	get_agent_feedback
 POST	/v1/agent/feedback	post_agent_feedback

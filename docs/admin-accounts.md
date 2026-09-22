@@ -17,15 +17,18 @@ Author: kejiqing
 2. Playground `POST /__admin_login__` → gateway `POST /v1/admin/auth/login` → cookie 存 `cass_…` 会话。
 3. `/__proxy__` 自动注入 `Authorization: Bearer cass_…`。
 
-## MCP Token（持续管理调用）
+## 我的 TOKEN
 
-- 任意登录账号：`POST /v1/admin/me/mcp-tokens` 颁发绑定自身的 `camt_`（明文仅一次）。
-- Admin MCP `POST /v1/admin/mcp` 按账号 ACL 校验工具 `projId`。
-- 存量无 `accountId` 的 `camt_`：过渡期内视为 system_admin 作用域（兼容旧脚本）。
+Admin UI：**我的 TOKEN**（侧边栏与右上角）。同一页签发三种，明文都只在颁发时返回一次。
+
+- MCP：`GET/POST/DELETE /v1/admin/me/mcp-tokens`，绑定当前账号的 `camt_`。Admin MCP `POST /v1/admin/mcp` 按账号 ACL 校验工具 `projId`。存量无 `accountId` 的 `camt_` 过渡期内视为 system_admin。
+- 登录：`GET/POST /v1/admin/me/sessions`、`DELETE /v1/admin/me/sessions/{sessionId}`。与网页登录同一张 `gateway_admin_sessions`，Bearer `cass_`，有效期 7 天。新签发不替换当前浏览器会话。
+- 接口调用：`GET/POST /v1/projects/{projId}/model-api-keys`、`DELETE .../{id}`。绑定顶栏当前项目的 `ngmk_`，用于 `/v1/responses` 与 `/v1/chat/completions`。
 
 ## 关键 API
 
 - `GET/POST /v1/admin/accounts` — 仅 system_admin（Admin UI：**全局配置 → 账号管理**）
 - `PUT/DELETE /v1/admin/accounts/{id}/projects/{projId}` — 设定/移除空间管理员
 - `GET /v1/admin/auth/me` — 当前身份与 `projectIds`
-- `GET/POST/DELETE /v1/admin/me/mcp-tokens` — 我的 token
+- `GET/POST/DELETE /v1/admin/me/mcp-tokens` — 我的 MCP token（`camt_`）
+- `GET/POST /v1/admin/me/sessions`、`DELETE /v1/admin/me/sessions/{sessionId}` — 我的登录 token（`cass_`）

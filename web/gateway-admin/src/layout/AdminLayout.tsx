@@ -55,7 +55,7 @@ function buildTabItems(systemAdmin: boolean): MenuProps["items"] {
     { key: "/prompt", icon: <FileTextOutlined />, label: "系统提示词" },
     { key: "/tools", icon: <ToolOutlined />, label: "Tools" },
     { key: "/extra-session", icon: <FormOutlined />, label: "extraSession" },
-    { key: "/my-mcp-tokens", icon: <ApiOutlined />, label: "我的 MCP Token" },
+    { key: "/my-mcp-tokens", icon: <ApiOutlined />, label: "我的 TOKEN" },
   ];
   if (systemAdmin) {
     items.push({
@@ -147,7 +147,7 @@ export default function AdminLayout() {
     {
       key: "my-mcp",
       icon: <ApiOutlined />,
-      label: "我的 MCP Token",
+      label: "我的 TOKEN",
     },
     { type: "divider" },
     {
