@@ -47,7 +47,11 @@ pub struct E2bWorkerSettings {
     #[serde(rename = "buildId", default)]
     pub build_id: Option<String>,
     /// Publish fingerprint. Kept across settings saves so an unchanged component is not rebuilt.
-    #[serde(rename = "contentHash", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "contentHash",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub content_hash: Option<String>,
     #[serde(rename = "poolSize", default)]
     pub pool_size: Option<u32>,
