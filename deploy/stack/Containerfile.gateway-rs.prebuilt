@@ -27,6 +27,7 @@ COPY deploy/stack/.linux-artifacts/release/http-gateway-rs /usr/local/bin/http-g
 # claw-vscode VSIX for e2b OVS bootstrap (package-claw-vscode-vsix.sh before image build). kejiqing
 COPY deploy/stack/claw.claw-vscode-*.vsix /app/deploy/stack/
 COPY deploy/e2b/e2b_exec.py /app/deploy/e2b/
+COPY deploy/e2b/requirements-e2b-sdk.txt /tmp/requirements-e2b-sdk.txt
 COPY scripts/mind-kb/ /app/scripts/mind-kb/
 COPY docs/gpos-assistant-prompt-content.md /app/docs/
 # Self-hosted e2b exec helper (CLAW_E2B_EXEC_HELPER default). Author: kejiqing
@@ -35,9 +36,9 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
       pip3 install --no-cache-dir --break-system-packages \
         -i https://pypi.tuna.tsinghua.edu.cn/simple \
         --trusted-host pypi.tuna.tsinghua.edu.cn \
-        e2b e2b-code-interpreter; \
+        -r /tmp/requirements-e2b-sdk.txt; \
     else \
-      pip3 install --no-cache-dir --break-system-packages e2b e2b-code-interpreter; \
+      pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements-e2b-sdk.txt; \
     fi \
     && chmod +x /app/deploy/e2b/e2b_exec.py
 # Artifact upload may drop +x; enforce before ENTRYPOINT. kejiqing

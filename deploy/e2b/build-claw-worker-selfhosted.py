@@ -14,6 +14,7 @@ _E2B_DIR = Path(__file__).resolve().parent
 if str(_E2B_DIR) not in sys.path:
     sys.path.insert(0, str(_E2B_DIR))
 from e2b_pg_settings import merge_settings_json_key
+from e2b_template_content_hash import digest_parts, try_skip_unchanged
 from e2b_template_registry import (
     apply_template_skip_cache_force,
     load_repo_dotenv,
@@ -288,6 +289,7 @@ def main() -> int:
     from e2b import Template, default_build_logger
 
     skip_cache = _env("CLAW_E2B_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no")
+    content_digest = ""
 
     # e2bserver rejects custom ACR apps (claw-gateway-worker) as "must be Debian-based"
     # even when the image IS bookworm. Bootstrap therefore uses debian: + COPY claw.
@@ -305,6 +307,15 @@ def main() -> int:
         worker_image = _worker_base_image()
         e2b_image = _build_e2b_worker_image(worker_image)
         print(f"==> e2b Template.build from_image={e2b_image!r} (e2b host pulls from registry)")
+        content_digest = digest_parts(
+            [
+                ("image", e2b_image.encode()),
+                ("start", WORKER_START_CMD.encode()),
+                ("ready", WORKER_READY_CMD.encode()),
+            ]
+        )
+        if try_skip_unchanged("e2bWorker", content_digest):
+            return 0
         template = Template().from_image(e2b_image)
         template = template.set_start_cmd(WORKER_START_CMD, WORKER_READY_CMD)
         apply_template_skip_cache_force(template, skip_cache)
@@ -353,6 +364,17 @@ def main() -> int:
             dockerfile_path = staging / "Dockerfile"
             dockerfile_path.write_text(_dockerfile_debian_copy(), encoding="utf-8")
             print(f"==> e2b Template.build debian+COPY claw (base={template_debian_base_image()!r})")
+            content_digest = digest_parts(
+                [
+                    ("claw.bin", claw_bin.read_bytes()),
+                    ("Dockerfile", dockerfile_path.read_bytes()),
+                    ("debian", template_debian_base_image().encode()),
+                    ("start", WORKER_START_CMD.encode()),
+                    ("ready", WORKER_READY_CMD.encode()),
+                ]
+            )
+            if try_skip_unchanged("e2bWorker", content_digest):
+                return 0
             template = (
                 Template(file_context_path=str(staging))
                 .from_dockerfile(str(dockerfile_path))
@@ -392,6 +414,7 @@ def main() -> int:
                 {
                     "templateId": build.template_id,
                     "buildId": build.build_id,
+                    "contentHash": content_digest,
                     "alias": alias,
                     "updatedAtMs": now_ms,
                 },

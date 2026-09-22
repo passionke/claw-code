@@ -22,6 +22,7 @@ from e2b_template_registry import (
     template_gateway_worker_image,
 )
 from e2b_template_build import build_template_with_retry
+from e2b_template_content_hash import digest_tree, try_skip_unchanged
 from ovs_bundle import (
     ovs_port,
     pack_ovs_bundle,
@@ -155,7 +156,7 @@ def _relaxed_dockerfile(port: int, ext_ver: str) -> str:
     )
 
 
-def _persist_pg(alias: str, build) -> None:
+def _persist_pg(alias: str, build, content_digest: str) -> None:
     now_ms = int(time.time() * 1000)
     try:
         from e2b_pg_settings import merge_settings_json_key
@@ -165,6 +166,7 @@ def _persist_pg(alias: str, build) -> None:
             {
                 "templateId": build.template_id,
                 "buildId": build.build_id,
+                "contentHash": content_digest,
                 "alias": alias,
                 "updatedAtMs": now_ms,
             },
@@ -225,6 +227,17 @@ def main() -> int:
         dockerfile = staging / "Dockerfile"
         dockerfile.write_text(_relaxed_dockerfile(port, ext_ver), encoding="utf-8")
         print(f"==> e2b Template.build from_dockerfile (debian + OVS :{port}/ovs)")
+        content_digest = digest_tree(
+            staging,
+            [
+                ("ovs-image", _ovs_upstream_image().encode()),
+                ("debian", template_debian_base_image().encode()),
+                ("start", b"/usr/local/bin/claw-worker-relaxed-start"),
+                ("ready", b"/usr/local/bin/claw-worker-relaxed-ready"),
+            ],
+        )
+        if try_skip_unchanged("e2bWorkerRelaxed", content_digest):
+            return 0
         template = (
             Template(file_context_path=str(staging))
             .from_dockerfile(str(dockerfile))
@@ -246,7 +259,7 @@ def main() -> int:
 
     print(f"template_id: {build.template_id}")
     print(f"build_id: {build.build_id}")
-    _persist_pg(alias, build)
+    _persist_pg(alias, build, content_digest)
     print(
         "hint: rebuild only updates PG; new build is used after gateway restart, "
         "manual worker reset, or when the sandbox is dead"

@@ -20,8 +20,8 @@ while [[ $# -gt 0 ]]; do
       cat <<'EOF'
 Usage: ./deploy/stack/gateway.sh e2b-pre-bootstrap [options]
 
-  1) build-selfhosted-templates.sh  (local .venv-fc → e2b API docker build)
-  2) e2b-singletons-up --reuse      (nas-api / ovs / observe → PG)
+  1) template publish is Admin-only (this command refuses to build templates)
+  2) e2b-singletons-up --reuse      (nas-api / ovs / observe → PG) when --skip-templates
   3) print gateway up --release hint
 
 Options:
@@ -36,14 +36,15 @@ EOF
   esac
 done
 
-BUILD_SH="${REPO_ROOT}/deploy/e2b/build-selfhosted-templates.sh"
 if [[ "${skip_templates}" -eq 0 ]]; then
-  if [[ -f "${BUILD_SH}" ]]; then
-    "${BUILD_SH}" "${template_args[@]}"
-  else
-    echo "==> skip templates (no ${BUILD_SH}; run on claw-code dev machine)" >&2
-    echo "    cd ~/work/claw-code && ./deploy/e2b/build-selfhosted-templates.sh" >&2
-  fi
+  echo "error: template publish is Admin-only (init / 重打模板)." >&2
+  echo "    script: ${REPO_ROOT}/deploy/e2b/bootstrap-templates-from-ci-tag.sh <tag>" >&2
+  echo "    pass --skip-templates to bring up singletons only" >&2
+  exit 1
+fi
+if [[ ${#template_args[@]} -gt 0 ]]; then
+  echo "error: --skip-cache applies to template publish, which is Admin-only" >&2
+  exit 1
 fi
 
 if [[ "${skip_singletons}" -eq 0 ]]; then

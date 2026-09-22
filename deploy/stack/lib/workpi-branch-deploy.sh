@@ -4,7 +4,7 @@
 # Example: ./deploy/stack/lib/workpi-branch-deploy.sh branch-feat-router-finish
 #
 # Path:
-#   1) e2b-worker-deploy --from-ci-image <tag>  # amd64 claw from ACR → e2b templates
+#   1) bootstrap-templates-from-ci-tag.sh <tag>  # same Admin publish channel
 #   2) gateway.sh build local                  # arm64 http-gateway-rs (required on workPi)
 #   3) gateway.sh restart
 #
@@ -51,8 +51,8 @@ echo "    worker: ACR claw-code → e2b templates"
 echo "    gateway: local arm64 (ACR amd64 cannot exec on aarch64)"
 echo "    repo=${REPO_ROOT}"
 
-echo "==> 1/3 e2b-worker-deploy --from-ci-image ${TAG}"
-"${GATEWAY}" e2b-worker-deploy --from-ci-image "${TAG}"
+echo "==> 1/3 publish e2b templates from CI tag ${TAG}"
+"${REPO_ROOT}/deploy/e2b/bootstrap-templates-from-ci-tag.sh" "${TAG}"
 
 if [[ "${SKIP_GATEWAY_BUILD}" -eq 0 ]]; then
   echo "==> 2/3 gateway build local (arm64)"

@@ -24,9 +24,8 @@ Author: kejiqing
 # 1. 配置
 cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID、PG URL、e2b keys
 
-# 2. e2b 四类模板 → 写 PG templateId（dev 机，需 .venv-fc + e2b API 可达）
-./deploy/e2b/build-selfhosted-templates.sh
-# 或：./deploy/stack/gateway.sh e2b-pre-bootstrap
+# 2. e2b 模板 → Admin 初始化 / 重打模板（唯一通道）
+./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
 
 # 3. 起 gateway + playground
 ./deploy/stack/gateway.sh quick
@@ -59,22 +58,18 @@ cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID、PG 
 
 单例运行时（非 templateId）：`e2bOvs.baseUrl` / `e2bObserve.baseUrl` / `e2bNasApi.baseUrl` + `clawTap`（observe 代理 URL）；create 后写 `appliedBuildId`。
 
-**rebuild 原则：** 构建只更新 PG；不会因远端升级自动换运行中沙箱。换镜像靠 gateway 重启、手工 reset，或沙箱失活重建。
+**rebuild 原则：** 内容哈希没变就不打新 `buildId`。运行中健康沙箱不因新 pin 被杀。gateway 启动只切换不一致的，切完才就绪。
 
 PG 写入 helper：[`deploy/e2b/e2b_pg_settings.py`](../deploy/e2b/e2b_pg_settings.py) 的 `merge_settings_json_key()`。需 `CLAW_GATEWAY_DATABASE_URL`。
 
 ### 1.2 一键构建命令
 
 ```bash
-# 全部：worker(strict+relaxed alias) + nas-api + ovs + observe
-./deploy/e2b/build-selfhosted-templates.sh [--skip-cache]
+# 唯一发布通道（Admin 界面调的就是这一支）
+./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
 
-# 单目标
-./deploy/e2b/build-selfhosted-templates.sh --only worker
-./deploy/e2b/build-selfhosted-templates.sh --only ovs
-
-# 经 gateway 包装（templates → singletons）
-./deploy/stack/gateway.sh e2b-pre-bootstrap [--skip-templates] [--reset]
+# 单例（模板已发布之后）
+./deploy/stack/gateway.sh e2b-pre-bootstrap --skip-templates [--reset]
 ```
 
 构建成功日志应含 `persisted e2bWorker.templateId`（strict）或 `skip PG e2bWorker`（relaxed）。
@@ -82,7 +77,7 @@ PG 写入 helper：[`deploy/e2b/e2b_pg_settings.py`](../deploy/e2b/e2b_pg_settin
 ### 1.3 日常改 worker 二进制（dev）
 
 ```bash
-./deploy/stack/gateway.sh e2b-worker-deploy [--skip-compile]
+./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
 ```
 
 唯一手册：[`deploy/e2b/WORKER-BUILD.md`](../deploy/e2b/WORKER-BUILD.md)。
@@ -193,7 +188,7 @@ CLAW_GATEWAY_ADMIN_BIND=1 ./deploy/stack/gateway.sh up
 | `clean` | `lib/clean.sh` |
 | `build` | `lib/build.sh` → `lib/linux-compile.sh` |
 | `pack-deploy` | `lib/pack-deploy.sh` |
-| `e2b-worker-deploy` | `lib/e2b-worker-deploy.sh` → `deploy/e2b/build-claw-worker-selfhosted.py` |
+| `e2b-worker-deploy` | 已移除。模板发布：`deploy/e2b/bootstrap-templates-from-ci-tag.sh` |
 | `up` / `down` / `restart` | `lib/up.sh` / `lib/down.sh` |
 | `pg-up` / `pg-down` | `lib/pg-up.sh` / `lib/pg-down.sh` |
 | `admin-build` / `admin-reload` | `lib/build-gateway-admin.sh` / `lib/admin-reload.sh` |
@@ -203,7 +198,7 @@ CLAW_GATEWAY_ADMIN_BIND=1 ./deploy/stack/gateway.sh up
 | `cluster-verify` | `lib/claw-cluster-verify.sh` |
 | `e2b-singletons-up` | `lib/e2b-singletons-up.sh` |
 | `ovs-up` / `observe-tap-up` / `nas-api-up` | `lib/e2b-ovs-up.sh` 等 |
-| `e2b-pre-bootstrap` | `lib/e2b-pre-bootstrap.sh` → `deploy/e2b/build-selfhosted-templates.sh` |
+| `e2b-pre-bootstrap` | `lib/e2b-pre-bootstrap.sh`（仅 `--skip-templates` 拉单例；不打模板） |
 | `install-docker` | `lib/install-docker.sh` |
 | `e2e` | `tests/http-gateway-session-continuity-e2e.sh` |
 

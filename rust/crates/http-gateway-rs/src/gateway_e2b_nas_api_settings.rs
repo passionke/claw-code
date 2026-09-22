@@ -16,6 +16,9 @@ pub struct E2bNasApiSettings {
     /// Desired template build id (from build script). Author: kejiqing
     #[serde(rename = "buildId", default)]
     pub build_id: Option<String>,
+    /// Publish fingerprint. Kept across settings saves so an unchanged component is not rebuilt.
+    #[serde(rename = "contentHash", default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
     /// Build id of the running singleton sandbox (set on create). Author: kejiqing
     #[serde(rename = "appliedBuildId", default)]
     pub applied_build_id: Option<String>,

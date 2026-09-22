@@ -27,8 +27,7 @@ e2b sandbox runtime is billed separately (MicroVM uptime; use sleep/wake to redu
 
 Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径**（SDK `Template.build` 上传）：
 
-- **dev worker**：本机 `linux/amd64` compile + `COPY` → `gateway.sh e2b-worker-deploy`（见上文 **Dev 模式**）
-- **release worker**：`FROM <CI claw-gateway-worker:release-vX>` 抽二进制再 upload，或 `from_image` 策略
+- **唯一发布通道**：Admin 初始化 / 重打模板，脚本 `bootstrap-templates-from-ci-tag.sh <tag>`（从 CI 镜像抽二进制再 `Template.build`）
 - cloud worker: `from_image`，或 `file_context_path` + Dockerfile `COPY`
 
 严禁使用临时 HTTP artifact server、`RUN curl http://host:port/...`、`dockerfile-http`、`CLAW_*_TEMPLATE_HTTP_*` 等非标准路径。模板构建链路必须由 e2b SDK 负责上传上下文或引用镜像，不允许依赖本机临时端口、内网 HTTP、手写 artifact server。Author: kejiqing
@@ -38,7 +37,7 @@ Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径*
 日常改 `rusty-claude-cli`（e2b 沙箱内 `claw`）：
 
 ```bash
-./deploy/stack/gateway.sh e2b-worker-deploy
+./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
 ```
 
 **唯一手册：** [`WORKER-BUILD.md`](./WORKER-BUILD.md)（架构 amd64、PG 上报、gateway 自动 reconcile/续期）。
@@ -52,9 +51,9 @@ Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径*
 | e2b SDK | `Template.build` → 写 PG `e2bWorker.templateId` |
 | gateway | 启动 reconcile + renewal ticker 自动轮换 proj worker |
 
-完整说明：[`WORKER-BUILD.md`](./WORKER-BUILD.md)。脚本：`deploy/stack/lib/e2b-worker-deploy.sh`。
+完整说明：[`WORKER-BUILD.md`](./WORKER-BUILD.md)。脚本：`deploy/e2b/bootstrap-templates-from-ci-tag.sh`。
 
-`e2b-worker-deploy` 默认打 **strict + relaxed**（同一份 stage claw；relaxed 另 bake OVS）。observe / nas-api / 独立 ovs 模板仍按需单独 build。
+这一支打 strict、relaxed、observe、nas-api。内容哈希没变的组件跳过 `Template.build`。
 
 ### Observe 单例（clawTap / LLM 代理 + Live）
 
@@ -116,7 +115,7 @@ OVS `@claw` 需要沙箱内有 **`claw`** 与 **`ttyd`**。因 e2b builder / ACR
 
 #### 1. 一次性：把工具装到 NAS（legacy）
 
-`install-nas-fc-tools.sh` **已从仓库移除**。自托管路径请用 `./deploy/e2b/build-selfhosted-templates.sh` 或 `gateway.sh e2b-worker-deploy`。
+`install-nas-fc-tools.sh` **已从仓库移除**。自托管路径用 Admin 发布：`./deploy/e2b/bootstrap-templates-from-ci-tag.sh <tag>`。
 
 #### 2. `.env`（交互 e2b 模式，legacy Aliyun）
 

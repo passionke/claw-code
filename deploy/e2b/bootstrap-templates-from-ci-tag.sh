@@ -66,20 +66,41 @@ if [[ -z "${E2B_API_KEY}" || -z "${E2B_API_URL}" ]]; then
   exit 1
 fi
 
-# Prefer existing venv; else create under ART_ROOT (repo may be read-only). Author: kejiqing
+# Prefer existing venv; reinstall when the pinned SDK versions drift. Author: kejiqing
 VENV_DIR="${CLAW_E2B_VENV}"
 PY="${VENV_DIR}/bin/python3"
+SDK_REQ="${E2B_DIR}/requirements-e2b-sdk.txt"
 ensure_venv() {
   local -a pip_extra=()
   if claw_region_is_china; then
     pip_extra=(-i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn)
   fi
-  if [[ -x "${PY}" ]] && "${PY}" -c "import e2b, psycopg" 2>/dev/null; then
+  if [[ ! -x "${PY}" ]]; then
+    echo "==> create ${VENV_DIR} (e2b SDK)" >&2
+    python3 -m venv "${VENV_DIR}"
+  fi
+  if "${PY}" - "${SDK_REQ}" <<'PY'
+import importlib.metadata as metadata
+import sys
+req = open(sys.argv[1], encoding="utf-8")
+wanted = {}
+for raw in req:
+    line = raw.strip()
+    if not line or line.startswith("#") or "==" not in line:
+        continue
+    name, ver = line.split("==", 1)
+    wanted[name.replace("_", "-").lower()] = ver.strip()
+import psycopg  # noqa: F401
+for name, ver in wanted.items():
+    got = metadata.version(name)
+    if got != ver:
+        raise SystemExit(f"{name} {got} != {ver}")
+PY
+  then
     return 0
   fi
-  echo "==> create ${VENV_DIR} (e2b SDK)" >&2
-  python3 -m venv "${VENV_DIR}"
-  "${PY}" -m pip install -q "${pip_extra[@]}" e2b==2.26.0 e2b-code-interpreter python-dotenv 'psycopg[binary]'
+  echo "==> install pinned e2b SDK from ${SDK_REQ}" >&2
+  "${PY}" -m pip install -q "${pip_extra[@]}" -r "${SDK_REQ}" python-dotenv 'psycopg[binary]'
 }
 ensure_venv
 

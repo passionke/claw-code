@@ -152,7 +152,7 @@ set -a && source .env && set +a
 **失败时：**
 
 1. 模板是否存在：`curl -sS -H "X-API-Key: $CLAW_E2B_API_KEY" "$CLAW_E2B_API_URL/templates" | grep claw-observe`
-2. 缺模板 → 开发机：`./deploy/e2b/build-claw-observe-selfhosted.py` 或 `build-selfhosted-templates.sh observe`
+2. 缺模板 → Admin 发布：`./deploy/e2b/bootstrap-templates-from-ci-tag.sh <tag>`
 3. Live 一直不通 → 250 上看 e2bserver 日志；必要时 `--reset` 再试
 
 ---

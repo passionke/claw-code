@@ -61,7 +61,7 @@ fi
 
 claw_apply_pack_deploy_image_tag "${TAG}"
 echo "==> FC: claw is baked into e2b template only (no NAS copy)." >&2
-echo "    After claw change: ./deploy/stack/gateway.sh e2b-worker-deploy" >&2
+echo "    After claw change: Admin 重打模板 (deploy/e2b/bootstrap-templates-from-ci-tag.sh <tag>)" >&2
 
 claw_step_begin "2/4 restart stack (down + up)"
 if [[ "${TAG}" == local && -f "${STACK_DIR}/.claw-image-release.env" ]]; then

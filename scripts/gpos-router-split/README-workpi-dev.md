@@ -69,7 +69,7 @@ python3 scripts/gpos-router-split/acceptance_smoke.py --scenario 4
 
 ```text
 - CI run URL + ACR tag
-- e2b-worker-deploy 日志：strict/relaxed templateId + buildId
+- 模板发布日志：strict/relaxed templateId + buildId（`bootstrap-templates-from-ci-tag.sh`）
 - 场景 sessionId / turnId
 - tools API：delegate 条数 + output 是否含 `reportPath`
 - Admin 终稿截图或复制全文
@@ -88,6 +88,6 @@ python3 scripts/gpos-router-split/acceptance_smoke.py --scenario 4
 ## 禁止
 
 - Mac/laptop 打 94 fleet e2b 模板（arm64 宿主 + amd64 worker → 用 CI 镜像）
-- 只 `gateway restart` 不 `e2b-worker-deploy` 却期望 sandbox claw 变
+- 只 `gateway restart` 不发布模板却期望 sandbox claw 变
 - 只改 gateway 不推 branch CI 却期望 worker 内 `delegate_project_tool` 行为变
 - 用宿主机 checkout 解释线上行为（见 `release-runtime-truth`）

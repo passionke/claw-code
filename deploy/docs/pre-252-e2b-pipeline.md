@@ -17,7 +17,7 @@ Author: kejiqing
 ```mermaid
 flowchart LR
   subgraph dev["开发机 claw-code"]
-    T[build-selfhosted-templates.sh]
+    T[bootstrap-templates-from-ci-tag.sh]
   end
   subgraph host250["192.168.9.250"]
     PG[(PostgreSQL :5432)]
@@ -64,8 +64,7 @@ cd ~/work/claw-code
 cp deploy/stack/env.pre-252.e2b.example .env   # 或已有 .env
 # 必填：CLAW_E2B_API_URL、CLAW_E2B_API_KEY
 
-./deploy/e2b/build-selfhosted-templates.sh
-# 或仅 worker：./deploy/e2b/build-selfhosted-templates.sh worker --skip-cache
+./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
 ```
 
 等价一条龙（模板 + singleton 注册，**不**起 gateway）：
@@ -114,7 +113,7 @@ CLAW_E2B_TEMPLATE_SKIP_CACHE=1    # 或 build 脚本 --skip-cache
 
 | 现象 | 处理 |
 |------|------|
-| `no schedulable worker for template claw-nas-api` | 250 上缺模板 → 开发机跑 `build-selfhosted-templates.sh` |
+| `no schedulable worker for template claw-nas-api` | 250 上缺模板 → Admin 发布 / `bootstrap-templates-from-ci-tag.sh` |
 | e2b 401 | `.env` 用了 worker_token，改 api_key |
 | `CLAW_E2B_CN` 不生效 | `.env` 行内 `#` 注释会被误读；注释单独一行 |
 | debian 拉取超时 | `CLAW_E2B_CN=1` 或 250 Docker daemon 配 registry mirror |
@@ -140,4 +139,4 @@ git pull
 ./deploy/stack/gateway.sh up --release release-vX.Y.Z
 ```
 
-Worker 模板变更时需先在开发机重跑 `build-selfhosted-templates.sh worker`。
+Worker 模板变更时走 Admin 发布（`bootstrap-templates-from-ci-tag.sh`）；内容没变则不会打出新 buildId。
