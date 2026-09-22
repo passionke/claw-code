@@ -381,10 +381,11 @@ pub async fn delete_project_member(
     Ok(res.rows_affected() > 0)
 }
 
+/// Plaintext, session id, expires_at_ms. Author: kejiqing
 pub async fn create_session(
     db: &GatewaySessionDb,
     account_id: &str,
-) -> Result<(String, i64), String> {
+) -> Result<(String, String, i64), String> {
     let session_id = format!("sess-{}", Uuid::new_v4());
     let secret = Uuid::new_v4().to_string().replace('-', "");
     let plain = format!("{SESSION_TOKEN_PREFIX}{session_id}_{secret}");
@@ -405,7 +406,7 @@ pub async fn create_session(
     .execute(db.pg_pool())
     .await
     .map_err(|e| e.to_string())?;
-    Ok((plain, expires))
+    Ok((plain, session_id, expires))
 }
 
 pub async fn revoke_session_by_token(db: &GatewaySessionDb, plain: &str) -> Result<bool, String> {
@@ -473,6 +474,67 @@ pub async fn login(
         return Err("invalid username or password".into());
     }
     let principal = principal_from_account(db, &acc).await?;
-    let (token, expires) = create_session(db, &acc.account_id).await?;
+    let (token, _session_id, expires) = create_session(db, &acc.account_id).await?;
     Ok((principal, token, expires))
+}
+
+#[derive(Debug, Clone)]
+pub struct AdminSessionView {
+    pub session_id: String,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub current: bool,
+}
+
+/// Login sessions for one account. `current_plain` marks the caller's bearer. Author: kejiqing
+pub async fn list_sessions_for_account(
+    db: &GatewaySessionDb,
+    account_id: &str,
+    current_plain: Option<&str>,
+) -> Result<Vec<AdminSessionView>, String> {
+    let current_hash = current_plain
+        .map(str::trim)
+        .filter(|s| s.starts_with(SESSION_TOKEN_PREFIX))
+        .map(hash_token);
+    let rows = sqlx::query(
+        "SELECT session_id, token_hash, created_at_ms, expires_at_ms
+         FROM gateway_admin_sessions
+         WHERE cluster_id = $1 AND account_id = $2
+         ORDER BY created_at_ms DESC",
+    )
+    .bind(db.cluster_id())
+    .bind(account_id)
+    .fetch_all(db.pg_pool())
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let token_hash: String = row.get("token_hash");
+            AdminSessionView {
+                session_id: row.get("session_id"),
+                created_at_ms: row.get("created_at_ms"),
+                expires_at_ms: row.get("expires_at_ms"),
+                current: current_hash.as_deref() == Some(token_hash.as_str()),
+            }
+        })
+        .collect())
+}
+
+pub async fn revoke_session_for_account(
+    db: &GatewaySessionDb,
+    session_id: &str,
+    account_id: &str,
+) -> Result<bool, String> {
+    let res = sqlx::query(
+        "DELETE FROM gateway_admin_sessions
+         WHERE cluster_id = $1 AND session_id = $2 AND account_id = $3",
+    )
+    .bind(db.cluster_id())
+    .bind(session_id.trim())
+    .bind(account_id)
+    .execute(db.pg_pool())
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(res.rows_affected() > 0)
 }

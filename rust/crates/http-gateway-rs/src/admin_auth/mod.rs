@@ -16,7 +16,8 @@ pub(crate) use principal::{
     resolve_optional_principal,
 };
 pub use store::{
-    create_account, delete_project_member, ensure_seed_system_admin, list_accounts, login,
-    patch_account, revoke_session_by_token, to_public, upsert_project_member, AccountPublic,
+    create_account, create_session, delete_project_member, ensure_seed_system_admin, list_accounts,
+    list_sessions_for_account, login, patch_account, revoke_session_by_token,
+    revoke_session_for_account, to_public, upsert_project_member, AccountPublic, AdminSessionView,
     SESSION_TOKEN_PREFIX,
 };
