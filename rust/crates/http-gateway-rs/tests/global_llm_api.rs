@@ -211,10 +211,10 @@ async fn first_write_window_probe_failure_rejects_number_only() {
         supports_vision: false,
         supports_video: false,
         supports_audio: false,
-            note: None,
-            context_window_tokens: Some(991_808),
-            compact_ratio_percent: None,
-        })
+        note: None,
+        context_window_tokens: Some(991_808),
+        compact_ratio_percent: None,
+    })
     .await
     .expect("seed saved window");
 

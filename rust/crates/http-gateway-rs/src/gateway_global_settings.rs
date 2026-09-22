@@ -866,8 +866,7 @@ async fn llm_entry_to_public(
             supports_audio = row.supports_audio;
             context_window_tokens =
                 crate::llm_context_window::window_u32(row.context_window_tokens);
-            compact_ratio_percent =
-                crate::llm_context_window::ratio_u32(row.compact_ratio_percent);
+            compact_ratio_percent = crate::llm_context_window::ratio_u32(row.compact_ratio_percent);
         }
     }
     let is_active_model = !store.active_id.is_empty() && store.active_id == entry.id;

@@ -10,9 +10,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::compact::{
-    compact_session, estimate_session_prompt_units, CompactionConfig,
-};
+use crate::compact::{compact_session, estimate_session_prompt_units, CompactionConfig};
 use crate::session::Session;
 
 pub const CONTEXT_WINDOW_ENV: &str = "CLAW_CONTEXT_WINDOW_TOKENS";
@@ -57,7 +55,8 @@ pub fn compact_trigger_units(window: u32, ratio_percent: u32) -> usize {
 
 #[must_use]
 pub fn tool_result_inline_limit(window: u32) -> usize {
-    let limit = u64::from(window).saturating_mul(u64::from(TOOL_RESULT_INLINE_WINDOW_PERCENT)) / 100;
+    let limit =
+        u64::from(window).saturating_mul(u64::from(TOOL_RESULT_INLINE_WINDOW_PERCENT)) / 100;
     usize::try_from(limit).unwrap_or(usize::MAX).max(1)
 }
 
@@ -435,7 +434,10 @@ mod tests {
             output.clone(),
         );
         assert!(shown.contains("mcp__sls-prod__sls_execute_sql"));
-        assert!(shown.contains("tool-outputs/call_______evil.txt"), "{shown}");
+        assert!(
+            shown.contains("tool-outputs/call_______evil.txt"),
+            "{shown}"
+        );
         assert!(!shown.contains(output.as_str()));
         assert!(shown.is_char_boundary(shown.len()));
         let disk = fs::read_to_string(tmp.path().join("tool-outputs/call_______evil.txt")).unwrap();

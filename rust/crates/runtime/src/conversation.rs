@@ -4267,10 +4267,7 @@ mod tests {
             seen: Arc<Mutex<Vec<String>>>,
         }
         impl ApiClient for TwoStep {
-            fn stream(
-                &mut self,
-                request: ApiRequest,
-            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 let text = request
                     .messages
                     .iter()
