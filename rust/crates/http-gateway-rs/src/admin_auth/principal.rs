@@ -6,6 +6,7 @@ use crate::api_error::ApiError;
 use crate::gateway_admin_mcp_token::{
     extract_bearer_token, verify_admin_mcp_token, TOKEN_PREFIX as CAMT_PREFIX,
 };
+use crate::project_model_api_key::TOKEN_PREFIX as NGMK_PREFIX;
 use crate::session_db::GatewaySessionDb;
 
 use super::acl::{
@@ -16,7 +17,7 @@ use super::store::{
     get_account_by_id, principal_from_account, resolve_session_principal, SESSION_TOKEN_PREFIX,
 };
 
-/// Resolve optional principal from Bearer (cass_ or camt_). Author: kejiqing
+/// Resolve optional principal from Bearer (`cass_`, `camt_`, or `ngmk_`). Author: kejiqing
 pub(crate) async fn resolve_optional_principal(
     db: &GatewaySessionDb,
     headers: &HeaderMap,
@@ -56,6 +57,16 @@ pub(crate) async fn resolve_optional_principal(
         // Transition: unbound camt_ → system_admin scope.
         return Ok(Some(AuthPrincipal::legacy_camt_system_admin()));
     }
+    if tok.starts_with(NGMK_PREFIX) {
+        let key = db
+            .verify_project_model_api_key(&tok)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::UNAUTHORIZED, e))?;
+        return Ok(Some(AuthPrincipal::project_access_key(
+            &key.name,
+            key.proj_id,
+        )));
+    }
     Ok(None)
 }
 
@@ -63,9 +74,16 @@ pub(crate) async fn require_principal(
     db: &GatewaySessionDb,
     headers: &HeaderMap,
 ) -> Result<AuthPrincipal, ApiError> {
-    resolve_optional_principal(db, headers)
+    let p = resolve_optional_principal(db, headers)
         .await?
-        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "authentication required"))
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "authentication required"))?;
+    if p.project_access_key {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "admin session or MCP token required",
+        ));
+    }
+    Ok(p)
 }
 
 /// When principal present: must be system_admin. When absent: allow (trusted internal). Author: kejiqing

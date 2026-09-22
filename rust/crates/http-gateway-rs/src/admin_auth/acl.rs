@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Resolved caller after cass_ session or camt_ token verification.
+/// Resolved caller after cass_ session, camt_ MCP token, or ngmk_ access key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthPrincipal {
     pub account_id: String,
@@ -13,6 +13,9 @@ pub struct AuthPrincipal {
     /// True when principal came from a legacy camt_ without accountId (transition).
     #[serde(default)]
     pub legacy_unbound_camt: bool,
+    /// True when principal came from an agent project access key (`ngmk_`). Author: kejiqing
+    #[serde(default)]
+    pub project_access_key: bool,
 }
 
 impl AuthPrincipal {
@@ -24,6 +27,7 @@ impl AuthPrincipal {
             system_admin: true,
             project_ids: Vec::new(),
             legacy_unbound_camt: false,
+            project_access_key: false,
         }
     }
 
@@ -39,6 +43,26 @@ impl AuthPrincipal {
             system_admin: false,
             project_ids,
             legacy_unbound_camt: false,
+            project_access_key: false,
+        }
+    }
+
+    /// Agent `ngmk_` key: access to one project, not an admin account. Author: kejiqing
+    #[must_use]
+    pub fn project_access_key(name: impl Into<String>, proj_id: i64) -> Self {
+        let username = name.into();
+        let username = username.trim();
+        Self {
+            account_id: String::new(),
+            username: if username.is_empty() {
+                "agent-key".into()
+            } else {
+                username.to_string()
+            },
+            system_admin: false,
+            project_ids: vec![proj_id],
+            legacy_unbound_camt: false,
+            project_access_key: true,
         }
     }
 
@@ -51,6 +75,7 @@ impl AuthPrincipal {
             system_admin: true,
             project_ids: Vec::new(),
             legacy_unbound_camt: true,
+            project_access_key: false,
         }
     }
 }
@@ -187,6 +212,19 @@ mod tests {
         assert!(can_access_project(&p, 10));
         assert!(can_access_project(&p, 20));
         assert!(!can_access_project(&p, 15));
+    }
+
+    #[test]
+    fn project_access_key_is_single_project() {
+        let p = AuthPrincipal::project_access_key("sqlbot", 7);
+        assert!(p.project_access_key);
+        assert!(p.account_id.is_empty());
+        assert!(!can_manage_global(&p));
+        assert!(!can_manage_members(&p));
+        assert!(!can_create_or_delete_project(&p));
+        assert!(can_access_project(&p, 7));
+        assert!(!can_access_project(&p, 8));
+        assert_eq!(filter_project_ids(&p, &[7, 8]), vec![7]);
     }
 
     #[test]

@@ -683,7 +683,8 @@ export default function ProjectPage() {
       <Card title="项目角色" size="small" style={{ marginBottom: 16 }}>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
           `router` 用于对外承接入口并串行委托 specialist；`master` 用于学徒 / 观察空间；
-          `knowledge_base` 用于承载 Mind 知识库源与同步任务；`observation` 仅能通过学徒配对自动生成。
+          `knowledge_base` 用于承载 Mind 知识库源与同步任务；`steerable` 用于会话 inbox 与 mid-turn steer；
+          `observation` 仅能通过学徒配对自动生成。
         </Typography.Paragraph>
         <Space wrap style={{ marginBottom: 12 }}>
           <Tag
@@ -694,7 +695,9 @@ export default function ProjectPage() {
                   ? "blue"
                   : projectRole === "observation"
                     ? "cyan"
-                    : "default"
+                    : projectRole === "steerable"
+                      ? "green"
+                      : "default"
             }
           >
             role={projectRole}
@@ -708,6 +711,7 @@ export default function ProjectPage() {
               { value: "router", label: "router" },
               { value: "master", label: "master" },
               { value: "knowledge_base", label: "knowledge_base" },
+              { value: "steerable", label: "steerable" },
               { value: "observation", label: "observation（只读）", disabled: true },
             ]}
           />
