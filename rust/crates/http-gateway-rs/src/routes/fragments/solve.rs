@@ -693,17 +693,21 @@ pub(crate) async fn validate_solve_request(
             "maxIterations must be >= 1",
         ));
     }
-    let has_attachments = req.attachments.as_ref().is_some_and(|a| !a.is_empty());
+    let has_inline_images = !req.compat_images.is_empty();
+    let has_attachments =
+        req.attachments.as_ref().is_some_and(|a| !a.is_empty()) || has_inline_images;
     if req.user_prompt.trim().is_empty() && !has_attachments {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "userPrompt cannot be empty",
         ));
     }
-    if let Some(atts) = req.attachments.as_ref() {
-        let needs_vision = atts
-            .iter()
-            .any(|a| a.kind == gateway_solve_turn::SolveAttachmentKind::Image);
+    let atts = req.attachments.as_deref().unwrap_or(&[]);
+    {
+        let needs_vision = has_inline_images
+            || atts
+                .iter()
+                .any(|a| a.kind == gateway_solve_turn::SolveAttachmentKind::Image);
         let needs_video = atts
             .iter()
             .any(|a| a.kind == gateway_solve_turn::SolveAttachmentKind::Video);

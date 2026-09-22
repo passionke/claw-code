@@ -93,7 +93,7 @@ curl -sS -X POST "$GATEWAY/v1/responses" \
 2. **禁止客户端 `tools`**：非空 → `unsupported_feature`。工具在 Agent / 项目侧执行。  
 3. **无异步 task 轮询**：没有 `taskId`；要进度请用 `/v1/solve_async`。  
 4. **Responses `stream=true`**：从 LiveReportHub 真流（`output_text.delta` 等）；Chat Completions 的 stream 仍可能是事后整包。过程 UI 见 AG-UI。  
-5. **无本路径 attachments / allowedTools**：需要附件或收紧工具白名单时走原生 solve。  
+5. **无 `allowedTools`，无 solve 式 `attachments` 字段**：收紧工具白名单、或传文档/音视频，走原生 solve。图片可走 Responses `input_image` / Chat `image_url`（https 或 data URL），网关落成同一套会话附件。  
 6. **Key 绑定项目**：换项目 = 换 Key，不能靠 body 改 `projId`。  
 7. **明文 token 只出现一次**：创建响应里的 `token` 须自行保管；列表接口只返回前缀与元数据。  
 8. **`usage` 按 turn 合计**：来自 observe tap 写入的 `gateway_model_usage`（须出站带 `claw-turn-id`）。表空则为 `null`，不要把 worker 内部 `TokenUsage` 或 Live HTML 当账单。多模型看 `nerogate.usageByModel`。
@@ -110,7 +110,7 @@ curl -sS -X POST "$GATEWAY/v1/responses" \
 | 业务上下文 | `extraSession` | `extra_session` |
 | 超时 | `timeoutSeconds` | `timeout` |
 | 工具白名单 | `allowedTools` | 不暴露 |
-| 附件 | `attachments` | 不暴露 |
+| 附件 | `attachments` | 图片：`input_image` / `image_url`；其它附件不暴露 |
 | 轮次 id | 响应 `turnId` | 响应 `id` / `nerogate.turnId` |
 | 会话 id | 响应 `sessionId` | 头 `x-nerogate-session-id` / `nerogate.sessionId` |
 

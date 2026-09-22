@@ -12,7 +12,7 @@ OpenAI Responses 形状的入口，与 Chat Completions 共用同一 Agent solve
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `model` | 是 | 同 Chat：等于 Key 的 `modelAlias` 或 `proj-{projId}` |
-| `input` | 是 | 字符串，或含文本的数组（见下） |
+| `input` | 是 | 字符串，或含文本/图片的数组（见下） |
 | `instructions` | 否 | 补充说明，会拼进 prompt 前部 |
 | `conversation` | 否 | **稳定会话键**（对应 Chat 的 `user`） |
 | `previous_response_id` | 否 | 上一轮响应的 `id`（即上一轮 `turnId`）；用于续同一 session |
@@ -24,7 +24,9 @@ OpenAI Responses 形状的入口，与 Chat Completions 共用同一 Agent solve
 ### `input` 形态
 
 - 字符串：非空即可  
-- 数组：拼接每项字符串，或项上的 `content` / `text` 文本；拼完后仍须非空  
+- 数组：拼接每项字符串，或项上的 `content` / `text` 文本  
+- 图片：`content` 里的 `input_image`。`image_url` 为 https URL，或 `data:image/png|jpeg|webp|gif;base64,...`。网关把图片写入会话 `uploads/`，再走与 solve 相同的附件。`file_id` 不支持。仅图片、没有文字也可以  
+- 生效模型须 `supportsVision=true`，否则 `400`（`MODEL_NO_VISION`）
 
 ### 示例：同步
 

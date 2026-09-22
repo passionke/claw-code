@@ -272,6 +272,7 @@ pub(crate) async fn confirm_session_plan(
         allowed_tools: None,
         max_iterations: None,
         attachments: None,
+        compat_images: Vec::new(),
         interaction_mode: Some("agent".into()),
         sealed_plan_id: Some(plan.plan_id.clone()),
         sealed_plan_markdown: Some(plan.body_markdown.clone()),

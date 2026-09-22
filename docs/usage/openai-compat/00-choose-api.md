@@ -66,7 +66,7 @@ OpenAI 兼容接口把 Chat Completions / Responses 的请求**归一化成一�
 | 显式 `sessionId` | 支持 | 用 `user` / `conversation` / `previous_response_id` 映射 |
 | `extraSession` | 支持 | 支持（字段名 `extra_session`） |
 | `allowedTools` | 支持 | **本路径不暴露**（走项目/网关默认） |
-| `attachments` | 支持 | **本路径不暴露** |
+| `attachments` | 支持 | 不接受 solve 的 `attachments` 字段；图片用 Responses `input_image` 或 Chat `image_url` |
 | 异步 `taskId` + 轮询 | solve_async | 无 |
 | 标准 OpenAI SDK | 需适配器 | 开箱可用 |
 

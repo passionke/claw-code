@@ -26,7 +26,7 @@ Base URL 示例：`http://127.0.0.1:18088`
 | `GET` / `POST` | `/v1/projects/{proj_id}/model-api-keys` | 可选 `camt_…` | 列表 / 签发（明文 `token` 仅创建时返回） |
 | `DELETE` | `/v1/projects/{proj_id}/model-api-keys/{token_id}` | 可选 `camt_…` | 吊销 |
 
-要点：非空 OpenAI `tools` → `400 unsupported_feature`；`stream=true` 先同步跑完再推最终内容（非 token 流）；响应 `id`=`turnId`，头 `x-nerogate-session-id`=`sessionId`。本路径不暴露 `allowedTools` / `attachments`。
+要点：非空 OpenAI `tools` → `400 unsupported_feature`；`stream=true` 先同步跑完再推最终内容（非 token 流）；响应 `id`=`turnId`，头 `x-nerogate-session-id`=`sessionId`。本路径不暴露 `allowedTools`，也不接受 solve 的 `attachments` 字段。图片用 Responses `input_image` 或 Chat `image_url`（https 或 `data:image/*;base64`），网关写入会话 `uploads/` 后走同一套 solve 附件；模型须 `supportsVision`。`file_id` 不支持。
 
 ## Solve
 
