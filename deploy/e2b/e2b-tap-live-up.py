@@ -93,10 +93,10 @@ def _env(name: str, default: str = "") -> str:
 
 
 def _tap_client_from_base_model_url(raw: str) -> str:
-    """Match http-gateway-rs gateway_tap_client path rules. Author: kejiqing"""
+    """Match http-gateway-rs gateway_tap_client. claude-tap v0.0.18 ClientName has no openai. Author: kejiqing"""
     s = (raw or "").strip()
     if not s:
-        return "openai"
+        return "codex"
     lower = s.lower()
     for prefix in ("https://", "http://"):
         if lower.startswith(prefix):
@@ -111,12 +111,12 @@ def _tap_client_from_base_model_url(raw: str) -> str:
         path = path.replace("//", "/")
     path = path.rstrip("/") or ""
     if path.endswith("/chat/completions"):
-        return "openai"
+        return "codex"
     if path.endswith("/messages"):
         return "claude"
     if path.endswith("/responses"):
         return "codex"
-    return "openai"
+    return "codex"
 
 
 def _resolve_observe_tap_client() -> str:
@@ -127,7 +127,7 @@ def _resolve_observe_tap_client() -> str:
         base = _env(key)
         if base:
             return _tap_client_from_base_model_url(base)
-    return "openai"
+    return "codex"
 
 
 def _is_self_hosted(api_url: str) -> bool:
