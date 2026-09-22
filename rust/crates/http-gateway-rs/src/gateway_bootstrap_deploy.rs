@@ -172,11 +172,7 @@ pub fn bootstrap_env_snapshot(db: &GatewaySessionDb) -> BootstrapEnvSnapshot {
     }
     let build_script = repo_root.as_ref().and_then(|r| {
         let publish = r.join("deploy/e2b/bootstrap-templates-from-ci-tag.sh");
-        if publish.is_file() {
-            return Some(publish);
-        }
-        let legacy = r.join("deploy/e2b/build-selfhosted-templates.sh");
-        legacy.is_file().then_some(legacy)
+        publish.is_file().then_some(publish)
     });
     let deploy_writable = deploy_path
         .as_ref()

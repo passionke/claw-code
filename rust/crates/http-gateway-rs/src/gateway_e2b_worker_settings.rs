@@ -46,6 +46,13 @@ pub struct E2bWorkerSettings {
     /// Template build id (version signal). Empty = no pin; startup does not force image refresh.
     #[serde(rename = "buildId", default)]
     pub build_id: Option<String>,
+    /// Publish fingerprint. Kept across settings saves so an unchanged component is not rebuilt.
+    #[serde(
+        rename = "contentHash",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content_hash: Option<String>,
     #[serde(rename = "poolSize", default)]
     pub pool_size: Option<u32>,
     #[serde(rename = "alias", default)]

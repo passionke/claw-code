@@ -328,11 +328,8 @@ pub async fn run() {
         std::process::exit(1);
     }
     if let Err(e) = pool_clients.reconcile_project_workers_on_startup().await {
-        tracing::warn!(
-            target: "claw_e2b_proj_worker",
-            error = %e,
-            "startup project worker reconcile failed (best-effort)"
-        );
+        eprintln!("http-gateway-rs: project worker startup switch failed: {e}");
+        std::process::exit(1);
     }
     info!(
         target: "claw_gateway_orchestration",

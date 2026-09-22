@@ -24,6 +24,7 @@ from e2b_template_registry import (
     template_gateway_worker_image,
 )
 from e2b_template_build import build_template_with_retry
+from e2b_template_content_hash import digest_parts, try_skip_unchanged
 from registry_extract import extract_file_from_image
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -230,6 +231,7 @@ def main() -> int:
     from e2b import Template, default_build_logger
 
     skip_cache = _env("CLAW_E2B_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no")
+    content_digest = ""
 
     # Bootstrap: e2b rejects claw-tap / missing debian-bookworm-claw-observe → debian+COPY. Author: kejiqing
     if _env("CLAW_E2B_OBSERVE_SKIP_LOCAL_BUILD") in ("1", "true", "yes"):
@@ -253,6 +255,18 @@ def main() -> int:
                 f"==> e2b Template.build debian+COPY claude-tap "
                 f"(base={template_debian_base_image()!r})"
             )
+            content_digest = digest_parts(
+                [
+                    ("claude-tap", tap_bin.read_bytes()),
+                    ("Dockerfile", dockerfile_path.read_bytes()),
+                    ("debian", template_debian_base_image().encode()),
+                    ("start", OBSERVE_START_CMD.encode()),
+                    ("ready", OBSERVE_READY_CMD.encode()),
+                    ("live_port", str(live_port).encode()),
+                ]
+            )
+            if try_skip_unchanged("e2bObserve", content_digest):
+                return 0
             template = (
                 Template(file_context_path=str(staging))
                 .from_dockerfile(str(dockerfile_path))
@@ -272,6 +286,16 @@ def main() -> int:
         e2b_image = _e2b_observe_image_tag(skip_cache=skip_cache)
         e2b_image = _build_e2b_observe_image(live_port, e2b_image)
         print(f"==> e2b Template.build from_image={e2b_image!r}")
+        content_digest = digest_parts(
+            [
+                ("image", e2b_image.encode()),
+                ("start", OBSERVE_START_CMD.encode()),
+                ("ready", OBSERVE_READY_CMD.encode()),
+                ("live_port", str(live_port).encode()),
+            ]
+        )
+        if try_skip_unchanged("e2bObserve", content_digest):
+            return 0
         template = (
             Template()
             .from_image(e2b_image)
@@ -298,6 +322,7 @@ def main() -> int:
             {
                 "templateId": build.template_id,
                 "buildId": build.build_id,
+                "contentHash": content_digest,
                 "alias": alias,
                 "imageRef": image_ref,
                 "updatedAtMs": now_ms,

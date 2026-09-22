@@ -46,10 +46,10 @@ cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID、e2b
 solve / terminal 在 **e2b MicroVM** 里跑 `claw`，不在 gateway 镜像里。改 `rusty-claude-cli`（`claw` 二进制）后：
 
 ```bash
-./deploy/stack/gateway.sh e2b-worker-deploy
+./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
 ```
 
-**不要**再为日常开发走：`push → GitHub CI → ACR pull → build 模板` 那条链。
+发布只走这一支（Admin 初始化 / 重打模板背后的脚本）。
 
 ### 本机 arm64 worker 节点（`10.8.0.2`）
 
@@ -60,7 +60,7 @@ CLAW_E2B_WORKER_ARCH=arm64
 CLAW_E2B_DEV_WORKER_HOST=10.8.0.2
 ```
 
-`e2b-worker-deploy` 会 **原生编 linux/arm64**（无 amd64 模拟），模板上传到 e2b API；调度由 e2b 派到本机 worker 节点。生产节点 `10.8.0.1` 仍可用 `CLAW_E2B_WORKER_ARCH=amd64`。
+发布脚本从 CI 镜像抽出 amd64 `claw` 再打模板；调度由 e2b 派到 worker 节点。生产节点保持 `linux/amd64`。
 
 ### 这条命令做什么
 
@@ -82,9 +82,9 @@ Mac 是 **模板发布客户端**；沙箱在 e2b worker 节点（如 `10.8.0.2`
 
 ```bash
 # 已编好 claw，只重打模板
-./deploy/stack/gateway.sh e2b-worker-deploy --skip-compile
+./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
 
-./deploy/stack/gateway.sh e2b-worker-deploy --no-verify
+# 发布脚本内部按内容哈希跳过未变化的组件
 ```
 
 ### Gateway 怎么认出模板
@@ -95,18 +95,18 @@ Build 注册 **别名** `claw-worker`；Gateway `POST /sandboxes` 带 `templateI
 
 | 模式 | 何时用 | 架构 | 命令 |
 |------|--------|------|------|
-| **dev（本机 worker）** | 日常改 `claw` | `arm64`（Mac） | `e2b-worker-deploy` + `CLAW_E2B_WORKER_ARCH=arm64` |
+| **dev（本机 worker）** | 日常改 `claw` | `amd64` 模板 | `bootstrap-templates-from-ci-tag.sh <tag>` |
 | **release** | 生产 `10.8.0.1` | `amd64` | `CLAW_E2B_WORKER_ARCH=amd64` 或 CI `from_image` |
 
 OVS / observe / nas-api 模板变更频率低，仍按需单独 build，见 [`deploy/e2b/README.md`](../deploy/e2b/README.md)。
 
-更细：`deploy/stack/lib/e2b-worker-deploy.sh`、`deploy/e2b/build-claw-worker-selfhosted.py`。
+更细：`deploy/e2b/WORKER-BUILD.md`、`deploy/e2b/bootstrap-templates-from-ci-tag.sh`。
 
 ## 其它命令
 
 | 命令 | 作用 |
 |------|------|
-| `./deploy/stack/gateway.sh e2b-worker-deploy` | **dev**：本机编 `claw` → 上传 e2b 模板（arm64/amd64 由 `CLAW_E2B_WORKER_ARCH` 定） |
+| `./deploy/e2b/bootstrap-templates-from-ci-tag.sh <tag>` | 打 e2b 模板（Admin 同一通道；内容没变则跳过） |
 | `./deploy/stack/gateway.sh playground` | 仅起 host 调试页 |
 | `./deploy/stack/gateway.sh admin-build` | 只构建 React Admin `dist/` |
 | `./deploy/stack/gateway.sh down` | 停 gateway + playground |
@@ -126,7 +126,7 @@ OVS / observe / nas-api 模板变更频率低，仍按需单独 build，见 [`de
 ## 常见坑
 
 - **`zsh: no such file or directory: ./deploy/stack/gateway.sh`** — 先 `cd` 到仓库根。
-- **solve 503 / e2b 错误** — 查 `CLAW_E2B_API_URL`、模板是否已 build；改 `claw` 用 `e2b-worker-deploy`，见上文 **dev 模式** 或 `deploy/e2b/README.md`。
+- **solve 503 / e2b 错误** — 查 `CLAW_E2B_API_URL`、模板是否已发布；改 `claw` 用 `bootstrap-templates-from-ci-tag.sh`，见 `deploy/e2b/WORKER-BUILD.md`。
 - **Admin 界面旧** — `gateway.sh admin-build` 或 `quick`；浏览器强制刷新。
 
 更多：`deploy/stack/README.md`、`docs/README.md`。

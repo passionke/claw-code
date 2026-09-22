@@ -1,0 +1,4 @@
+# Pinned for self-hosted e2b. Do not float: newer SDKs change connect routing headers.
+# e2b-code-interpreter 2.9.0 still accepts e2b>=2.26.0,<3. Author: kejiqing
+e2b==2.26.0
+e2b-code-interpreter==2.9.0

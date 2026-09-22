@@ -16,7 +16,7 @@ Commands:
   clean         Remove rust/target (or --debug-only) + .linux-artifacts; optional podman cache/images
   build         clean (default) + build images (Darwin: podman run compile; log: .build.log)
   pack-deploy   Build gateway images + restart stack (slow; after Rust/image changes; log: .build.log)
-  e2b-worker-deploy  amd64 claw → e2b strict+relaxed templates (+ PG); Mac: --from-ci-image TAG
+  e2b-worker-deploy  REMOVED — publish templates from Admin (bootstrap-templates-from-ci-tag.sh)
   playground    Run host playground UI (solve_async + /admin; builds admin dist first)
   admin-build   Local only: gateway-admin dist (needs Node>=18; set CLAW_GATEWAY_ADMIN_LOCAL_BUILD=1)
   admin-reload  Local only: admin-build + copy dist into playground container (not for --release servers)
@@ -41,7 +41,7 @@ Commands:
   observe-tap-up Ensure e2b observe singleton (gateway API)
   nas-api-up    Ensure e2b claw-nas-api singleton (gateway API)
   e2b-singletons-up  nas-api + ovs + observe via gateway API (--reset to recreate)
-  e2b-pre-bootstrap  build templates (local) then singletons → PG; then gateway up --release
+  e2b-pre-bootstrap  singletons only (--skip-templates); template publish is Admin-only
   pre-252-e2b-up     REMOVED — use up --release (e2b internalizes former host pool/tap)
   tap-down      Stop pool claude-tap only (legacy compose; production uses e2b observe)
   build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
@@ -81,7 +81,11 @@ case "${cmd}" in
   clean) "${LIB}/clean.sh" "$@" ;;
   build) run_with_manual_hint "${LIB}/build.sh" "$@" ;;
   pack-deploy) run_with_manual_hint "${LIB}/pack-deploy.sh" "$@" ;;
-  e2b-worker-deploy) run_with_manual_hint "${LIB}/e2b-worker-deploy.sh" "$@" ;;
+  e2b-worker-deploy)
+    echo "error: e2b-worker-deploy removed. Publish e2b templates from Admin init / 重打模板." >&2
+    echo "    script: deploy/e2b/bootstrap-templates-from-ci-tag.sh <release-or-branch-tag>" >&2
+    exit 1
+    ;;
   playground) "${LIB}/playground.sh" "$@" ;;
   admin-build) "${LIB}/build-gateway-admin.sh" "$@" ;;
   admin-reload) "${LIB}/admin-reload.sh" "$@" ;;

@@ -9,6 +9,7 @@
 //! buildId/templateId changed at runtime. New image is applied on gateway startup
 //! (`image_refresh`), manual reset, or when the sandbox is dead/unhealthy.
 
+use futures_util::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -43,6 +44,8 @@ use super::worker_profile::{
 use super::NasLayoutBackend;
 
 const PROJECT_WORKER_CONTRACT_VERSION: &str = "nas-session-root-v3";
+/// Parallel sandbox switches during gateway startup. Author: kejiqing
+const STARTUP_WORKER_SWITCH_CONCURRENCY: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct WorkerSlotKey {
@@ -132,6 +135,30 @@ fn contract_requires_rotation(stored: &str, desired: &str) -> bool {
     stored_parts.version != desired_parts.version
         || stored_parts.home_rev != desired_parts.home_rev
         || stored_parts.profile != desired_parts.profile
+}
+
+/// Applied `@build` pin. Relabel may change the template name only when this matches. Author: kejiqing
+fn applied_build_pin(key: &str) -> Option<String> {
+    parse_worker_contract(key).and_then(|parts| {
+        parts
+            .build_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// True when the stored contract may be rewritten without recreating the sandbox.
+/// A different build pin must stay recorded until startup actually switches. Author: kejiqing
+fn same_applied_build(stored: &str, desired: &str) -> bool {
+    let (Some(_stored_parts), Some(_desired_parts)) = (
+        parse_worker_contract(stored),
+        parse_worker_contract(desired),
+    ) else {
+        return false;
+    };
+    applied_build_pin(stored) == applied_build_pin(desired)
 }
 
 /// Startup / manual image window: desired build pin differs from applied. Author: kejiqing
@@ -333,17 +360,36 @@ impl E2bProjWorkerRegistry {
         info!(
             target: "claw_e2b_proj_worker",
             proj_count = proj_ids.len(),
+            concurrency = STARTUP_WORKER_SWITCH_CONCURRENCY,
             "reconcile project e2b workers on startup"
         );
+        let mut pools = Vec::with_capacity(proj_ids.len());
+        let mut slots = Vec::new();
         for proj_id in proj_ids {
-            if let Err(e) = self.reconcile_proj_image_refresh(proj_id).await {
-                warn!(
-                    target: "claw_e2b_proj_worker",
-                    proj_id,
-                    error = %e,
-                    "reconcile proj worker failed (best-effort)"
-                );
+            let pool_size = self.desired_pool_size(proj_id).await?;
+            pools.push((proj_id, pool_size));
+            for slot_index in 0..pool_size {
+                slots.push((proj_id, slot_index));
             }
+        }
+        let mut errors = Vec::new();
+        let results: Vec<Result<(), String>> = futures_util::stream::iter(slots)
+            .map(|(proj_id, slot_index)| self.reconcile_proj_slot(proj_id, slot_index, true))
+            .buffer_unordered(STARTUP_WORKER_SWITCH_CONCURRENCY)
+            .collect()
+            .await;
+        for result in results {
+            if let Err(e) = result {
+                errors.push(e);
+            }
+        }
+        for (proj_id, pool_size) in pools {
+            if let Err(e) = self.retire_overflow_slots(proj_id, pool_size).await {
+                errors.push(format!("proj {proj_id}: {e}"));
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
         }
         self.reap_cluster_warm_proj_orphans_best_effort().await;
         self.seed_lease_tracking_from_db().await;
@@ -475,6 +521,10 @@ impl E2bProjWorkerRegistry {
             self.reconcile_proj_slot(proj_id, slot_index, image_refresh)
                 .await?;
         }
+        self.retire_overflow_slots(proj_id, pool_size).await
+    }
+
+    async fn retire_overflow_slots(&self, proj_id: i64, pool_size: u32) -> Result<(), String> {
         let db = self.session_db().await?;
         let existing = db
             .list_project_e2b_workers(proj_id)
@@ -590,7 +640,9 @@ impl E2bProjWorkerRegistry {
                 let handle = self.normalize_handle(handle, spec.include_ovs);
                 let ovs_ok = !spec.include_ovs || self.relaxed_ovs_http_ok(&handle).await;
                 if ovs_ok {
-                    if existing.template_id != desired_contract {
+                    if existing.template_id != desired_contract
+                        && same_applied_build(&existing.template_id, &desired_contract)
+                    {
                         let now_ms = chrono::Utc::now().timestamp_millis();
                         let mut updated = existing.clone();
                         updated.template_id = desired_contract.clone();
@@ -1348,6 +1400,23 @@ mod tests {
         let legacy = worker_contract_key("tpl_a", None, "rev", "strict");
         let desired = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
         assert!(needs_recreate(&legacy, &desired, true, true));
+    }
+
+    #[test]
+    fn protocol_version_mismatch_recreates() {
+        let stored = "tpl_a@b1#nas-session-root-v3#home=rev#profile=strict";
+        let desired = "tpl_a@b1#nas-session-root-v4#home=rev#profile=strict";
+        assert!(needs_recreate(stored, desired, false, true));
+    }
+
+    #[test]
+    fn relabel_keeps_applied_build_pin() {
+        let stored = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let alias = worker_contract_key("claw-worker", Some("b1"), "rev", "strict");
+        let newer = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(same_applied_build(&stored, &alias));
+        assert!(!same_applied_build(&stored, &newer));
+        assert!(!same_applied_build("not-a-contract", &newer));
     }
 
     // S5: dead even with same build → recreate.

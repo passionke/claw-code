@@ -17,6 +17,7 @@ if str(_E2B_DIR) not in sys.path:
     sys.path.insert(0, str(_E2B_DIR))
 from e2b_pg_settings import merge_settings_json_key
 from e2b_template_build import build_template_with_retry
+from e2b_template_content_hash import digest_parts, try_skip_unchanged
 from e2b_template_registry import (
     load_repo_dotenv,
     log_debian_base_resolution,
@@ -157,6 +158,21 @@ def main() -> int:
         staging = Path(tmp)
         (staging / "server.py").write_bytes(SERVER_SRC.read_bytes())
         print(f"==> e2b Template.build alias={alias!r} (server.py baked into /opt/claw-nas-api)")
+        base_image = _env("CLAW_NAS_API_TEMPLATE_BASE_IMAGE") or template_debian_base_image()
+        content_digest = digest_parts(
+            [
+                ("server.py", SERVER_SRC.read_bytes()),
+                ("base", base_image.encode()),
+                ("apt", template_apt_prepare_prefix().encode()),
+                ("nfs", _nfs_sudo().encode()),
+                ("install", _install_nas_api_scripts(nas_port).encode()),
+                ("start", _nas_api_start_cmd(nas_port).encode()),
+                ("ready", _nas_api_ready_cmd(nas_port).encode()),
+                ("port", str(nas_port).encode()),
+            ]
+        )
+        if try_skip_unchanged("e2bNasApi", content_digest):
+            return 0
         template = _build_template(staging, nas_port)
         print(f"==> template startCmd=claw-nas-api :{nas_port}")
         headers = _build_headers()
@@ -182,6 +198,7 @@ def main() -> int:
             {
                 "templateId": build.template_id,
                 "buildId": build.build_id,
+                "contentHash": content_digest,
                 "alias": alias,
                 "updatedAtMs": now_ms,
             },

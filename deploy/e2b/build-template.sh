@@ -17,7 +17,7 @@ Usage: $0 [worker-image|fc-layered|template]
 
   worker-image  Build claw-gateway-worker (default CI image) locally
   fc-layered    Build e2b code-interpreter base + claw only (needs claw in deploy/e2b/)
-  template      Run E2B Template.build (see build-claw-worker-template.sh)
+  template      REMOVED — Admin publish (bootstrap-templates-from-ci-tag.sh)
 
 Env: CLAW_E2B_WORKER_IMAGE, CLAW_E2B_LAYERED_IMAGE, CLAW_E2B_TEMPLATE, CLAW_E2B_TEMPLATE_DEST_* (see README.md)
 EOF
@@ -44,7 +44,8 @@ case "${cmd}" in
       "fc-e2b-registry.cn-beijing.cr.aliyuncs.com/passionke/claw-worker:release-v1.6.12"
     ;;
   template)
-    exec "${ROOT_DIR}/deploy/e2b/build-claw-worker-template.sh"
+    echo "error: template publish is Admin-only: deploy/e2b/bootstrap-templates-from-ci-tag.sh <tag>" >&2
+    exit 1
     ;;
   -h|--help|help)
     usage
