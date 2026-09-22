@@ -42,11 +42,8 @@ export function useClusterBootstrap() {
     const poll = async (silent: boolean) => {
       const data = await refresh(silent);
       setReady(true);
-      // Keep polling while wizard is open (infra done ≠ operator acked). Author: kejiqing
-      const wizardOpen =
-        data == null ||
-        data.needsBootstrap === true ||
-        data.completedAtMs == null;
+      // Init ack is PG completedAtMs. Component health must not reopen the wizard. Author: kejiqing
+      const wizardOpen = data == null || data.completedAtMs == null;
       if (data && !wizardOpen) {
         if (timer !== undefined) {
           clearInterval(timer);
@@ -73,9 +70,8 @@ export function useClusterBootstrap() {
     snap,
     ready,
     refreshing,
-    // Infra incomplete OR user has not clicked「进入 Admin」yet. Author: kejiqing
-    needsBootstrap:
-      snap?.needsBootstrap === true || (snap != null && snap.completedAtMs == null),
+    // Wizard only when the DB ack is absent. Live phase failures stay on 核心组件. Author: kejiqing
+    needsBootstrap: snap != null && snap.completedAtMs == null,
     refresh,
   };
 }

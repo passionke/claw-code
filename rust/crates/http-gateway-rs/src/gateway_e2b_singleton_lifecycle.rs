@@ -437,22 +437,6 @@ async fn persist_nas_api(
         .await
 }
 
-/// Drop runtime endpoint fields so Admin does not show a dead sandbox as "running". Author: kejiqing
-async fn clear_nas_api_runtime(db: &GatewaySessionDb) -> Result<(), sqlx::Error> {
-    let now = now_ms();
-    let (settings, _, _) = get_gateway_global_settings(db).await?;
-    let value = serde_json::json!({
-        "templateId": settings.e2b_nas_api.template_id,
-        "buildId": settings.e2b_nas_api.build_id,
-        "appliedBuildId": serde_json::Value::Null,
-        "baseUrl": serde_json::Value::Null,
-        "sandboxId": serde_json::Value::Null,
-        "updatedAtMs": now,
-    });
-    db.merge_gateway_global_settings_json(&["e2bNasApi"], &value)
-        .await
-}
-
 #[allow(dead_code)]
 async fn persist_ovs(
     db: &GatewaySessionDb,
@@ -658,10 +642,9 @@ async fn ensure_nas_api(
         .await
     {
         Ok(h) => h,
-        Err(e) => {
-            let _ = clear_nas_api_runtime(db).await;
-            return Err(e);
-        }
+        // A refused control plane is not proof the stored singleton is gone.
+        // Wiping baseUrl here is what reopened init after :3000 dropped. Author: kejiqing
+        Err(e) => return Err(e),
     };
     let base_url = service_base_url(client, port, &handle.sandbox_id, &handle.sandbox_domain);
     let health_url = format!("{}/healthz", base_url.trim_end_matches('/'));
