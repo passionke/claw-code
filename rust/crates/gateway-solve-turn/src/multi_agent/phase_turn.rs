@@ -36,6 +36,7 @@ pub fn run_phase_turn(
     let policy = PermissionPolicy::new(PermissionMode::DangerFullAccess);
     let mut runtime =
         ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
+    runtime = runtime.with_auto_compaction_input_tokens_threshold(u32::MAX);
     runtime = runtime.with_max_iterations(max_iterations);
     if let Some(timing) = turn_timing {
         runtime = runtime.with_turn_timing(timing);

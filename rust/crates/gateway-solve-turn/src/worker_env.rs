@@ -34,6 +34,7 @@ pub const WORKER_ENV_KEYS: &[&str] = &[
     "OPENROUTER_API_KEY",
     "CLAW_DEFAULT_MODEL",
     "CLAW_CONTEXT_WINDOW_TOKENS",
+    "CLAW_CONTEXT_COMPACT_RATIO_PERCENT",
     "ANTHROPIC_MODEL",
     "CLAW_OPENAI_FALLBACK_MODEL",
     "CLAW_PREFER_OPENAI_PREFIX",
@@ -302,5 +303,6 @@ mod tests {
     #[test]
     fn worker_env_keys_include_context_window() {
         assert!(WORKER_ENV_KEYS.contains(&"CLAW_CONTEXT_WINDOW_TOKENS"));
+        assert!(WORKER_ENV_KEYS.contains(&"CLAW_CONTEXT_COMPACT_RATIO_PERCENT"));
     }
 }

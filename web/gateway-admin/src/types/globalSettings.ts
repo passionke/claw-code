@@ -50,6 +50,8 @@ export interface LlmModelRow {
   supportsAudio?: boolean;
   /** Max input tokens; unset = solve does not compact. Author: kejiqing */
   contextWindowTokens?: number | null;
+  /** Compact when the prompt reaches this percent of the window. Default 80. */
+  compactRatioPercent?: number | null;
   /** Present on save when the window number was rejected (other fields still saved). */
   contextWindowRejectedReason?: string;
   apiKeySet: boolean;
