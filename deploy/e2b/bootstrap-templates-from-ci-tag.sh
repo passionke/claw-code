@@ -29,7 +29,7 @@ PREFIX="$(claw_image_registry_prefix_from_env)"
 WORKER_IMAGE="${CLAW_E2B_WORKER_IMAGE:-${PREFIX}/claw-gateway-worker:${TAG}}"
 RELAXED_IMAGE="${CLAW_E2B_WORKER_RELAXED_IMAGE:-${PREFIX}/claw-gateway-worker-relaxed:${TAG}}"
 # Observe binary comes from claw-tap (not debian-bookworm-claw-observe — CI does not push that). Author: kejiqing
-TAP_IMAGE="${CLAUDE_TAP_IMAGE:-${PREFIX}/claw-tap:latest}"
+TAP_IMAGE="${CLAUDE_TAP_IMAGE:-${PREFIX}/claw-tap:v0.0.18}"
 
 # Writable dirs even when repo is mounted :ro into gateway. Author: kejiqing
 ART_ROOT="${CLAW_BOOTSTRAP_ARTIFACT_DIR:-/tmp/claw-bootstrap-${TAG}}"
