@@ -292,13 +292,12 @@ export default function ProjectPage() {
     loadDelegateTargets().catch(() => undefined);
   }, [loadDelegateTargets]);
 
+  // Server role only. Keeping projectRole out of the deps lets the dropdown stay on the choice until save. Author: kejiqing
   useEffect(() => {
     const nextRole =
       (projectConfig?.projectRole || row?.projectRole || "normal").trim() || "normal";
-    if (nextRole !== projectRole) {
-      setProjectRole(nextRole);
-    }
-  }, [projectConfig?.projectRole, row?.projectRole, projectRole]);
+    setProjectRole(nextRole);
+  }, [projectConfig?.projectRole, row?.projectRole]);
 
   useEffect(() => {
     if (!projectConfig) {
