@@ -179,10 +179,7 @@ fn legacy_tool_added(pe: &ProcessEvent) -> Value {
 
 /// Project one hub message into SSE frames. Legacy `output_text.delta` and
 /// `output_item.added` JSON stay unchanged. Author: kejiqing
-fn project_responses_msg(
-    cursor: &mut ResponsesCursor,
-    msg: &HubMsg,
-) -> Vec<(String, Value)> {
+fn project_responses_msg(cursor: &mut ResponsesCursor, msg: &HubMsg) -> Vec<(String, Value)> {
     let mut out = Vec::new();
     match msg {
         HubMsg::Delta(d) => {
@@ -200,11 +197,7 @@ fn project_responses_msg(
             ));
         }
         HubMsg::Process(pe) if pe.ev == "thinking.delta" => {
-            let text = pe
-                .payload
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let text = pe.payload.get("text").and_then(Value::as_str).unwrap_or("");
             if text.is_empty() {
                 return out;
             }
@@ -240,10 +233,7 @@ fn project_responses_msg(
         HubMsg::Process(pe) if pe.ev == "tool.start" => {
             close_text(cursor, &mut out);
             close_reasoning(cursor, &mut out);
-            out.push((
-                "response.output_item.added".into(),
-                legacy_tool_added(pe),
-            ));
+            out.push(("response.output_item.added".into(), legacy_tool_added(pe)));
             let id = tool_id(pe);
             let kind = tool_kind(pe);
             let display = cursor.display.resolve(&kind);
@@ -321,11 +311,7 @@ fn project_responses_msg(
         }
         HubMsg::Process(pe) if pe.ev == "shell.chunk" => {
             let id = tool_id(pe);
-            let text = pe
-                .payload
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let text = pe.payload.get("text").and_then(Value::as_str).unwrap_or("");
             if id.is_empty() || text.is_empty() {
                 return out;
             }
@@ -726,7 +712,8 @@ mod tests {
         );
         assert!(start
             .iter()
-            .all(|(name, body)| name != "response.output_item.added" || body.get("nerogate").is_none()));
+            .all(|(name, body)| name != "response.output_item.added"
+                || body.get("nerogate").is_none()));
         let end = project_responses_msg(
             &mut c,
             &HubMsg::Process(ProcessEvent {
@@ -775,10 +762,7 @@ mod tests {
     #[tokio::test]
     async fn stdout_thinking_signal_stays_out_of_report_text() {
         let body = gateway_solve_turn::gateway_stdout::thinking_delta_event("先想").expect("event");
-        let line = format!(
-            "{}{body}",
-            gateway_solve_turn::GATEWAY_STDOUT_LINE_PREFIX
-        );
+        let line = format!("{}{body}", gateway_solve_turn::GATEWAY_STDOUT_LINE_PREFIX);
         let hub = LiveReportHub::default();
         hub.ingest_stdout_line("Tsig", &line);
         assert!(hub.snapshot_text("Tsig").is_empty());
@@ -795,11 +779,9 @@ mod tests {
     async fn stdout_shell_chunk_is_live_and_updates_the_same_item() {
         let hub = LiveReportHub::default();
         let (mut rx, _, _, _) = hub.subscribe_with_process_snapshot("Tsh");
-        let body = gateway_solve_turn::gateway_stdout::shell_chunk_event("tc_bash", "a\n").expect("shell");
-        let line = format!(
-            "{}{body}",
-            gateway_solve_turn::GATEWAY_STDOUT_LINE_PREFIX
-        );
+        let body =
+            gateway_solve_turn::gateway_stdout::shell_chunk_event("tc_bash", "a\n").expect("shell");
+        let line = format!("{}{body}", gateway_solve_turn::GATEWAY_STDOUT_LINE_PREFIX);
         hub.ingest_stdout_line("Tsh", &line);
         assert!(hub.snapshot_text("Tsh").is_empty());
         let pe = match rx.recv().await {

@@ -246,9 +246,7 @@ pub fn ag_ui_from_ask_user(pending: &AskUserPending) -> Value {
 /// Map one HubMsg to zero or more AG-UI JSON events (excluding RUN_*). Author: kejiqing
 pub fn project_hub_msg(turn_id: &str, msg: &HubMsg, steps: &mut Vec<ProcessStep>) -> Vec<Value> {
     match msg {
-        HubMsg::Process(pe)
-            if pe.ev == "thinking.delta" || pe.ev == "shell.chunk" =>
-        {
+        HubMsg::Process(pe) if pe.ev == "thinking.delta" || pe.ev == "shell.chunk" => {
             // Responses-only events. Do not refresh A2UI. Author: kejiqing
             Vec::new()
         }
@@ -354,6 +352,8 @@ mod tests {
         assert!(frames.iter().any(|v| v["type"] == "TOOL_CALL_START"));
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].kind, "search");
-        assert!(!frames.iter().any(|v| v["type"] == "response.reasoning_text.delta"));
+        assert!(!frames
+            .iter()
+            .any(|v| v["type"] == "response.reasoning_text.delta"));
     }
 }
