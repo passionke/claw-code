@@ -682,8 +682,10 @@ mod tests {
     }
 
     fn http_json_response(status_line: &str, extra_headers: &str, body: &str) -> String {
+        // Connection: close — mock handles one request per accept; avoid keep-alive races
+        // (IncompleteMessage) when initialize + tools/call share a pooled connection. Author: kejiqing
         format!(
-            "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\n{extra_headers}Content-Length: {}\r\n\r\n{body}",
+            "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nConnection: close\r\n{extra_headers}Content-Length: {}\r\n\r\n{body}",
             body.len()
         )
     }
