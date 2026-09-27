@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke-test claw-worker-relaxed: OVS, NAS mounts, claw binary. Author: kejiqing"""
+"""Smoke-test claw-worker-relaxed: tools-only (claw present, sleep startcmd, NAS). Author: kejiqing"""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,6 @@ import subprocess
 import sys
 import time
 import urllib.error
-import urllib.request
 from pathlib import Path
 
 _E2B_DIR = Path(__file__).resolve().parent
@@ -18,7 +17,6 @@ if str(_E2B_DIR) not in sys.path:
 
 from e2b_nas_bind_config import e2b_host_mount_root, http_json_selfhosted
 from e2b_template_registry import load_repo_dotenv
-from ovs_bundle import ovs_port
 
 load_repo_dotenv(ROOT)
 
@@ -87,7 +85,6 @@ def _relaxed_template_id(api_url: str, api_key: str, explicit: str) -> str:
 
 def _latest_relaxed_template_from_panel(api_url: str, api_key: str) -> str:
     """Prefer GET /templates/{id} latest ready; fall back to health alias match (not lex sort)."""
-    # Resolve alias → stable templateID via health, then ask Panel for builds.
     code, health = _http("GET", f"{api_url.rstrip('/')}/health", api_key)
     if code != 200:
         _fail(f"GET /health HTTP {code}")
@@ -103,7 +100,6 @@ def _latest_relaxed_template_from_panel(api_url: str, api_key: str) -> str:
             "no claw-worker-relaxed template with imagePresent=true — "
             "run build-claw-worker-relaxed-selfhosted.py"
         )
-    # Prefer a single stable templateID (alias may list one canonical id after Panel merge).
     tid = (candidates[0].get("templateId") or "").strip()
     if not tid:
         _fail("claw-worker-relaxed health entry missing templateId")
@@ -117,7 +113,7 @@ def _latest_relaxed_template_from_panel(api_url: str, api_key: str) -> str:
                 if str(b.get("status") or b.get("Status") or "").lower()
                 in ("ready", "built", "success", "")
             ] or builds
-            # Newest first if timestamps exist; else last entry.
+
             def _ts(b: object) -> str:
                 if not isinstance(b, dict):
                     return ""
@@ -146,12 +142,11 @@ def main() -> int:
     sandbox_url = _env("CLAW_E2B_SANDBOX_URL", "http://10.8.0.1:3002")
     domain = _env("CLAW_E2B_DOMAIN", "supone.top")
     cluster = _env("CLAW_CLUSTER_ID", "local-dev")
-    proj = int(_env("CLAW_E2B_E2E_PROJ_ID", _env("CLAW_OVS_E2E_PROJ_ID", "2")))
+    proj = int(_env("CLAW_E2B_E2E_PROJ_ID", _env("CLAW_RELAXED_E2E_PROJ_ID", "2")))
     worker = _env("CLAW_RELAXED_VERIFY_WORKER", "wrk_relaxed_verify")
     template = _relaxed_template_id(api_url, api_key, _env("CLAW_E2B_TEMPLATE_RELAXED"))
-    ovs_port_num = ovs_port()
 
-    print(f"==> template={template!r} proj={proj} cluster={cluster!r}")
+    print(f"==> template={template!r} proj={proj} cluster={cluster!r} (tools-only)")
 
     host_root = e2b_host_mount_root(
         api_url=api_url,
@@ -249,13 +244,10 @@ def main() -> int:
             "command -v pip",
             "test -x /usr/local/bin/claw-worker-relaxed-start",
             "test -x /usr/local/bin/claw-worker-relaxed-ready",
-            "test -x /usr/local/bin/claw-ovs-start",
-            "test -x /usr/local/bin/claw-ovs-ready",
-            f"curl -fsS --connect-timeout 3 http://127.0.0.1:{ovs_port_num}/ovs/",
-            "test -f /opt/claw-ovs/server-data/Machine/settings.json",
-            "grep -q disabled.invalid /opt/claw-ovs/server-data/Machine/settings.json",
-            'HOME=/opt/claw-ovs/home /home/.openvscode-server/bin/openvscode-server --list-extensions --extensions-dir=/opt/claw-extensions --server-data-dir=/opt/claw-ovs/server-data | grep -q "^claw\\.claw-vscode$"',
-            "test -d /home/.openvscode-server",
+            # tools-only: no OVS binaries / openvscode
+            "! test -x /usr/local/bin/claw-ovs-start",
+            "! test -d /home/.openvscode-server",
+            "grep -q 'sleep infinity' /usr/local/bin/claw-worker-relaxed-start",
         ]
         for cmd in checks:
             r = sb.commands.run(cmd, timeout=60)
@@ -267,6 +259,12 @@ def main() -> int:
         if r.exit_code not in (0, None):
             _fail(f"claw-worker-relaxed-ready exit={r.exit_code} stderr={r.stderr}")
         _ok("claw-worker-relaxed-ready")
+
+        # startcmd is sleep infinity — confirm PID 1 / process present
+        r = sb.commands.run("pgrep -f 'sleep infinity' >/dev/null", timeout=15)
+        if r.exit_code not in (0, None):
+            _fail("sleep infinity startcmd not running")
+        _ok("sleep infinity running")
 
         mount_script = (
             "for d in /claw_host_root /claw_ds /claw_sessions /claw_tap_traces; do "
@@ -295,22 +293,6 @@ def main() -> int:
         if r.exit_code not in (0, None):
             _fail(f"claw binary smoke failed: {r.stderr}")
         _ok(f"claw binary: {(r.stdout or r.stderr or '').strip()[:120]}")
-
-        traffic_host = f"{ovs_port_num}-{sid}.{domain}"
-        folder_url = f"http://{traffic_host}/ovs/?folder=/claw_ds"
-        ext = subprocess.run(
-            ["curl", "-sS", "-m", "20", "-o", "/dev/null", "-w", "%{http_code}", folder_url],
-            capture_output=True,
-            text=True,
-        )
-        if ext.returncode != 0 or ext.stdout.strip() != "200":
-            _fail(f"external OVS HTTP {ext.stdout.strip()} at {folder_url}")
-        _ok(f"external OVS {folder_url}")
-
-        body = subprocess.run(["curl", "-sS", "-m", "20", folder_url], capture_output=True, text=True)
-        if "openvscode" not in (body.stdout or "").lower() and "workbench" not in (body.stdout or "").lower():
-            _fail(f"OVS page does not look like openvscode at {folder_url}")
-        _ok("OVS page content looks like openvscode")
 
         if _env("CLAW_RELAXED_VERIFY_SKIP_CHAT", "0") not in ("1", "true", "yes"):
             api_base = _env("OPENAI_BASE_URL") or _env("CLAW_OPENAI_BASE_URL")

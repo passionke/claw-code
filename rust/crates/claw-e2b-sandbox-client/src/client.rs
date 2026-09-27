@@ -17,10 +17,9 @@ pub const SANDBOX_LEASE_RENEW_LEAD_SECS: u64 = 300;
 /// Background TTL touch interval for tracked sandboxes (`spawn_lease_ticker`).
 pub const SANDBOX_LEASE_TICK_SECS: u64 = 60;
 
-/// e2b singleton `metadata.clawRole` values (observe / nas-api / ovs).
+/// e2b singleton `metadata.clawRole` values (observe / nas-api).
 pub const SINGLETON_ROLE_OBSERVE: &str = "observe-singleton";
 pub const SINGLETON_ROLE_NAS_API: &str = "nas-api-singleton";
-pub const SINGLETON_ROLE_OVS: &str = "ovs-singleton";
 /// Per-project observe singleton (`metadata.clawRole=observe-proj` + `projId`).
 pub const SINGLETON_ROLE_OBSERVE_PROJ: &str = "observe-proj";
 /// Per-project worker `metadata.clawRole`.
@@ -179,7 +178,7 @@ pub struct E2bSandboxClient {
     http: reqwest::Client,
     /// Local TTL estimate per sandbox (`POST /timeout` resets from request time).
     lease_expires: Arc<Mutex<HashMap<String, Instant>>>,
-    /// Persistent singletons (observe / nas-api / ovs) — never killed on gateway shutdown.
+    /// Persistent singletons (observe / nas-api) — never killed on gateway shutdown.
     persistent_sandboxes: Arc<Mutex<HashSet<String>>>,
     /// e2b `GET /health` NAS platform (host bind inject).
     e2b_platform_nas: Arc<Mutex<Option<E2bNasPlatform>>>,
@@ -390,7 +389,7 @@ impl E2bSandboxClient {
             .collect()
     }
 
-    /// Renew TTL and register for lease ticker (observe / nas-api / ovs singletons).
+    /// Renew TTL and register for lease ticker (observe / nas-api singletons).
     pub async fn touch_persistent_sandbox(&self, sandbox_id: &str) -> Result<(), String> {
         self.track_persistent_sandbox(sandbox_id);
         self.renew_sandbox_ttl_secs(sandbox_id, self.config().sandbox_timeout_secs)
@@ -541,36 +540,6 @@ impl E2bSandboxClient {
         Ok(headers)
     }
 
-    fn ovs_public_host(&self, sandbox_id: &str, sandbox_domain: &str) -> String {
-        self.service_public_host(self.config().ovs_port, sandbox_id, sandbox_domain)
-    }
-
-    /// `http(s)://{port}-{sandboxId}.{domain}/ovs`
-    #[must_use]
-    pub fn ovs_service_base_url(&self, sandbox_id: &str, sandbox_domain: &str) -> String {
-        let host = self.ovs_public_host(sandbox_id, sandbox_domain);
-        let scheme = if self.config().is_self_hosted() {
-            "http"
-        } else {
-            "https"
-        };
-        format!("{scheme}://{host}/ovs")
-    }
-
-    fn ovs_handle_fields(
-        &self,
-        sandbox_id: &str,
-        sandbox_domain: &str,
-        include_ovs: bool,
-    ) -> (Option<String>, Option<String>) {
-        if !include_ovs {
-            return (None, None);
-        }
-        let host = self.ovs_public_host(sandbox_id, sandbox_domain);
-        let base = self.ovs_service_base_url(sandbox_id, sandbox_domain);
-        (Some(host), Some(base))
-    }
-
     /// Host for a published sandbox port (`{port}-{sandboxId}.{domain}`).
     #[must_use]
     pub fn service_public_host(&self, port: u16, sandbox_id: &str, sandbox_domain: &str) -> String {
@@ -641,7 +610,7 @@ impl E2bSandboxClient {
         session_id: &str,
         session_segment: &str,
         proj_id: i64,
-        ovs_mode: bool,
+        include_proj_home: bool,
         worker_id: &str,
     ) -> Result<E2bSandboxHandle, String> {
         self.prepare_self_hosted_create().await?;
@@ -651,7 +620,7 @@ impl E2bSandboxClient {
         metadata.insert("workerId".to_string(), worker_id.to_string());
         metadata.insert("projId".to_string(), proj_id.to_string());
 
-        let mount_points = worker_mounts(cluster_id, proj_id, worker_id, ovs_mode);
+        let mount_points = worker_mounts(cluster_id, proj_id, worker_id, include_proj_home);
         let mut body = json!({
             "templateID": self.config().template,
             "timeout": self.config().sandbox_timeout_secs,
@@ -697,8 +666,6 @@ impl E2bSandboxClient {
             sandbox_domain,
             envd_access_token: parsed.envd_access_token,
             traffic_access_token: parsed.traffic_access_token,
-            ovs_public_host: None,
-            ovs_base_url: None,
         };
         self.register_sandbox_lease(&handle.sandbox_id);
         self.finish_sandbox_create(handle, nas_configured, &mount_points)
@@ -706,13 +673,16 @@ impl E2bSandboxClient {
     }
 
     /// Create a project-bound warm worker (`metadata.clawRole=warm-proj`).
+    ///
+    /// `home_read_only`: strict workers mount project home RO; relaxed (permissions-only)
+    /// workers mount home RW. Workers no longer carry built-in OVS metadata/URLs. Author: kejiqing
     pub async fn create_warm_proj_sandbox(
         &self,
         cluster_id: &str,
         proj_id: i64,
         worker_id: &str,
         template_id: &str,
-        include_ovs: bool,
+        home_read_only: bool,
         env_vars: BTreeMap<String, String>,
     ) -> Result<E2bSandboxHandle, String> {
         self.prepare_self_hosted_create().await?;
@@ -723,11 +693,8 @@ impl E2bSandboxClient {
         metadata.insert("sessionId".to_string(), warm_session_id);
         metadata.insert("clawRole".to_string(), WARM_PROJ_ROLE.to_string());
         metadata.insert("clusterId".to_string(), cluster_id.trim().to_string());
-        if include_ovs {
-            metadata.insert("ovsBuiltin".to_string(), "true".to_string());
-        }
 
-        let mount_points = warm_worker_mounts(cluster_id, proj_id, worker_id, !include_ovs);
+        let mount_points = warm_worker_mounts(cluster_id, proj_id, worker_id, home_read_only);
         let mut body = json!({
             "templateID": template_id,
             "timeout": self.config().sandbox_timeout_secs,
@@ -771,15 +738,11 @@ impl E2bSandboxClient {
                 .filter(|d| !d.trim().is_empty())
                 .unwrap_or_else(|| self.config().domain.clone())
         };
-        let (ovs_public_host, ovs_base_url) =
-            self.ovs_handle_fields(&parsed.sandbox_id, &sandbox_domain, include_ovs);
         let handle = E2bSandboxHandle {
             sandbox_id: parsed.sandbox_id,
             sandbox_domain,
             envd_access_token: parsed.envd_access_token,
             traffic_access_token: parsed.traffic_access_token,
-            ovs_public_host,
-            ovs_base_url,
         };
         self.register_sandbox_lease(&handle.sandbox_id);
         self.finish_sandbox_create(handle, nas_configured, &mount_points)
@@ -863,10 +826,6 @@ impl E2bSandboxClient {
     pub async fn find_nas_api_singleton(&self, cluster_id: &str) -> Result<Option<String>, String> {
         self.find_singleton(cluster_id, SINGLETON_ROLE_NAS_API)
             .await
-    }
-
-    pub async fn find_ovs_singleton(&self, cluster_id: &str) -> Result<Option<String>, String> {
-        self.find_singleton(cluster_id, SINGLETON_ROLE_OVS).await
     }
 
     /// Kill every singleton match for `claw_role` except `keep_sandbox_id`.
@@ -1083,8 +1042,6 @@ impl E2bSandboxClient {
             sandbox_domain,
             envd_access_token: parsed.envd_access_token,
             traffic_access_token: parsed.traffic_access_token,
-            ovs_public_host: None,
-            ovs_base_url: None,
         };
         let handle = self
             .finish_sandbox_create(handle, nas_configured, mount_points)
@@ -1109,7 +1066,7 @@ impl E2bSandboxClient {
             cluster_id,
             SINGLETON_ROLE_OBSERVE,
             env_vars,
-            &nas_paths::ovs_root_mounts(),
+            &nas_paths::export_root_mounts(),
             false,
         )
         .await
@@ -1138,7 +1095,7 @@ impl E2bSandboxClient {
         metadata.insert("clusterId".to_string(), cluster_id.to_string());
         metadata.insert("projId".to_string(), proj_id.to_string());
 
-        let mount_points = nas_paths::ovs_root_mounts();
+        let mount_points = nas_paths::export_root_mounts();
         let mut body = json!({
             "templateID": template_id,
             "timeout": self.config().sandbox_timeout_secs,
@@ -1194,8 +1151,6 @@ impl E2bSandboxClient {
             sandbox_domain,
             envd_access_token: parsed.envd_access_token,
             traffic_access_token: parsed.traffic_access_token,
-            ovs_public_host: None,
-            ovs_base_url: None,
         };
         let sid = handle.sandbox_id.clone();
         let handle = self
@@ -1246,25 +1201,8 @@ impl E2bSandboxClient {
             cluster_id,
             SINGLETON_ROLE_NAS_API,
             BTreeMap::new(),
-            &nas_paths::ovs_root_mounts(),
+            &nas_paths::export_root_mounts(),
             true,
-        )
-        .await
-    }
-
-    /// Create OVS singleton (`metadata.clawRole=ovs-singleton`). Author: kejiqing
-    pub async fn create_ovs_singleton(
-        &self,
-        template_id: &str,
-        cluster_id: &str,
-    ) -> Result<E2bSandboxHandle, String> {
-        self.create_singleton_sandbox(
-            template_id,
-            cluster_id,
-            SINGLETON_ROLE_OVS,
-            BTreeMap::new(),
-            &nas_paths::ovs_root_mounts(),
-            false,
         )
         .await
     }
@@ -1362,19 +1300,12 @@ impl E2bSandboxClient {
 
     #[must_use]
     pub fn handle_to_json(handle: &E2bSandboxHandle) -> serde_json::Value {
-        let mut out = json!({
+        json!({
             "sandboxId": handle.sandbox_id,
             "sandboxDomain": handle.sandbox_domain,
             "envdAccessToken": handle.envd_access_token,
             "trafficAccessToken": handle.traffic_access_token,
-        });
-        if let Some(ref host) = handle.ovs_public_host {
-            out["ovsPublicHost"] = json!(host);
-        }
-        if let Some(ref base) = handle.ovs_base_url {
-            out["ovsBaseUrl"] = json!(base);
-        }
-        out
+        })
     }
 
     pub fn handle_from_json(value: &serde_json::Value) -> Result<E2bSandboxHandle, String> {
@@ -1402,44 +1333,12 @@ impl E2bSandboxClient {
             .or_else(|| value.get("traffic_access_token"))
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        let ovs_public_host = value
-            .get("ovsPublicHost")
-            .or_else(|| value.get("ovs_public_host"))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        let ovs_base_url = value
-            .get("ovsBaseUrl")
-            .or_else(|| value.get("ovs_base_url"))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
         Ok(E2bSandboxHandle {
             sandbox_id,
             sandbox_domain,
             envd_access_token,
             traffic_access_token,
-            ovs_public_host,
-            ovs_base_url,
         })
-    }
-
-    /// Fill OVS traffic URLs when the relaxed worker template includes built-in openvscode-server.
-    #[must_use]
-    pub fn handle_with_builtin_ovs(
-        mut handle: E2bSandboxHandle,
-        client: &E2bSandboxClient,
-    ) -> E2bSandboxHandle {
-        if handle.ovs_base_url.is_some() {
-            return handle;
-        }
-        let (ovs_public_host, ovs_base_url) =
-            client.ovs_handle_fields(&handle.sandbox_id, &handle.sandbox_domain, true);
-        handle.ovs_public_host = ovs_public_host;
-        handle.ovs_base_url = ovs_base_url;
-        handle
     }
 
     /// Gateway shutdown: DELETE leased sandboxes except persisted project workers + singletons.
@@ -1914,7 +1813,7 @@ mod client_tests {
     }
 
     #[test]
-    fn ovs_host_format() {
+    fn service_public_host_format() {
         let cfg = E2bSandboxConfig {
             api_key: "e2b_test".into(),
             api_url: "https://api.cn-beijing.e2b.fc.aliyuncs.com".into(),
@@ -1927,12 +1826,10 @@ mod client_tests {
             nas_user_id: 1000,
             nas_group_id: 1000,
             exec_helper: "deploy/e2b/e2b_exec.py".into(),
-            ovs_template: "claw-ovs".into(),
-            ovs_port: 3000,
         };
         let c = E2bSandboxClient::new(cfg);
         assert_eq!(
-            c.ovs_public_host("sbx-abc", "cn-beijing.e2b.fc.aliyuncs.com"),
+            c.service_public_host(3000, "sbx-abc", "cn-beijing.e2b.fc.aliyuncs.com"),
             "3000-sbx-abc.cn-beijing.e2b.fc.aliyuncs.com"
         );
     }

@@ -1,5 +1,8 @@
 # e2b 自建流量路由问题（F14）— 请 e2b 侧排查
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing  
 Date: 2026-06-20  
 Claw 集成方：claw-code（Gateway + e2b OVS singleton + warm worker）  

@@ -1,5 +1,8 @@
 # Preflight 插件化与语言判定归位
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing  
 Status: **draft** — 实现分支 `feat/preflight-spi`  
 Related: [`../gateway-solve-preflight.md`](../gateway-solve-preflight.md)、[`../project-config-model.md`](../project-config-model.md)

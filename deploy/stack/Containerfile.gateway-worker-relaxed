@@ -1,5 +1,5 @@
 # Relaxed worker tools: curl/git/python3/pip (align with e2b claw-worker-relaxed). Author: kejiqing
-# OVS is baked only in the e2b template (build-claw-worker-relaxed-selfhosted.py).
+# e2b template claw-worker-relaxed is tools-only (no OpenVSCode). Author: kejiqing
 ARG WORKER_BASE_IMAGE=claw-gateway-worker:local
 
 FROM ${WORKER_BASE_IMAGE}

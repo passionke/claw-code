@@ -25,7 +25,7 @@ claw_redact_database_url() {
   printf '%s' "${scheme}://${after_scheme}"
 }
 
-# Gateway/OVS use compose NFS volume when NAS_BASE_URL is set (CLAW_USE_NAS_VOLUME=0 to disable). kejiqing
+# Gateway uses compose NFS volume when NAS_BASE_URL is set (CLAW_USE_NAS_VOLUME=0 to disable). kejiqing
 claw_compose_nas_volume_enabled() {
   case "${CLAW_USE_NAS_VOLUME:-}" in
     0 | false | no | off) return 1 ;;
@@ -35,11 +35,6 @@ claw_compose_nas_volume_enabled() {
     1 | true | yes | on | auto) return 0 ;;
     *) return 1 ;;
   esac
-}
-
-# OVS always runs as e2b singleton; compose openvscode-server skipped. kejiqing
-claw_ovs_backend_is_e2b() {
-  return 0
 }
 
 claw_pool_rpc_root() {
@@ -59,7 +54,7 @@ claw_stack_workspace_bind_dir() {
   local inst="${CLAW_STACK_INSTANCE:-}"
   local ws="${CLAW_POOL_WORK_ROOT_BIND_SRC:-}"
 
-  # Compose NFS volume: Gateway/OVS mount NAS inside containers; host pool uses local fallback. kejiqing
+  # Compose NFS volume: Gateway mounts NAS inside containers; host pool uses local fallback. kejiqing
   if claw_compose_nas_volume_enabled; then
     if [[ -n "${ws}" ]]; then
       if [[ "${ws}" != /* ]]; then

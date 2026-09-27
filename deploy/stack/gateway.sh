@@ -37,10 +37,9 @@ Commands:
   solve-e2e     Admin-equivalent solve_async + poll to succeeded/failed (real gate, not healthz)
   verify        Stack truth checks (schema, pool registry, binary); fails loud
   cluster-verify  Shared-PG multi-host: claw_pool zombies + each gateway /v1/pools (pre-prod gate)
-  ovs-up        Ensure e2b OVS singleton (gateway API; gateway must be up)
   observe-tap-up Ensure e2b observe singleton (gateway API)
   nas-api-up    Ensure e2b claw-nas-api singleton (gateway API)
-  e2b-singletons-up  nas-api + ovs + observe via gateway API (--reset to recreate)
+  e2b-singletons-up  nas-api + observe via gateway API (--reset to recreate)
   e2b-pre-bootstrap  singletons only (--skip-templates); template publish is Admin-only
   pre-252-e2b-up     REMOVED — use up --release (e2b internalizes former host pool/tap)
   tap-down      Stop pool claude-tap only (legacy compose; production uses e2b observe)
@@ -118,7 +117,6 @@ case "${cmd}" in
   solve-e2e) "${LIB}/admin-solve-e2e.sh" "$@" ;;
   verify) "${LIB}/claw-stack-verify.sh" "$@" ;;
   cluster-verify) "${LIB}/claw-cluster-verify.sh" "$@" ;;
-  ovs-up) bash "${LIB}/e2b-ovs-up.sh" "$@" ;;
   observe-tap-up) bash "${LIB}/e2b-tap-live-up.sh" "$@" ;;
   nas-api-up) bash "${LIB}/e2b-nas-api-up.sh" "$@" ;;
   e2b-singletons-up) bash "${LIB}/e2b-singletons-up.sh" "$@" ;;

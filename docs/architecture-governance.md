@@ -4,7 +4,7 @@ Author: kejiqing
 
 **分支：** `arch/governance-fc-only`
 
-**目的：** 将基础设施与应用栈解耦；本地仅保留 gateway + playground；所有 worker/OVS/Observe/NAS 写盘走 e2b 沙箱；数据按 `cluster_id` 强隔离。
+**目的：** 将基础设施与应用栈解耦；本地仅保留 gateway + playground；所有 worker / Observe / NAS 写盘走 e2b 沙箱；数据按 `cluster_id` 强隔离。
 
 ---
 
@@ -25,7 +25,7 @@ Author: kejiqing
 | `10.8.0.11` | NAS NFS export | ~~`10.8.0.8`~~（旧 NAS 节点） |
 | `supone.top` | e2b sandbox 浏览器 traffic（wildcard DNS → e2b traffic 入口） | 勿把 `CLAW_E2B_DOMAIN` 写成 IP |
 
-脚本 / `.env.example` 的 fallback 必须与上表一致；历史文档（`docs/ovs-chat/*` 踩坑记录）内 `10.8.0.9` 保留为**当时取证**，文首有勘误横幅。
+脚本 / `.env.example` 的 fallback 必须与上表一致；历史文档（`docs/ovs-chat/*` 踩坑记录）内 `10.8.0.9` 保留为**当时取证**，文首有归档横幅。
 
 ```text
 all -> cluster_id -> project -> session -> turn
@@ -50,19 +50,20 @@ all -> cluster_id -> project -> session -> turn
 
 | 组件 | 模板 | clawRole | Admin reset |
 |------|------|----------|-------------|
-| OVS | `claw-ovs` | `ovs-singleton` | `POST .../ovs-singleton/reset` |
 | Observe Tap | `claw-observe` | `observe-singleton` | `POST .../observe-tap/reset` |
 | NAS API | `claw-nas-api` | `nas-api-singleton` | `POST .../nas-api/reset` |
 
 Gateway shutdown **不杀** persistent singleton；worker lease ticker 与 singleton lease 分流。
+
+**已退出：** 独立 `claw-ovs` / `ovs-singleton` 与 OpenVSCode 交互路径（2026-09-27）。历史取证见 `docs/ovs-chat/`（文首 ARCHIVED 横幅）。
 
 ---
 
 ## 4. Worker 模式（e2b-only）
 
 - **唯一路径：** `CLAW_SOLVE_ISOLATION=e2b`、`CLAW_INTERACTIVE_BACKEND=e2b`
-- **strict：** alias `claw-worker`；PG `e2bWorker.templateId` 由 strict 构建写入；gateway exec 层 guest `claw` uid
-- **relaxed：** alias `claw-worker-relaxed`；**不写 PG**；gateway exec 层 guest root（需 `CLAW_ALLOW_RELAXED_WORKER=1`）
+- **strict：** alias `claw-worker`；PG `e2bWorker.templateId` 由 strict 构建写入；gateway exec 层 guest `claw` uid；project home `/claw_ds` **只读**
+- **relaxed：** alias `claw-worker-relaxed`；**不写 PG**；gateway exec 层 guest root（需 `CLAW_ALLOW_RELAXED_WORKER=1`）；**仅为权限宽松 worker**（工具包 curl/git/python3/pip；home `/claw_ds` **可写**）；**不再**提供 OpenVSCode / `ovs/workspace`
 
 宿主机 `claw-sandbox` / `podman_pool` / `docker_pool` / `claw-pool-daemon` **已从代码与 deploy 脚本移除**。
 
@@ -87,7 +88,7 @@ cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID / key
 - [ ] `CLAW_E2B_API_URL` / `CLAW_E2B_SANDBOX_URL` → `10.8.0.1`
 - [ ] NAS server → `10.8.0.11`；e2b 宿主机 `/mnt/nas0` 已挂载
 - [ ] `CLAW_CLUSTER_ID` 已设；旧 PG 数据 migrate 回填 cluster_id
-- [ ] e2b 模板 alias：`claw-worker`、`claw-worker-relaxed`、`claw-ovs`、`claw-observe`、`claw-nas-api`（PG 仅存 strict worker templateId）
+- [ ] e2b 模板 alias：`claw-worker`、`claw-worker-relaxed`、`claw-observe`、`claw-nas-api`（PG 仅存 strict worker templateId；**无** `claw-ovs`）
 - [ ] `verify-e2b-nas-inject.sh` 通过
 
 ---
@@ -103,5 +104,6 @@ cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID / key
 | `stable-dev-host-up.sh`、`env.stable-dev-host.example` | 已删除 / 废弃 |
 | `e2b-selfhosted-nfs-mount.sh` | 已废弃，勿恢复 |
 | compose bundled postgres（本地 quick） | 默认跳过，外连 10.8.0.1 |
+| `claw-ovs` / `ovs-singleton` / OpenVSCode / `ovs/workspace` | **已全面退出**（2026-09-27）；见 `docs/ovs-chat/` 归档 |
 
 **文档索引：** [`docs/README.md`](README.md)

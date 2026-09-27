@@ -9,10 +9,6 @@ pub struct E2bSandboxHandle {
     pub sandbox_domain: String,
     pub envd_access_token: Option<String>,
     pub traffic_access_token: Option<String>,
-    /// Relaxed worker built-in OVS (`{ovs_port}-{sandboxId}.{domain}`).
-    pub ovs_public_host: Option<String>,
-    /// `http(s)://{ovs_public_host}/ovs`
-    pub ovs_base_url: Option<String>,
 }
 
 /// Result of `claw gateway-solve-once` inside e2b sandbox.

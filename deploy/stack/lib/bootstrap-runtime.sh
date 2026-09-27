@@ -157,63 +157,6 @@ claw_ensure_default_project_ds() {
     return 1
   fi
   echo "bootstrap: proj=${proj_id} registered (project + init, GET config 200)"
-
-  local mode
-  mode="$(curl -fsS --connect-timeout 15 "http://127.0.0.1:${port}/v1/project/config/${proj_id}" 2>/dev/null \
-    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(((d.get("workerProfileJson") or {}).get("mode") or "strict").strip())' 2>/dev/null || echo strict)"
-  if [[ "${mode}" != "relaxed" ]]; then
-    echo "bootstrap: skip ovs/workspace proj=${proj_id} (mode=${mode}; OVS is relaxed-only)" >&2
-    return 0
-  fi
-
-  echo "==> bootstrap GET /v1/projects/${proj_id}/ovs/workspace (claw.projId → proj_${proj_id}/home/.vscode)" >&2
-  resp="$(mktemp)"
-  http_code="$(curl -sS --connect-timeout 60 -o "${resp}" -w '%{http_code}' \
-    "http://127.0.0.1:${port}/v1/projects/${proj_id}/ovs/workspace" 2>/dev/null || echo 000)"
-  if [[ "${http_code}" != "200" ]]; then
-    echo "warning: GET /v1/projects/${proj_id}/ovs/workspace HTTP ${http_code}: $(tr -d '\n' <"${resp}" | head -c 300)" >&2
-  fi
-  rm -f "${resp}"
-}
-
-# Materialize `claw.projId` for registered projects (OVS switch 1↔2 without manual curl). Author: kejiqing
-claw_materialize_ovs_workspace_projects() {
-  local port="${GATEWAY_HOST_PORT:-18088}"
-  local -a proj_ids=()
-  local pid name resp http_code
-
-  if [[ -n "${CLAW_OVS_BOOTSTRAP_PROJ_IDS:-}" ]]; then
-    IFS=',' read -r -a proj_ids <<<"${CLAW_OVS_BOOTSTRAP_PROJ_IDS}"
-  else
-    resp="$(mktemp)"
-    if curl -fsS --connect-timeout 15 "http://127.0.0.1:${port}/v1/projects" -o "${resp}" 2>/dev/null; then
-      while IFS= read -r pid; do
-        [[ -n "${pid}" ]] && proj_ids+=("${pid}")
-      done < <(python3 -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(str(p["projId"]) for p in d.get("projects",[])))' <"${resp}")
-    fi
-    rm -f "${resp}"
-  fi
-
-  for pid in "${proj_ids[@]}"; do
-    pid="${pid//[[:space:]]/}"
-    [[ "${pid}" =~ ^[0-9]+$ ]] || continue
-    [[ "${pid}" -ge 1 ]] || continue
-    local mode
-    mode="$(curl -fsS --connect-timeout 15 "http://127.0.0.1:${port}/v1/project/config/${pid}" 2>/dev/null \
-      | python3 -c 'import json,sys; d=json.load(sys.stdin); print(((d.get("workerProfileJson") or {}).get("mode") or "strict").strip())' 2>/dev/null || echo strict)"
-    if [[ "${mode}" != "relaxed" ]]; then
-      echo "bootstrap: skip ovs/workspace proj=${pid} (mode=${mode}; OVS is relaxed-only)" >&2
-      continue
-    fi
-    echo "==> bootstrap GET /v1/projects/${pid}/ovs/workspace (OVS proj switch)" >&2
-    resp="$(mktemp)"
-    http_code="$(curl -sS --connect-timeout 60 -o "${resp}" -w '%{http_code}' \
-      "http://127.0.0.1:${port}/v1/projects/${pid}/ovs/workspace" 2>/dev/null || echo 000)"
-    if [[ "${http_code}" != "200" ]]; then
-      echo "warning: GET /v1/projects/${pid}/ovs/workspace HTTP ${http_code}: $(tr -d '\n' <"${resp}" | head -c 300)" >&2
-    fi
-    rm -f "${resp}"
-  done
 }
 
 claw_bootstrap_project_if_missing() {

@@ -1,5 +1,8 @@
 # claw-vscode 稳定部署契约（OVS @claw）
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing  
 **本文是 `@claw` 能否生效的唯一操作手册。** 改插件、改 OVS、排障都先对照本文；不要临时改 compose / Machine settings 猜 projId。
 

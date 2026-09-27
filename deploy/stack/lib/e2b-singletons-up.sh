@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ensure e2b singletons via gateway admin API (nas-api / ovs / observe). Author: kejiqing
+# Ensure e2b singletons via gateway admin API (nas-api / observe). Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,11 +46,11 @@ if [[ "${reset}" -eq 1 ]]; then
   action="reset"
 fi
 
-for component in nas-api ovs observe; do
+for component in nas-api observe; do
   echo "    ${action} ${component} ..." >&2
   curl -fsS -X POST "${gw_base}/v1/gateway/global-settings/e2b-singletons/${component}/${action}" \
     -H "Content-Type: application/json" \
     -d '{}' >/dev/null
 done
 
-echo "OK — nas-api + ovs + observe singletons ensured via gateway API" >&2
+echo "OK — nas-api + observe singletons ensured via gateway API" >&2

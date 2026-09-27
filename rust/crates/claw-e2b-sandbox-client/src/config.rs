@@ -17,9 +17,6 @@ pub struct E2bSandboxConfig {
     pub nas_user_id: u32,
     pub nas_group_id: u32,
     pub exec_helper: PathBuf,
-    /// OVS singleton template (`claw-ovs`); separate from worker template.
-    pub ovs_template: String,
-    pub ovs_port: u16,
 }
 
 impl E2bSandboxConfig {
@@ -76,14 +73,6 @@ impl E2bSandboxConfig {
             .map(PathBuf::from)
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(default_exec_helper_path);
-        let ovs_template = std::env::var("CLAW_E2B_OVS_TEMPLATE")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| "claw-ovs".into());
-        let ovs_port = std::env::var("CLAW_E2B_OVS_PORT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3000);
         Some(Self {
             api_key,
             api_url: api_url.trim_end_matches('/').to_string(),
@@ -96,8 +85,6 @@ impl E2bSandboxConfig {
             nas_user_id,
             nas_group_id,
             exec_helper,
-            ovs_template,
-            ovs_port,
         })
     }
 

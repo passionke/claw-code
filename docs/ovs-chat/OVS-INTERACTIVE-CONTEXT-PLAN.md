@@ -1,5 +1,8 @@
 # OVS 交互式多轮上下文续聊 — 实施计划
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing
 
 Status: **已实施（B1 agent/ws）** — 2026-06-29。ttyd 人工终端仍 legacy；solve 路径未改。交互 turn 后写回 `cc_messages`。

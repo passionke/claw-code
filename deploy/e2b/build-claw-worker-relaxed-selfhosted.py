@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build claw-worker-relaxed (debian worker + built-in OVS) on self-hosted e2b. Author: kejiqing"""
+"""Build claw-worker-relaxed (debian + tools + claw) on self-hosted e2b. Author: kejiqing"""
 from __future__ import annotations
 
 import os
@@ -23,17 +23,13 @@ from e2b_template_registry import (
 )
 from e2b_template_build import build_template_with_retry
 from e2b_template_content_hash import digest_tree, try_skip_unchanged
-from ovs_bundle import (
-    ovs_port,
-    pack_ovs_bundle,
-    relaxed_worker_ovs_install_runfile,
-    stage_ovs_tree,
-    stage_ovs_tree_from_registry,
-)
 from registry_extract import extract_file_from_image
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
+
+RELAXED_START_CMD = "/usr/local/bin/claw-worker-relaxed-start"
+RELAXED_READY_CMD = "/usr/local/bin/claw-worker-relaxed-ready"
 
 
 def _env(name: str, default: str = "") -> str:
@@ -60,16 +56,6 @@ def _conn_opts() -> dict[str, str]:
         "api_url": _env("E2B_API_URL", _env("CLAW_E2B_API_URL", "http://10.8.0.1:3000")),
         "domain": _env("E2B_DOMAIN", _env("CLAW_E2B_DOMAIN", "supone.top")),
     }
-
-
-def _ovs_upstream_image() -> str:
-    return _env(
-        "CLAW_OVS_IMAGE",
-        _env(
-            "CLAW_OVS_UPSTREAM_IMAGE",
-            "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat-amd64",
-        ),
-    )
 
 
 def _stage_worker_bins(staging: Path, worker_image: str) -> None:
@@ -133,13 +119,27 @@ def _stage_claw_from_registry(staging: Path, image: str) -> None:
     )
 
 
-def _relaxed_dockerfile(port: int, ext_ver: str) -> str:
+def _relaxed_start_ready_install() -> str:
+    """Same shape as strict worker: sleep infinity + claw present. Author: kejiqing"""
+    return r"""RUN printf '%s\n' \
+        '#!/bin/sh' \
+        'set -eu' \
+        'exec sleep infinity' \
+        > /usr/local/bin/claw-worker-relaxed-start \
+    && printf '%s\n' \
+        '#!/bin/sh' \
+        'command -v claw >/dev/null 2>&1' \
+        > /usr/local/bin/claw-worker-relaxed-ready \
+    && chmod +x /usr/local/bin/claw-worker-relaxed-start /usr/local/bin/claw-worker-relaxed-ready
+"""
+
+
+def _relaxed_dockerfile() -> str:
     debian = template_debian_base_image()
     apt = template_apt_prepare_prefix()
     return (
         f"FROM {debian}\n"
-        # Relaxed package set = CI claw-gateway-worker-relaxed tools + NAS sudo + OVS (below).
-        # Author: kejiqing
+        # Relaxed package set = CI claw-gateway-worker-relaxed tools (no OVS). Author: kejiqing
         f"RUN {apt}apt-get update && apt-get install -y --no-install-recommends \\\n"
         "    nfs-common ca-certificates sudo \\\n"
         "    curl git python3 python3-pip \\\n"
@@ -149,10 +149,7 @@ def _relaxed_dockerfile(port: int, ext_ver: str) -> str:
         "    && rm -rf /var/lib/apt/lists/*\n"
         "COPY claw.bin /usr/local/bin/claw\n"
         "RUN chmod +x /usr/local/bin/claw\n"
-        "COPY openvscode-settings.json /tmp/openvscode-machine-settings.json\n"
-        "RUN mkdir -p /tmp/ovs-bundle\n"
-        "COPY claw-ovs-bundle.tar.gz /tmp/claw-ovs-bundle.tar.gz\n"
-        f"{relaxed_worker_ovs_install_runfile(port, ext_ver)}\n"
+        f"{_relaxed_start_ready_install()}"
     )
 
 
@@ -181,7 +178,7 @@ def _persist_pg(alias: str, build, content_digest: str) -> None:
 
 
 def _registry_bootstrap_mode() -> bool:
-    """Admin/CI-tag path: no nested podman; claw+OVS via registry HTTP. Author: kejiqing"""
+    """Admin/CI-tag path: no nested podman; claw via registry HTTP. Author: kejiqing"""
     return _truthy("CLAW_E2B_WORKER_RELAXED_FROM_IMAGE") or _truthy(
         "CLAW_E2B_WORKER_SKIP_LOCAL_BUILD"
     )
@@ -191,7 +188,6 @@ def main() -> int:
     opts = _conn_opts()
     log_debian_base_resolution(api_url=opts["api_url"])
     alias = _env("CLAW_E2B_WORKER_RELAXED_ALIAS") or "claw-worker-relaxed"
-    port = ovs_port()
 
     os.environ.setdefault("E2B_API_KEY", opts["api_key"])
     os.environ.setdefault("E2B_API_URL", opts["api_url"])
@@ -210,30 +206,24 @@ def main() -> int:
         staging = Path(tmp)
         if registry_mode:
             image = _env("CLAW_E2B_WORKER_RELAXED_IMAGE") or _worker_base_image()
-            ovs_image = _ovs_upstream_image()
             print(
                 f"==> bootstrap relaxed: debian + COPY claw from {image!r} "
-                f"+ OVS bake from {ovs_image!r} (registry extract, no nested podman)",
+                "(registry extract, no nested podman)",
                 file=sys.stderr,
             )
             _stage_claw_from_registry(staging, image)
-            ext_ver = stage_ovs_tree_from_registry(staging, ovs_image)
         else:
             _stage_claw_into(staging)
-            print("==> staging OVS tree for relaxed worker …")
-            ext_ver = stage_ovs_tree(staging, _container_runtime(), _ovs_upstream_image())
 
-        pack_ovs_bundle(staging)
         dockerfile = staging / "Dockerfile"
-        dockerfile.write_text(_relaxed_dockerfile(port, ext_ver), encoding="utf-8")
-        print(f"==> e2b Template.build from_dockerfile (debian + OVS :{port}/ovs)")
+        dockerfile.write_text(_relaxed_dockerfile(), encoding="utf-8")
+        print(f"==> e2b Template.build from_dockerfile (debian + tools, sleep infinity)")
         content_digest = digest_tree(
             staging,
             [
-                ("ovs-image", _ovs_upstream_image().encode()),
                 ("debian", template_debian_base_image().encode()),
-                ("start", b"/usr/local/bin/claw-worker-relaxed-start"),
-                ("ready", b"/usr/local/bin/claw-worker-relaxed-ready"),
+                ("start", RELAXED_START_CMD.encode()),
+                ("ready", RELAXED_READY_CMD.encode()),
             ],
         )
         if try_skip_unchanged("e2bWorkerRelaxed", content_digest):
@@ -241,10 +231,7 @@ def main() -> int:
         template = (
             Template(file_context_path=str(staging))
             .from_dockerfile(str(dockerfile))
-            .set_start_cmd(
-                "/usr/local/bin/claw-worker-relaxed-start",
-                "/usr/local/bin/claw-worker-relaxed-ready",
-            )
+            .set_start_cmd(RELAXED_START_CMD, RELAXED_READY_CMD)
         )
         apply_template_skip_cache_force(template, skip_cache)
         build = build_template_with_retry(
@@ -264,7 +251,7 @@ def main() -> int:
         "hint: rebuild only updates PG; new build is used after gateway restart, "
         "manual worker reset, or when the sandbox is dead"
     )
-    print(f"OK: relaxed worker template {alias!r} ({build.template_id}) with built-in OVS")
+    print(f"OK: relaxed worker template {alias!r} ({build.template_id}) tools-only")
 
     if _env("CLAW_E2B_TEMPLATE_SKIP_VERIFY", "0") not in ("1", "true", "yes"):
         verify_py = _E2B_DIR / "verify-claw-worker-relaxed-sandbox.py"

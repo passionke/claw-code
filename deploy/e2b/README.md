@@ -2,7 +2,7 @@
 
 Author: kejiqing
 
-**solve_async** 与 **interactive**（`agent/ws`, `ovs-*`）均在 **e2b（FC）MicroVM** 内执行。本地无 `claw-sandbox` / podman worker pool。
+**solve_async** 与 **interactive**（terminal / agent）均在 **e2b（FC）MicroVM** 内执行。本地无 `claw-sandbox` / podman worker pool。**OpenVSCode / OVS 已全面退出**（2026-09-27）；勿再跑 `build-claw-ovs*` 或 `verify-e2b-ovs*`。
 
 **Self-hosted e2b + NAS（10.8.0.x）：** [`docs/e2b-nas-workspace.md`](../../docs/e2b-nas-workspace.md)；env 模板 `deploy/stack/env.selfhosted-e2b.example`。
 
@@ -21,11 +21,11 @@ e2b sandbox runtime is billed separately (MicroVM uptime; use sleep/wake to redu
 1. e2b cloud sandbox enabled in **华北2 北京** + SLR + API Key (`e2b_…`)
 2. NAS file system in **same region** (cn-beijing)
 3. For e2b dynamic NAS mount: NAS VPC mount point + security group **2049/TCP**
-4. Gateway / OVS: compose **NFS volume** mounts NAS inside containers; or run stack on Beijing ECS in VPC
+4. Gateway：compose **NFS volume**（若启用）挂 NAS；或栈跑在北京 ECS VPC 内
 
 ## Template Build Guardrail
 
-Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径**（SDK `Template.build` 上传）：
+Worker / observe / nas-api 模板构建必须走 **e2b 标准构建路径**（SDK `Template.build` 上传）：
 
 - **唯一发布通道**：Admin 初始化 / 重打模板，脚本 `bootstrap-templates-from-ci-tag.sh <tag>`（从 CI 镜像抽二进制再 `Template.build`）
 - cloud worker: `from_image`，或 `file_context_path` + Dockerfile `COPY`
@@ -47,13 +47,13 @@ Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径*
 | 步骤 | 说明 |
 |------|------|
 | 交叉编译 | `linux/amd64` → `deploy/stack/.linux-artifacts/release/claw` |
-| stage | strict：`claw` only → `deploy/stack/.e2b-worker-bins/`；relaxed：`claw` + curl/git/python3/pip + 内置 OVS |
+| stage | strict：`claw` only → `deploy/stack/.e2b-worker-bins/`；relaxed：`claw` + curl/git/python3/pip（**无** OpenVSCode） |
 | e2b SDK | `Template.build` → 写 PG `e2bWorker.templateId` |
 | gateway | 启动 reconcile + renewal ticker 自动轮换 proj worker |
 
 完整说明：[`WORKER-BUILD.md`](./WORKER-BUILD.md)。脚本：`deploy/e2b/bootstrap-templates-from-ci-tag.sh`。
 
-这一支打 strict、relaxed、observe、nas-api。内容哈希没变的组件跳过 `Template.build`。
+这一支打 **strict、relaxed、observe、nas-api**（**无** `claw-ovs`）。内容哈希没变的组件跳过 `Template.build`。
 
 ### Observe 单例（clawTap / LLM 代理 + Live）
 
@@ -85,7 +85,7 @@ python3 deploy/e2b/quickstart.py
 
 Pass: prints `hello from fc` and a `sandbox_id`.
 
-### Step B — Gateway + OVS 直挂 NAS（无需 Mac 宿主机 mount）
+### Step B — Gateway 直挂 NAS（无需 Mac 宿主机 mount）
 
 在 repo 根 `.env`：
 
@@ -95,23 +95,22 @@ CLAW_E2B_NAS_EXPORT=/claw-workspace
 CLAW_USE_NAS_VOLUME=auto   # NAS_BASE_URL 已设时默认开启；=0 退回本地 bind
 ```
 
-`./deploy/stack/gateway.sh up` 生成 compose NFS volume（`deploy/stack/.claw-workspace-volume.yml`），**Podman 在 Gateway/OVS 容器内直接挂 NAS**。
+`./deploy/stack/gateway.sh up` 生成 compose NFS volume（`deploy/stack/.claw-workspace-volume.yml`），**Podman 在 Gateway 容器内直接挂 NAS**（无 openvscode 服务）。
 
 验收：
 
 ```bash
 ./deploy/stack/gateway.sh up
 podman exec claw-gateway-rs sh -c 'echo ok > /var/lib/claw/workspace/.probe'
-podman exec claw-openvscode-server ls -la /home/workspace/.probe
 ```
 
-**solve podman pool** 仍用本机 `deploy/stack/claw-workspace` 作 worker bind（与 Gateway/OVS 的 NAS 树分离，直到 solve 迁远程 pool）。
+自托管推荐路径见 [`docs/e2b-nas-workspace.md`](../../docs/e2b-nas-workspace.md)（Gateway **不** bind NAS，经 claw-nas-api）。
 
 ### Step C — e2b interactive（legacy：Aliyun `code-interpreter-v1` + NAS 注入）
 
 > **Legacy / 已废弃默认路径。** 当前推荐自托管 e2b + 自定义模板（`claw-worker`、`claw-observe` 等），见 [`docs/deploy-ops-runbook.md`](../../docs/deploy-ops-runbook.md) 与 [`WORKER-BUILD.md`](./WORKER-BUILD.md)。下文 Phase 0 Step C 仅保留 Aliyun 历史记录。
 
-OVS `@claw` 需要沙箱内有 **`claw`** 与 **`ttyd`**。因 e2b builder / ACR EE 路径不可行，曾采用 **官方 `code-interpreter-v1` + NAS 启动时拷贝二进制**。
+交互式 terminal / agent 需要沙箱内有 **`claw`** 与（可选）**`ttyd`**。因 e2b builder / ACR EE 路径不可行，曾采用 **官方 `code-interpreter-v1` + NAS 启动时拷贝二进制**。
 
 #### 1. 一次性：把工具装到 NAS（legacy）
 
@@ -160,8 +159,10 @@ Gateway 在 **`CLAW_NAS_HOST_MOUNT`** 上 mkdir session 树；e2b 只做本机 b
 #### 4. 验收
 
 ```bash
-./deploy/stack/lib/verify-e2b-ovs-e2e.sh
+./deploy/stack/lib/verify-e2b-nas-inject.sh
 ```
+
+（历史 `verify-e2b-ovs-e2e.sh` 已随 OVS 退出删除；勿再引用。）
 
 ---
 
@@ -286,15 +287,15 @@ Template build-only (not runtime):
 
 `rust/crates/claw-e2b-sandbox-client/` — minimal E2B REST (`POST /sandboxes`, `DELETE /sandboxes/{id}`) + Python envd exec helper.
 
-Interactive routing: `http-gateway-rs` → `InteractiveSandboxBackend` (`podman` | `fc`).
+Interactive routing: `http-gateway-rs` → `InteractiveSandboxBackend`（e2b）。
 
 ## E2E verify
 
 ```bash
-./deploy/stack/lib/verify-e2b-ovs-e2e.sh
+./deploy/stack/lib/verify-e2b-nas-inject.sh
 ```
 
-Requires `CLAW_INTERACTIVE_BACKEND=e2b`, NAS tools installed, gateway up, and LLM configured for full OVS chat.
+Requires `CLAW_INTERACTIVE_BACKEND=e2b`、gateway up、NAS / e2b 可达。**勿**再跑已删除的 `verify-e2b-ovs-e2e.sh`。
 
 ## References
 
@@ -302,4 +303,4 @@ Requires `CLAW_INTERACTIVE_BACKEND=e2b`, NAS tools installed, gateway up, and LL
 - [SDK quickstart](https://help.aliyun.com/zh/functioncompute/fc/create-your-first-cloud-sandbox-via-the-sdk)
 - [Custom template](https://help.aliyun.com/zh/functioncompute/fc/custom-template)
 - [Dynamic NAS mount](https://help.aliyun.com/zh/functioncompute/fc/user-guide/dynamically-mount-a-file-storage-nas)
-- Repo plan: `docs/boundaries-claw-stack.md` (FC interactive section)
+- Repo: `docs/architecture-governance.md`、`docs/boundaries-claw-stack.md`

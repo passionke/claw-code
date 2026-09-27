@@ -1,4 +1,4 @@
-//! Admin API for e2b core singletons (nas-api / observe / ovs). Author: kejiqing
+//! Admin API for e2b core singletons (nas-api / observe). Author: kejiqing
 
 use claw_e2b_sandbox_client::E2bSandboxClient;
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,6 @@ use crate::gateway_e2b_nas_api_settings::{
 use crate::gateway_e2b_observe_settings::{
     e2b_observe_settings_public, e2b_observe_settings_public_with_runtime, E2bObserveSettingsPublic,
 };
-use crate::gateway_e2b_ovs_settings::{e2b_ovs_settings_public, E2bOvsSettingsPublic};
 use crate::gateway_e2b_singleton_lifecycle::{
     ensure_e2b_singleton, reset_e2b_singleton, E2bSingletonComponent,
 };
@@ -20,7 +19,6 @@ use crate::session_db::GatewaySessionDb;
 pub struct E2bSingletonsStatusResponse {
     #[serde(rename = "nasApi")]
     pub nas_api: E2bNasApiSettingsPublic,
-    pub ovs: E2bOvsSettingsPublic,
     pub observe: E2bObserveSettingsPublic,
 }
 
@@ -28,8 +26,6 @@ pub struct E2bSingletonsStatusResponse {
 pub struct PutE2bSingletonTemplatesInput {
     #[serde(default, rename = "nasApiTemplateId")]
     pub nas_api_template_id: Option<String>,
-    #[serde(default, rename = "ovsTemplateId")]
-    pub ovs_template_id: Option<String>,
     #[serde(default, rename = "observeTemplateId")]
     pub observe_template_id: Option<String>,
 }
@@ -38,7 +34,6 @@ pub struct PutE2bSingletonTemplatesInput {
 pub struct PutE2bSingletonTemplatesResponse {
     #[serde(rename = "nasApi")]
     pub nas_api: E2bNasApiSettingsPublic,
-    pub ovs: E2bOvsSettingsPublic,
     pub observe: E2bObserveSettingsPublic,
 }
 
@@ -55,8 +50,6 @@ pub struct E2bSingletonActionResponse {
     pub message: Option<String>,
     #[serde(rename = "nasApi", skip_serializing_if = "Option::is_none")]
     pub nas_api: Option<E2bNasApiSettingsPublic>,
-    #[serde(rename = "e2bOvs", skip_serializing_if = "Option::is_none")]
-    pub e2b_ovs: Option<E2bOvsSettingsPublic>,
     pub observe: Option<E2bObserveSettingsPublic>,
 }
 
@@ -110,7 +103,6 @@ pub async fn load_e2b_singletons_status(
             Some(c) => e2b_nas_api_settings_public_with_runtime(db, Some(c)).await?,
             None => e2b_nas_api_settings_public(db).await?,
         },
-        ovs: e2b_ovs_settings_public(db).await?,
         observe: match client {
             Some(c) => e2b_observe_settings_public_with_runtime(db, Some(c)).await?,
             None => e2b_observe_settings_public(db).await?,
@@ -133,11 +125,6 @@ pub async fn put_e2b_singleton_templates(
         settings.e2b_nas_api.updated_at_ms = now;
         changed = true;
     }
-    if let Some(tid) = normalize_template_id(input.ovs_template_id) {
-        settings.e2b_ovs.template_id = Some(tid);
-        settings.e2b_ovs.updated_at_ms = now;
-        changed = true;
-    }
     if let Some(tid) = normalize_template_id(input.observe_template_id) {
         settings.e2b_observe.template_id = Some(tid);
         settings.e2b_observe.updated_at_ms = now;
@@ -154,9 +141,6 @@ pub async fn put_e2b_singleton_templates(
 
     Ok(PutE2bSingletonTemplatesResponse {
         nas_api: e2b_nas_api_settings_public(db)
-            .await
-            .map_err(|e| e.to_string())?,
-        ovs: e2b_ovs_settings_public(db)
             .await
             .map_err(|e| e.to_string())?,
         observe: e2b_observe_settings_public(db)
@@ -199,7 +183,6 @@ async fn build_action_response(
         traffic_reachable: outcome.traffic_reachable,
         message: outcome.message,
         nas_api: (component == E2bSingletonComponent::NasApi).then(|| status.nas_api.clone()),
-        e2b_ovs: (component == E2bSingletonComponent::Ovs).then(|| status.ovs.clone()),
         observe: (component == E2bSingletonComponent::Observe).then(|| status.observe.clone()),
     })
 }

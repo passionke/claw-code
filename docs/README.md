@@ -6,7 +6,7 @@ Author: kejiqing
 
 **Cursor Skill：** [`.cursor/skills/claw-deploy-ops/SKILL.md`](../.cursor/skills/claw-deploy-ops/SKILL.md)
 
-**当前唯一支持的 worker 路径：** solve / interactive / OVS / Observe / NAS 写盘均经 **e2b 沙箱**；本地栈仅 **gateway + playground**，外连独立 PG 与 e2bserver。
+**当前唯一支持的 worker 路径：** solve / interactive / Observe / NAS 写盘均经 **e2b 沙箱**；本地栈仅 **gateway + playground**，外连独立 PG 与 e2bserver。**OpenVSCode / OVS 已全面退出**（2026-09-27）。
 
 **架构总纲：** [`architecture-governance.md`](architecture-governance.md)
 
@@ -49,16 +49,17 @@ Author: kejiqing
 
 ---
 
-## e2b / OVS / NAS
+## e2b / NAS
 
 | 文档 | 用途 |
 |------|------|
 | [`deploy/e2b/README.md`](../deploy/e2b/README.md) | e2b API 验收、模板构建、成本 |
-| [`ovs-chat/FC-OVS-SINGLETON-DESIGN.md`](ovs-chat/FC-OVS-SINGLETON-DESIGN.md) | OVS e2b singleton |
-| [`ovs-chat/FC-OVS-TEMPLATE-BUILD.md`](ovs-chat/FC-OVS-TEMPLATE-BUILD.md) | `claw-ovs` 模板 |
-| [`ovs-chat/FC-TAP-SINGLETON-DESIGN.md`](ovs-chat/FC-TAP-SINGLETON-DESIGN.md) | Observe tap singleton |
-| [`ovs-chat/FC-OVS-E2E-FAILURES.md`](ovs-chat/FC-OVS-E2E-FAILURES.md) | 已知 e2b 排障 |
-| [`ovs-chat/INTEGRATION.md`](ovs-chat/INTEGRATION.md) | OVS + claw-vscode 集成 |
+| [`ovs-chat/FC-TAP-SINGLETON-DESIGN.md`](ovs-chat/FC-TAP-SINGLETON-DESIGN.md) | Observe tap singleton（**ARCHIVED 目录内**；Observe 现行语义仍见架构总纲） |
+| [`ovs-chat/FC-OVS-E2E-FAILURES.md`](ovs-chat/FC-OVS-E2E-FAILURES.md) | 已知 e2b 排障（历史） |
+
+### 已归档：`docs/ovs-chat/`（OVS 全面退出，2026-09-27）
+
+目录内文档文首均有 **ARCHIVED** 横幅；仅作历史取证。含原 OVS singleton / 模板 / 集成 / 验收等。现行 `mode=relaxed` = 宽松 worker，见 [`architecture-governance.md`](architecture-governance.md)。
 
 ---
 
@@ -94,5 +95,6 @@ Author: kejiqing
 | [`deploy/stack/docs/local-dev-remote-backend.md`](../deploy/stack/docs/local-dev-remote-backend.md) | 模式 B 远程 pool |
 | `deploy/stack/docs/host-pool-daemon.md` | **已删除** |
 | `env.stable-dev-host.example` / `env.local-remote-backend.example` | 历史模板 |
+| `docs/ovs-chat/*`、`docs/ovs-chat-debug-log.md`、`docs/ovs-chat-source-handoff.md` | **ARCHIVED** — OVS 已全面退出 |
 
 旧变量（`CLAW_POOL_*`、`CLAW_SANDBOX_*`、`podman_pool`、`docker_pool`）在根 `.env` 可保留但**不再生效**；见 `architecture-governance.md` §7。

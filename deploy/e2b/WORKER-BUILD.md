@@ -31,7 +31,7 @@ Author: kejiqing
 
 内部步骤：从 CI 镜像抽出 linux/amd64 `claw` 与 `claude-tap`，再对四个组件算内容哈希。与 PG 里已有的 `contentHash` 相同且已有 `buildId` 则跳过 `Template.build`。不同才构建，并写入 `templateId`、`buildId`、`contentHash`。
 
-`gateway.sh e2b-worker-deploy` 与 `build-selfhosted-templates.sh` 已移除。
+`gateway.sh e2b-worker-deploy` 与 `build-selfhosted-templates.sh` 已移除。**无** `claw-ovs` / OpenVSCode 构建步骤。
 
 ## PG 契约
 
@@ -61,8 +61,8 @@ Gateway：
 - strict：`load_e2b_worker_template_id()` → `PG e2bWorker.templateId` → env → `claw-worker`
 - relaxed：`load_e2b_worker_relaxed_template_id()` → `PG e2bWorkerRelaxed.templateId` → env → `claw-worker-relaxed`
 
-**strict vs relaxed**：strict 用于 solve 池；relaxed = `claw` + **curl/git/python3/pip** + **内置 OVS**，用于 OVS / interactive。  
-e2b 模板 `claw-worker-relaxed` 与 CI 镜像 `claw-gateway-worker-relaxed` **工具包对齐**；OVS **必须**在 e2b 模板 bake（从 `CLAW_OVS_IMAGE` 抽 openvscode 树 + 装扩展）。Admin 发布在 gateway 内用 **registry HTTP 抽树**（无嵌套 podman）。不要单独跑 `build-claw-*-selfhosted.py`。
+**strict vs relaxed**：strict 用于默认 solve 池（home `/claw_ds` ro）。relaxed = `claw` + **curl/git/python3/pip**（**tools-only**；home `/claw_ds` rw）；**不再**内置 OpenVSCode / `:3000/ovs`。需 `CLAW_ALLOW_RELAXED_WORKER=1`。  
+e2b 模板 `claw-worker-relaxed` 与 CI 镜像 `claw-gateway-worker-relaxed` **工具包对齐**。Admin 发布走 `bootstrap-templates-from-ci-tag.sh`；不要单独跑已删除的 `build-claw-ovs*` / `ovs_bundle.py`。Author: kejiqing
 
 ## Gateway 启动 / 运行时（不用手 reset 除非急）
 
@@ -85,19 +85,13 @@ curl -X POST http://127.0.0.1:8088/v1/projects/1/e2b-worker/reset
 ## 验收
 
 ```bash
-# OVS @claw agent/ws（须 gateway-interactive-once 或新 claw 正常）
-./deploy/stack/lib/verify-ovs-claw-e2e.sh
+# NAS bind 契约
+./deploy/stack/lib/verify-e2b-nas-inject.sh
 
-# 全链路（OVS singleton + agent WS）
-CLAW_INTERACTIVE_BACKEND=e2b CLAW_OVS_BACKEND=e2b \
-  ./deploy/stack/lib/verify-e2b-ovs-e2e.sh
+# worker 内版本对齐：从 gateway 容器侧查 proj worker，claw --version Git SHA 应与发布 tag 一致
 ```
 
-worker 内版本对齐：
-
-```bash
-# 从 gateway 容器 exec 进 proj worker，claw --version Git SHA 应与 gateway 一致
-```
+（历史 `verify-ovs-claw-e2e.sh` / `verify-e2b-ovs-e2e.sh` 已随 OVS 退出删除。）
 
 ## 与 gateway 镜像的关系
 
@@ -125,6 +119,6 @@ CLAW_CLUSTER_ID=local-dev
 | 现象 | 原因 | 处理 |
 |------|------|------|
 | `claw is not linux/amd64 ELF` | 抽出的 claw 不是 amd64 | 用 CI 镜像 tag 走 Admin 发布，不要在 arm64 上交叉编译 |
-| OVS `missing_credentials` | worker 里旧 claw | Admin 发布后重启 gateway，或对该项目 reset |
 | PG 无 `e2bWorker.templateId` | 发布未写 PG / 无 `CLAW_GATEWAY_DATABASE_URL` | 重跑 Admin 发布，查日志 `persisted e2bWorker.templateId` |
 | relaxed 仍是旧 claw | 发布被跳过或 gateway 未重启 | 查 `contentHash` 是否真的变了；变了则重启 gateway 等启动切换 |
+| 仍找 OpenVSCode / `:3000/ovs` | OVS 已全面退出 | 见 `docs/architecture-governance.md`；历史文档 `docs/ovs-chat/` |

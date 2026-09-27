@@ -1,5 +1,8 @@
 # e2b 流量入口：非 ASCII 请求体 PUT → nginx 502（nas-api / 附件上传）
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing  
 Date: 2026-07-29  
 Claw 集成方：claw-code（Gateway `claw-nas-api` singleton + Admin 会话附件上传）  

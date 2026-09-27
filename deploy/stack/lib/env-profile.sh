@@ -52,15 +52,6 @@ claw_apply_deploy_profile() {
       fi
       export GATEWAY_IMAGE="${GATEWAY_IMAGE:-claw-gateway-rs:local}"
       export GATEWAY_PLAYGROUND_IMAGE="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
-      # shellcheck source=/dev/null
-      [[ -f "${CLAW_REPO_ROOT:-}/deploy/stack/ovs-image.env" ]] && source "${CLAW_REPO_ROOT}/deploy/stack/ovs-image.env"
-      if [[ -z "${CLAW_OVS_UPSTREAM_IMAGE:-}" && -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env" ]]; then
-        # shellcheck source=/dev/null
-        source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env"
-      fi
-      # e2b worker templates need linux/amd64 OVS; :ovs-chat alone is arm-only. Author: kejiqing
-      export CLAW_OVS_UPSTREAM_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat-amd64}"
-      export CLAW_OVS_IMAGE="${CLAW_OVS_IMAGE:-${CLAW_OVS_UPSTREAM_IMAGE}}"
       export CLAW_LLM_PROXY="${CLAW_LLM_PROXY:-local}"
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-18088}"
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
@@ -90,13 +81,6 @@ claw_apply_deploy_profile() {
       export CLAW_GATEWAY_PG_IMAGE="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
       # e2b observe singleton; never compose claude-tap on production. kejiqing
       export CLAUDE_TAP_MODE=off
-      if [[ -z "${CLAW_OVS_UPSTREAM_IMAGE:-}" && -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env" ]]; then
-        # shellcheck source=/dev/null
-        source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env"
-      fi
-      # e2b workers are linux/amd64 — pin amd64 OVS, not the arm-only :ovs-chat tag. Author: kejiqing
-      export CLAW_OVS_UPSTREAM_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat-amd64}"
-      export CLAW_OVS_IMAGE="${CLAW_OVS_IMAGE:-${CLAW_OVS_UPSTREAM_IMAGE}}"
       ;;
   esac
 

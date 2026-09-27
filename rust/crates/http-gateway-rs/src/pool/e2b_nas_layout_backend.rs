@@ -320,8 +320,8 @@ impl NasLayoutBackend {
         let mut cfg = json!({
             "claw.projId": proj_id,
             "claw.clusterId": cluster_id,
-            "claw.gatewayHost": crate::gateway_e2b_worker_settings::ovs_gateway_host_for_e2b(),
-            "claw.gatewayPublicHost": crate::gateway_e2b_worker_settings::ovs_gateway_public_host(),
+            "claw.gatewayHost": crate::gateway_e2b_worker_settings::gateway_host_for_e2b(),
+            "claw.gatewayPublicHost": crate::gateway_e2b_worker_settings::gateway_public_host(),
         });
         if let Some(profile) = worker_profile.map(str::trim).filter(|s| !s.is_empty()) {
             cfg["claw.workerProfile"] = json!(profile);

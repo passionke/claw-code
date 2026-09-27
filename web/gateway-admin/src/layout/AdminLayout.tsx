@@ -24,7 +24,6 @@ import { useApp } from "../context/AppContext";
 import { useClusterBootstrap } from "../hooks/useClusterBootstrap";
 import ClusterBootstrapGatePage from "../pages/ClusterBootstrapGatePage";
 import { formatProjectLabel } from "../utils/projectLabel";
-import { isOvsWorkerRelaxed, ovsIdeHref } from "../utils/ovsUrl";
 
 const { Header, Sider, Content } = Layout;
 
@@ -76,7 +75,6 @@ export default function AdminLayout() {
     projects,
     refreshProjects,
     gatewayImageTag,
-    projectConfig,
   } = useApp();
   const { snap, ready, needsBootstrap, refresh } = useClusterBootstrap();
   const loc = useLocation();
@@ -220,11 +218,6 @@ export default function AdminLayout() {
           options={projOptions.length ? projOptions : [{ value: 1, label: "#1" }]}
           onChange={setProjId}
         />
-        {isOvsWorkerRelaxed(projectConfig?.workerProfileJson) ? (
-          <Button href={ovsIdeHref(projId)} target="_blank" rel="noreferrer" icon={<CodeOutlined />}>
-            Web IDE
-          </Button>
-        ) : null}
         <div style={{ flex: 1 }} />
         <Space>
           {systemAdmin ? (

@@ -1,56 +1,5 @@
 // Fragment of routes::app (include!). Author: kejiqing
 
-#[utoipa::path(
-    get,
-    path = "/v1/sessions/{session_id}/agent/ws",
-    tag = "Sessions",
-    operation_id = "agent_ws_handler",
-    params(
-        ("session_id" = String, Path, description = "Gateway session id"),
-        session_agent_api::AgentProjQuery
-    ),
-    responses(
-        (status = 101, description = "WebSocket upgrade for OVS agent chat bridge"),
-        (status = 400, description = "Invalid projId or session"),
-        (status = 409, description = "Concurrent prompt on same record session")
-    )
-)]
-pub(crate) async fn agent_ws_handler(
-    ws: axum::extract::ws::WebSocketUpgrade,
-    State(state): State<AppState>,
-    AxumPath(session_id): AxumPath<String>,
-    Query(q): Query<session_agent_api::AgentProjQuery>,
-) -> impl IntoResponse {
-    session_agent_api::agent_ws_upgrade(state.terminal_api_ctx(), session_id, q, ws).await
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/projects/{proj_id}/ovs/workspace",
-    tag = "Inference",
-    operation_id = "ovs_workspace_handler",
-    params(
-        ("proj_id" = i64, Path, description = "Project id")
-    ),
-    responses(
-        (status = 200, description = "OVS workspace metadata", body = session_ovs_api::OvsWorkspaceResponse),
-        (status = 404, description = "Project not found")
-    )
-)]
-pub(crate) async fn ovs_workspace_handler(
-    State(state): State<AppState>,
-    AxumPath(proj_id): AxumPath<i64>,
-) -> Result<Json<session_ovs_api::OvsWorkspaceResponse>, session_ovs_api::OvsApiError> {
-    session_ovs_api::get_ovs_workspace(
-        state.ovs_api_ctx(),
-        &state.session_db,
-        Some(state.pool_clients.e2b_worker_registry()),
-        state.pool_clients.e2b_sandbox_client().map(|c| c.as_ref()),
-        proj_id,
-    )
-    .await
-}
-
 pub(crate) fn progress_poll_interval_ms() -> u64 {
     std::env::var("CLAW_TASK_PROGRESS_POLL_MS")
         .ok()

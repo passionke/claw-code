@@ -1,5 +1,8 @@
 # e2b OVS E2E — 失败尝试记录
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing  
 用途：避免重复踩坑；每条必须有**证据**才标为已修复/已验证。
 

@@ -16,7 +16,6 @@ use crate::gateway_claw_tap_settings::{ClawTapSettings, ClawTapSettingsPublic};
 use crate::gateway_e2b_nas_api_settings::{E2bNasApiSettings, E2bNasApiSettingsPublic};
 use crate::gateway_e2b_nas_settings::E2bNasSettingsPublic;
 use crate::gateway_e2b_observe_settings::{E2bObserveSettings, E2bObserveSettingsPublic};
-use crate::gateway_e2b_ovs_settings::{E2bOvsSettings, E2bOvsSettingsPublic};
 use crate::gateway_e2b_platform_settings::E2bPlatformSettingsPublic;
 use crate::gateway_e2b_worker_settings::{
     e2b_worker_settings_public, E2bWorkerSettings, E2bWorkerSettingsPublic,
@@ -293,8 +292,6 @@ pub struct GatewayGlobalSettingsStore {
     pub(crate) cluster_id: String,
     #[serde(rename = "clawTap", default)]
     pub(crate) claw_tap: ClawTapSettings,
-    #[serde(rename = "e2bOvs", default)]
-    pub(crate) e2b_ovs: E2bOvsSettings,
     #[serde(rename = "e2bNasApi", default)]
     pub(crate) e2b_nas_api: E2bNasApiSettings,
     #[serde(rename = "e2bObserve", default)]
@@ -385,8 +382,6 @@ pub struct GatewayGlobalSettingsResponse {
     pub e2b_platform: Option<E2bPlatformSettingsPublic>,
     #[serde(rename = "e2bNasApi", skip_serializing_if = "Option::is_none")]
     pub e2b_nas_api: Option<E2bNasApiSettingsPublic>,
-    #[serde(rename = "e2bOvs", skip_serializing_if = "Option::is_none")]
-    pub e2b_ovs: Option<E2bOvsSettingsPublic>,
     #[serde(rename = "e2bObserve", skip_serializing_if = "Option::is_none")]
     pub e2b_observe: Option<E2bObserveSettingsPublic>,
     #[serde(rename = "e2bWorker", skip_serializing_if = "Option::is_none")]
@@ -953,7 +948,6 @@ fn salvage_settings_store(v: &serde_json::Value) -> GatewayGlobalSettingsStore {
         e2b_worker_relaxed: from_section(v, "e2bWorkerRelaxed"),
         e2b_nas_api: from_section(v, "e2bNasApi"),
         e2b_observe: from_section(v, "e2bObserve"),
-        e2b_ovs: from_section(v, "e2bOvs"),
         claw_tap: from_section(v, "clawTap"),
         cluster_bootstrap: from_section(v, "clusterBootstrap"),
         admin_mcp_tokens: from_section(v, "adminMcpTokens"),
@@ -1055,9 +1049,6 @@ pub async fn load_response(
         oss: Some((&crate::oss_object_store::OssConfig::from_env()).into()),
         e2b_platform: Some(crate::gateway_e2b_platform_settings::e2b_platform_settings_public()),
         e2b_nas_api: crate::gateway_e2b_nas_api_settings::e2b_nas_api_settings_public(db)
-            .await
-            .ok(),
-        e2b_ovs: crate::gateway_e2b_ovs_settings::e2b_ovs_settings_public(db)
             .await
             .ok(),
         e2b_observe: crate::gateway_e2b_observe_settings::e2b_observe_settings_public(db)

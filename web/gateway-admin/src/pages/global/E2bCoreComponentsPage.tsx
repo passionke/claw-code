@@ -90,7 +90,7 @@ function templateSelectOptions(
   return options;
 }
 
-/** Gateway 核心 e2b 组件：nas-api / observe（OVS 已迁至 relaxed worker）。Author: kejiqing */
+/** Gateway 核心 e2b 组件：nas-api / observe。Author: kejiqing */
 export default function E2bCoreComponentsPage() {
   const { gatewayBase } = useApp();
   const [loading, setLoading] = useState(false);
@@ -238,7 +238,6 @@ export default function E2bCoreComponentsPage() {
       );
       setStatus({
         nasApi: r.nasApi,
-        ovs: r.ovs,
         observe: r.observe,
       });
       message.success("模版 ID 已写入 PG");

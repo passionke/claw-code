@@ -1,47 +1,49 @@
-# Relaxed Worker 内置 OVS — 验收契约
+# Relaxed Worker 验收契约（OVS 退出后）
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
 
 Author: kejiqing
 
-## 架构摘要
-
-- **strict 项目**：无 OVS 入口；`GET /v1/projects/{id}/ovs/workspace` → **403**
-- **relaxed 项目**：OVS 与 worker **同一 e2b sandbox**（`claw-worker-relaxed` 模板），工作区路径 **`/claw_ds`**
-- **废除**独立 `ovs-singleton` sandbox 与 `ensure_ovs` 启动路径
-
-## 不变量（INV）
+## 现行验收（2026-09-27）
 
 | ID | 断言 |
 |----|------|
-| INV-1 | strict 项目 `ovs/workspace` HTTP **403** |
-| INV-2 | relaxed 响应 `workspaceFolder == "/claw_ds"` |
-| INV-3 | `ovsFolderUrl` 中 sandbox 与 `sandboxId`（= `project_e2b_worker.sandbox_id`）一致 |
-| INV-4 | e2b API 上无 `metadata.clawRole=ovs-singleton` 存活 sandbox |
-| INV-5 | 响应含 `clusterId`、`workerProfile` |
-| INV-6 | OVS 与 `claw` 在同一 sandbox：OVS 流量 host `3000-sbx_*` 的 `sbx_*` 等于 `project_e2b_worker.sandbox_id` |
-| INV-9 | `ovsFolderUrl` 不得含 legacy `/claw_ws/proj_*` |
+| INV-A | 无对 `:3000/ovs` / OpenVSCode 的运行时依赖 |
+| INV-B | 无 `metadata.clawRole=ovs-singleton` 存活 sandbox；无 ovs-singleton ensure/reset 路径 |
+| INV-C | `GET /v1/projects/{id}/ovs/workspace` **不可用**（404 或路由已移除） |
+| INV-D | relaxed 项目 `ensure_worker` 成功（`claw-worker-relaxed`） |
+| INV-E | relaxed 项目 home `/claw_ds` **可写**（rw bind）；strict 仍为 ro |
 
-## 验证层级
+## 架构摘要（现行）
+
+- **strict：** `claw-worker`；home `/claw_ds` 只读
+- **relaxed：** `claw-worker-relaxed` = claw + curl/git/python3/pip（**permissions / tools-only**）；home `/claw_ds` 可写
+- **已废除：** 独立 `ovs-singleton`、relaxed 内置 OpenVSCode、`ovs/workspace` 产品面
+
+详见 [`architecture-governance.md`](../architecture-governance.md) §3–§4、[`e2b-nas-workspace.md`](../e2b-nas-workspace.md)。
+
+## 验证层级（现行）
 
 | 层级 | 命令 | 说明 |
 |------|------|------|
-| L0 | `cargo test -p claw-e2b-sandbox-client nas_paths` | 路径契约单测 |
-| L0 | `cargo test -p http-gateway-rs gateway_e2b_ovs` | OVS URL 派生单测 |
-| L1 | `./deploy/stack/lib/verify-relaxed-worker-ovs.sh` | Gateway + relaxed OVS 契约 |
-| L2 | `CLAW_OVS_BACKEND=e2b ./deploy/stack/lib/verify-e2b-ovs-e2e.sh` | 完整 e2b E2E |
-| L3 | `CLAW_OVS_E2E_PROJ_ID=2 ./deploy/stack/lib/verify-ovs-claw-e2e.sh` | @claw agent/ws |
+| L0 | `cargo test -p claw-e2b-sandbox-client nas_paths` | home ro/rw 契约单测 |
+| L1 | `./deploy/stack/lib/verify-e2b-nas-inject.sh` | NAS bind |
+| L2 | `./deploy/stack/lib/verify-relaxed-worker.sh` | ensure_worker；`ovs/workspace` → 404；无 ovs-singleton |
 
-## 发版顺序
-
-```bash
-./deploy/e2b/build-claw-worker-relaxed-selfhosted.py
-./deploy/stack/lib/verify-relaxed-worker-ovs.sh
-CLAW_OVS_E2E_PROJ_ID=2 ./deploy/stack/lib/verify-ovs-claw-e2e.sh
-```
+历史 OVS E2E 脚本（`verify-e2b-ovs-e2e.sh` 等）已删除，勿再引用。
 
 ## 环境变量
 
 | 变量 | 默认 | 用途 |
 |------|------|------|
-| `CLAW_OVS_E2E_PROJ_ID` | `2` | relaxed 验收项目 |
-| `CLAW_STRICT_E2E_PROJ_ID` | `1` | strict 403 验收项目 |
-| `CLAW_E2B_TEMPLATE_RELAXED` | `claw-worker-relaxed` | relaxed worker 模板别名 |
+| `CLAW_ALLOW_RELAXED_WORKER` | 须显式允许 | 启用 `mode=relaxed` |
+| `CLAW_E2B_TEMPLATE_RELAXED` / PG `e2bWorkerRelaxed` | `claw-worker-relaxed` | relaxed 模板 |
+
+---
+
+## 历史正文（OVS 内置期，已失效）
+
+以下为 2026-07 前后「relaxed 内置 OVS」验收原文，**不再作为现行契约**：
+
+- 当时：strict `ovs/workspace` → 403；relaxed `workspaceFolder == "/claw_ds"`；OVS 与 claw 同 sandbox；废除独立 ovs-singleton。
+- 验证曾依赖 `verify-relaxed-worker-ovs.sh` / `verify-e2b-ovs-e2e.sh` / `verify-ovs-claw-e2e.sh`。

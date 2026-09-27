@@ -1,5 +1,8 @@
 # e2b OVS Singleton — 1 Gateway : 1 OVS : N Workers
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 > **DEPRECATED (2026-07)**：OVS 已迁入 **relaxed worker 内置**（`claw-worker-relaxed`），不再使用独立 `ovs-singleton`。见 [RELAXED-WORKER-OVS.md](./RELAXED-WORKER-OVS.md) 与 [ACCEPTANCE.md](./ACCEPTANCE.md)。
 
 Author: kejiqing  

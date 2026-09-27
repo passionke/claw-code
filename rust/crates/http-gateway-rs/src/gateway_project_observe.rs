@@ -261,8 +261,6 @@ async fn ensure_project_observe_inner(
                 sandbox_domain: domain,
                 envd_access_token: None,
                 traffic_access_token: None,
-                ovs_public_host: None,
-                ovs_base_url: None,
             };
             persist_project_observe(
                 db,
@@ -321,8 +319,6 @@ async fn ensure_project_observe_inner(
                     sandbox_domain: domain,
                     envd_access_token: None,
                     traffic_access_token: None,
-                    ovs_public_host: None,
-                    ovs_base_url: None,
                 };
                 persist_project_observe(
                     db,

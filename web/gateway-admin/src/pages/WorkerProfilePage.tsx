@@ -192,7 +192,7 @@ export default function WorkerProfilePage() {
     <Card title="Worker 执行环境" size="small">
       <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
         存于 <Typography.Text code>project_config.worker_profile_json</Typography.Text>
-        （项目 {projId}）。strict = solve worker 池；relaxed = 单 worker + 内置 OVS 交互。
+        （项目 {projId}）。strict = solve worker 池；relaxed = 单 worker（可写容器）。
       </Typography.Paragraph>
       <Alert
         type="info"
@@ -212,7 +212,7 @@ export default function WorkerProfilePage() {
         title={
           isStrict
             ? `e2b Worker 池（strict · 目标 ${workerStatus?.desiredPoolSize ?? globalPoolSize}）`
-            : "e2b Worker（relaxed · 单实例 + OVS）"
+            : "e2b Worker（relaxed · 单实例）"
         }
         size="small"
         style={{ marginBottom: 16 }}
@@ -388,7 +388,7 @@ export default function WorkerProfilePage() {
           <Radio.Group>
             <Radio value="strict">Strict（Landlock session 隔离）</Radio>
             {relaxedAllowed ? (
-              <Radio value="relaxed">Relaxed（OVS：root + 可写容器）</Radio>
+              <Radio value="relaxed">Relaxed（root + 可写容器）</Radio>
             ) : null}
           </Radio.Group>
         </Form.Item>

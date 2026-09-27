@@ -2,8 +2,8 @@
 //!
 //! Strict projects: N warm worker sandboxes per `proj_id` (global `e2bWorker.poolSize` default 1,
 //! optional per-project `worker_profile_json.poolSize`, capped by `CLAW_E2B_POOL_SIZE_CAP`).
-//! Relaxed: 1 worker with built-in OVS. Full-pool reconcile on startup / Admin poolSize change;
-//! solve acquire picks one slot from memory and reconciles only on cache miss.
+//! Relaxed: 1 worker (permissions-only; home mount rw). Full-pool reconcile on startup / Admin
+//! poolSize change; solve acquire picks one slot from memory and reconciles only on cache miss.
 //!
 //! Image / buildId: remote rebuild only updates PG. Healthy sandboxes are never killed because
 //! buildId/templateId changed at runtime. New image is applied on gateway startup
@@ -204,8 +204,15 @@ fn needs_recreate(stored: &str, desired: &str, image_refresh: bool, sandbox_aliv
 struct WorkerSpec {
     e2b_template_id: String,
     build_id: Option<String>,
-    include_ovs: bool,
+    mode: WorkerProfileMode,
     profile_label: String,
+}
+
+impl WorkerSpec {
+    /// Strict → home RO; Relaxed → home RW (permissions only). Author: kejiqing
+    fn home_read_only(&self) -> bool {
+        matches!(self.mode, WorkerProfileMode::Strict)
+    }
 }
 
 async fn audit_rotation(db: &GatewaySessionDb, event: WorkerRotationEvent) {
@@ -296,7 +303,7 @@ impl E2bProjWorkerRegistry {
                 Ok(WorkerSpec {
                     e2b_template_id,
                     build_id,
-                    include_ovs: true,
+                    mode: WorkerProfileMode::Relaxed,
                     profile_label,
                 })
             }
@@ -310,7 +317,7 @@ impl E2bProjWorkerRegistry {
                 Ok(WorkerSpec {
                     e2b_template_id,
                     build_id,
-                    include_ovs: false,
+                    mode: WorkerProfileMode::Strict,
                     profile_label,
                 })
             }
@@ -320,35 +327,6 @@ impl E2bProjWorkerRegistry {
     async fn desired_pool_size(&self, proj_id: i64) -> Result<u32, String> {
         let db = self.session_db().await?;
         load_desired_worker_pool_size(db.as_ref(), proj_id).await
-    }
-
-    async fn relaxed_ovs_http_ok(&self, handle: &E2bSandboxHandle) -> bool {
-        let Some(base) = handle.ovs_base_url.as_deref().filter(|u| !u.is_empty()) else {
-            return false;
-        };
-        let url = format!("{}/", base.trim_end_matches('/'));
-        let Ok(client) = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(15))
-            .build()
-        else {
-            return false;
-        };
-        match client.get(&url).send().await {
-            Ok(resp) => resp.status().is_success(),
-            Err(_) => false,
-        }
-    }
-
-    fn normalize_handle(
-        &self,
-        mut handle: E2bSandboxHandle,
-        include_ovs: bool,
-    ) -> E2bSandboxHandle {
-        if include_ovs {
-            handle = E2bSandboxClient::handle_with_builtin_ovs(handle, &self.client);
-        }
-        handle
     }
 
     pub async fn reconcile_all_on_startup(&self) -> Result<(), String> {
@@ -637,58 +615,46 @@ impl E2bProjWorkerRegistry {
             );
             if !must_recreate {
                 let handle = E2bSandboxClient::handle_from_json(&existing.handle_json)?;
-                let handle = self.normalize_handle(handle, spec.include_ovs);
-                let ovs_ok = !spec.include_ovs || self.relaxed_ovs_http_ok(&handle).await;
-                if ovs_ok {
-                    if existing.template_id != desired_contract
-                        && same_applied_build(&existing.template_id, &desired_contract)
-                    {
-                        let now_ms = chrono::Utc::now().timestamp_millis();
-                        let mut updated = existing.clone();
-                        updated.template_id = desired_contract.clone();
-                        updated.updated_at_ms = now_ms;
-                        db.upsert_project_e2b_worker(&updated).await.map_err(|e| {
-                            format!("upsert project_e2b_worker contract relabel: {e}")
-                        })?;
-                        self.cache_worker(
-                            key,
-                            handle,
-                            updated.worker_id.clone(),
-                            desired_contract.clone(),
-                        )
-                        .await;
-                    } else {
-                        self.cache_worker(
-                            key,
-                            handle,
-                            existing.worker_id.clone(),
-                            existing.template_id.clone(),
-                        )
-                        .await;
-                    }
-                    self.client
-                        .renew_sandbox_ttl_secs(&existing.sandbox_id, self.worker_ttl_secs)
+                if existing.template_id != desired_contract
+                    && same_applied_build(&existing.template_id, &desired_contract)
+                {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let mut updated = existing.clone();
+                    updated.template_id = desired_contract.clone();
+                    updated.updated_at_ms = now_ms;
+                    db.upsert_project_e2b_worker(&updated)
                         .await
-                        .map_err(|e| format!("renew existing project worker TTL: {e}"))?;
-                    return Ok(());
+                        .map_err(|e| format!("upsert project_e2b_worker contract relabel: {e}"))?;
+                    self.cache_worker(
+                        key,
+                        handle,
+                        updated.worker_id.clone(),
+                        desired_contract.clone(),
+                    )
+                    .await;
+                } else {
+                    self.cache_worker(
+                        key,
+                        handle,
+                        existing.worker_id.clone(),
+                        existing.template_id.clone(),
+                    )
+                    .await;
                 }
-                warn!(
-                    target: "claw_e2b_proj_worker",
-                    proj_id,
-                    slot_index,
-                    sandbox_id = %existing.sandbox_id,
-                    "relaxed worker OVS unhealthy — rotate"
-                );
-            } else {
-                info!(
-                    target: "claw_e2b_proj_worker",
-                    proj_id,
-                    slot_index,
-                    old_sandbox = %existing.sandbox_id,
-                    image_refresh,
-                    "proj worker rotate (contract / image_refresh / offline)"
-                );
+                self.client
+                    .renew_sandbox_ttl_secs(&existing.sandbox_id, self.worker_ttl_secs)
+                    .await
+                    .map_err(|e| format!("renew existing project worker TTL: {e}"))?;
+                return Ok(());
             }
+            info!(
+                target: "claw_e2b_proj_worker",
+                proj_id,
+                slot_index,
+                old_sandbox = %existing.sandbox_id,
+                image_refresh,
+                "proj worker rotate (contract / image_refresh / offline)"
+            );
             let pg_busy = db
                 .project_e2b_worker_is_busy(proj_id, e2b_worker_slot_i32(slot_index))
                 .await
@@ -768,10 +734,9 @@ impl E2bProjWorkerRegistry {
             .map_err(|e| format!("invalid worker_env_json for proj {proj_id}: {e}"))?;
         // Prefer alias for create target; pin buildId only when PG has one (after publish on
         // *this* e2b). Endpoint change clears pins so stale UUIDs cannot 503. Author: kejiqing
-        let create_alias = if spec.include_ovs {
-            e2b_worker_relaxed_template_from_env()
-        } else {
-            e2b_worker_template_from_env()
+        let create_alias = match spec.mode {
+            WorkerProfileMode::Relaxed => e2b_worker_relaxed_template_from_env(),
+            WorkerProfileMode::Strict => e2b_worker_template_from_env(),
         };
         let template_ref = claw_e2b_sandbox_client::e2b_sandbox_template_ref(
             &create_alias,
@@ -784,17 +749,10 @@ impl E2bProjWorkerRegistry {
                 proj_id,
                 &worker_id,
                 &template_ref,
-                spec.include_ovs,
+                spec.home_read_only(),
                 env_vars,
             )
             .await?;
-        if spec.include_ovs && !self.relaxed_ovs_http_ok(&handle).await {
-            let _ = self.client.kill_sandbox(&handle.sandbox_id).await;
-            return Err(format!(
-                "relaxed worker sandbox {} created but built-in OVS :3000/ovs not reachable",
-                handle.sandbox_id
-            ));
-        }
         self.client
             .renew_sandbox_ttl_secs(&handle.sandbox_id, self.worker_ttl_secs)
             .await
@@ -865,7 +823,7 @@ impl E2bProjWorkerRegistry {
         );
     }
 
-    /// Ensure slot-0 worker (relaxed OVS / legacy callers).
+    /// Ensure slot-0 worker (relaxed / legacy callers).
     pub async fn ensure_worker(&self, proj_id: i64) -> Result<(E2bSandboxHandle, String), String> {
         self.reconcile_proj_slot(proj_id, 0, false).await?;
         let key = WorkerSlotKey {
@@ -1228,17 +1186,6 @@ impl E2bProjWorkerRegistry {
         self.leases.lock().await.clear();
         self.pending_retire.lock().await.clear();
         info!(target: "claw_e2b_proj_worker", "shutdown_all (workers left running on e2b)");
-    }
-
-    pub async fn write_ovs_vscode_settings(
-        &self,
-        proj_id: i64,
-        cluster_id: &str,
-        worker_profile: &str,
-    ) -> Result<(), String> {
-        self.nas_layout
-            .write_proj_claw_vscode_settings(cluster_id, proj_id, Some(worker_profile))
-            .await
     }
 }
 

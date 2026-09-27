@@ -1,5 +1,8 @@
 # OVS Chat Participant 源码修复 — 工程交接文档
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing  
 Date: 2026-06-18  
 用途：**新开独立工程**修 openvscode-server / VS Code Chat 派发链；本文是自洽交接包，不依赖聊天上下文。

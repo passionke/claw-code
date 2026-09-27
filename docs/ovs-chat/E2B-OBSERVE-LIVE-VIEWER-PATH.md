@@ -1,5 +1,8 @@
 # e2b Observe Live Viewer — 已 superseded by Host 域名方案
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing  
 Date: 2026-06-21 (updated 2026-06-22)  
 Status: **SUPERSEDED** — 使用 `supone.top` Host 流量，不再走 `/e2b/` path  

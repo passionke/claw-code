@@ -135,7 +135,7 @@ source "${LIB_DIR}/bootstrap-runtime.sh"
 claw_wait_gateway_http_ready 60 || exit 1
 claw_print_cluster_bootstrap_hint || true
 
-echo "FC interactive backend — solve/OVS on e2b sandboxes" >&2
+echo "FC interactive backend — solve on e2b sandboxes" >&2
 
 # Default project ds_1 (project_config + workspace init) on every up. kejiqing
 # Re-chown after compose up: legacy root-owned ds_* breaks POST /v1/projects on CI runners. kejiqing
@@ -148,7 +148,6 @@ claw_ensure_default_project_ds "${CLAW_BOOTSTRAP_DS_ID:-1}" || {
   echo "error: default project ds bootstrap failed (POST /v1/projects + /v1/init)" >&2
   exit 1
 }
-claw_materialize_ovs_workspace_projects || true
 
 # Pool-scoped claude-tap (single sidecar; NAS traces) + Admin register. kejiqing
 if claw_stack_manages_local_claude_tap; then

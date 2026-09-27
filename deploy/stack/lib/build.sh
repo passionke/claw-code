@@ -91,7 +91,6 @@ IMAGE_NAME="claw-gateway-rs:${IMAGE_TAG}"
 WORKER_IMAGE_NAME="claw-gateway-worker:${IMAGE_TAG}"
 RELAXED_WORKER_IMAGE_NAME="claw-gateway-worker-relaxed:${IMAGE_TAG}"
 PLAYGROUND_IMAGE_NAME="claw-gateway-playground:${IMAGE_TAG}"
-OVS_IMAGE_NAME="claw-openvscode-server:${IMAGE_TAG}"
 
 # e2b backend runs the worker inside e2b sandboxes via CLAW_E2B_WORKER_IMAGE (remote registry),
 # so the local claw-gateway-worker[-relaxed] images are unused on dev machines. Skip them to
@@ -141,41 +140,10 @@ export CLAW_RUST_VERSION CLAW_RUST_IMAGE_TAG
 RUST_BASE_IMAGE="${REG}/library/rust:${CLAW_RUST_IMAGE_TAG}"
 DEBIAN_BASE_IMAGE="${REG}/library/debian:bookworm-slim"
 NODE_BASE_IMAGE="${REG}/library/node:20-alpine"
-# e2b / worker bake path needs amd64; :ovs-chat alone is arm-only. Author: kejiqing
-OVS_BASE_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat-amd64}"
 echo "==> Rust locked: ${CLAW_RUST_VERSION} (image ${RUST_BASE_IMAGE})"
 
 # shellcheck source=claw-region.sh
 source "${ROOT_DIR}/deploy/stack/lib/claw-region.sh"
-
-claw_build_ovs_image() {
-  local container_cli="$1"
-  local image_name="$2"
-  local ovs_base="$3"
-  local root_dir="$4"
-  shift 4
-  if [[ "${CLAW_FORCE_REBUILD_OVS:-0}" != "1" ]] && [[ "${CLAW_OVS_IMAGE:-}" != "${image_name}" ]] && \
-    [[ "${CLAW_OVS_IMAGE:-}" != "claw-openvscode-server:"* ]]; then
-    step "skip ovs layer build (CLAW_OVS_IMAGE=${CLAW_OVS_IMAGE:-<upstream>}; set CLAW_OVS_IMAGE=${image_name} + CLAW_FORCE_REBUILD_OVS=1 to bake claw-vscode)"
-    return 0
-  fi
-  if [[ "${CLAW_FORCE_REBUILD_OVS:-0}" != "1" ]] && "${container_cli}" image exists "${image_name}" 2>/dev/null; then
-    step "skip ovs image (exists: ${image_name}; CLAW_FORCE_REBUILD_OVS=1 to rebuild)"
-    return 0
-  fi
-  step "image ${image_name} (Containerfile.openvscode)"
-  chmod +x "${root_dir}/deploy/stack/lib/package-ovs-extension-vsix.sh"
-  "${root_dir}/deploy/stack/lib/package-ovs-extension-vsix.sh" \
-    "${root_dir}/extensions/claw-vscode" \
-    "${root_dir}/deploy/stack/claw.claw-vscode-0.2.0.vsix"
-  # shellcheck disable=SC2086
-  "${container_cli}" build \
-    --build-arg "OVS_BASE_IMAGE=${ovs_base}" \
-    "$@" \
-    -f "${root_dir}/deploy/stack/Containerfile.openvscode" \
-    -t "${image_name}" \
-    "${root_dir}"
-}
 
 claw_build_playground_image() {
   local container_cli="$1"
@@ -231,9 +199,6 @@ if use_prebuilt_linux_path; then
   COMPILE_IMAGE="$(claw_ensure_rust_compile_image "${ROOT_DIR}" "${CONTAINER_CLI}" "${REG}")"
   claw_linux_compile_release "${ROOT_DIR}" "${CONTAINER_CLI}" "${COMPILE_IMAGE}" "${CN_FLAG}"
 
-  step "package claw-vscode VSIX (gateway OVS bootstrap)"
-  "${ROOT_DIR}/deploy/stack/lib/package-claw-vscode-vsix.sh"
-
   APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
   claw_cn_mirror_enabled && APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
 
@@ -269,7 +234,6 @@ if use_prebuilt_linux_path; then
   fi
 
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
-  claw_build_ovs_image "${CONTAINER_CLI}" "${OVS_IMAGE_NAME}" "${OVS_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
 
 else
   step "config: in-image cargo build (Containerfile.gateway-rs)"
@@ -323,14 +287,13 @@ else
   fi
 
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
-  claw_build_ovs_image "${CONTAINER_CLI}" "${OVS_IMAGE_NAME}" "${OVS_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
 
 fi
 
 "${ROOT_DIR}/deploy/stack/lib/claw-write-build-stamp.sh"
 
 step "done"
-echo "Built: ${IMAGE_NAME} ${WORKER_IMAGES_NOTE} ${PLAYGROUND_IMAGE_NAME} ${OVS_IMAGE_NAME}"
+echo "Built: ${IMAGE_NAME} ${WORKER_IMAGES_NOTE} ${PLAYGROUND_IMAGE_NAME}"
 claw_timing_summary
 if [[ "${CLAW_BUILD_NO_LOG}" != "1" ]]; then
   echo "log: ${BUILD_LOG}"
