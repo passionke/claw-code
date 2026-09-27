@@ -16,6 +16,8 @@ use crate::sandbox::{
 };
 use crate::ConfigLoader;
 
+type BashLineHook = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Input schema for the built-in bash execution tool.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BashCommandInput {
@@ -69,7 +71,7 @@ pub struct BashCommandOutput {
 }
 
 std::thread_local! {
-    static BASH_LINE_HOOK: std::cell::RefCell<Option<Arc<dyn Fn(&str) + Send + Sync>>> =
+    static BASH_LINE_HOOK: std::cell::RefCell<Option<BashLineHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -84,12 +86,12 @@ impl Drop for BashLineHookGuard {
 
 /// Install a same-thread hook that sees each stdout/stderr chunk while bash runs.
 /// Callers that do not install a hook keep the original buffered execution. Author: kejiqing
-pub fn install_bash_line_hook(hook: Arc<dyn Fn(&str) + Send + Sync>) -> BashLineHookGuard {
+pub fn install_bash_line_hook(hook: BashLineHook) -> BashLineHookGuard {
     BASH_LINE_HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
     BashLineHookGuard
 }
 
-fn current_bash_line_hook() -> Option<Arc<dyn Fn(&str) + Send + Sync>> {
+fn current_bash_line_hook() -> Option<BashLineHook> {
     BASH_LINE_HOOK.with(|slot| slot.borrow().clone())
 }
 
@@ -301,7 +303,7 @@ async fn execute_bash_streaming(
     input: BashCommandInput,
     sandbox_status: SandboxStatus,
     cwd: std::path::PathBuf,
-    hook: Arc<dyn Fn(&str) + Send + Sync>,
+    hook: BashLineHook,
 ) -> io::Result<BashCommandOutput> {
     let mut command = prepare_tokio_command(&input.command, &cwd, &sandbox_status, true);
     command
@@ -323,39 +325,36 @@ async fn execute_bash_streaming(
 
     let (status, stdout, stderr, interrupted, return_code_interpretation) =
         if let Some(timeout_ms) = timeout_ms {
-            match timeout(Duration::from_millis(timeout_ms), collect).await {
-                Ok(result) => {
-                    let (status, stdout, stderr) = result?;
-                    let return_code_interpretation = status.code().and_then(|code| {
-                        if code == 0 {
-                            None
-                        } else {
-                            Some(format!("exit_code:{code}"))
-                        }
-                    });
-                    (status, stdout, stderr, false, return_code_interpretation)
-                }
-                Err(_) => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                    return Ok(BashCommandOutput {
-                        stdout: String::new(),
-                        stderr: format!("Command exceeded timeout of {timeout_ms} ms"),
-                        raw_output_path: None,
-                        interrupted: true,
-                        is_image: None,
-                        background_task_id: None,
-                        backgrounded_by_user: None,
-                        assistant_auto_backgrounded: None,
-                        dangerously_disable_sandbox: input.dangerously_disable_sandbox,
-                        return_code_interpretation: Some(String::from("timeout")),
-                        no_output_expected: Some(true),
-                        structured_content: None,
-                        persisted_output_path: None,
-                        persisted_output_size: None,
-                        sandbox_status: Some(sandbox_status),
-                    });
-                }
+            if let Ok(result) = timeout(Duration::from_millis(timeout_ms), collect).await {
+                let (status, stdout, stderr) = result?;
+                let return_code_interpretation = status.code().and_then(|code| {
+                    if code == 0 {
+                        None
+                    } else {
+                        Some(format!("exit_code:{code}"))
+                    }
+                });
+                (status, stdout, stderr, false, return_code_interpretation)
+            } else {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Ok(BashCommandOutput {
+                    stdout: String::new(),
+                    stderr: format!("Command exceeded timeout of {timeout_ms} ms"),
+                    raw_output_path: None,
+                    interrupted: true,
+                    is_image: None,
+                    background_task_id: None,
+                    backgrounded_by_user: None,
+                    assistant_auto_backgrounded: None,
+                    dangerously_disable_sandbox: input.dangerously_disable_sandbox,
+                    return_code_interpretation: Some(String::from("timeout")),
+                    no_output_expected: Some(true),
+                    structured_content: None,
+                    persisted_output_path: None,
+                    persisted_output_size: None,
+                    sandbox_status: Some(sandbox_status),
+                });
             }
         } else {
             let (status, stdout, stderr) = collect.await?;
@@ -391,7 +390,7 @@ async fn execute_bash_streaming(
     })
 }
 
-async fn drain_pipe<R>(pipe: Option<R>, hook: Arc<dyn Fn(&str) + Send + Sync>) -> String
+async fn drain_pipe<R>(pipe: Option<R>, hook: BashLineHook) -> String
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -403,9 +402,8 @@ where
     let mut buf = Vec::new();
     loop {
         buf.clear();
-        let n = match reader.read_until(b'\n', &mut buf).await {
-            Ok(n) => n,
-            Err(_) => break,
+        let Ok(n) = reader.read_until(b'\n', &mut buf).await else {
+            break;
         };
         if n == 0 {
             break;
