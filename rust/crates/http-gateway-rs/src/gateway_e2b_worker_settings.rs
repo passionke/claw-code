@@ -186,9 +186,9 @@ pub fn e2b_worker_relaxed_template_from_env() -> String {
         .unwrap_or_else(|| "claw-worker-relaxed".into())
 }
 
-/// Browser → gateway WS (`claw.gatewayPublicHost` in OVS settings).
+/// Browser → gateway (`claw.gatewayPublicHost` in worker `.vscode` settings). Author: kejiqing
 #[must_use]
-pub fn ovs_gateway_public_host() -> String {
+pub fn gateway_public_host() -> String {
     if let Ok(v) = std::env::var("CLAW_GATEWAY_PUBLIC_HOST") {
         let t = v.trim();
         if !t.is_empty() {
@@ -209,13 +209,16 @@ pub fn ovs_gateway_public_host() -> String {
     format!("127.0.0.1:{port}")
 }
 
-/// e2b OVS sandbox → gateway HTTP/WS (`claw.gatewayHost`; reachable from worker sandbox).
+/// e2b worker sandbox → gateway HTTP/WS (`claw.gatewayHost`). Author: kejiqing
 #[must_use]
-pub fn ovs_gateway_host_for_e2b() -> String {
-    if let Ok(v) = std::env::var("CLAW_E2B_OVS_GATEWAY_HOST") {
-        let t = v.trim();
-        if !t.is_empty() {
-            return t.to_string();
+pub fn gateway_host_for_e2b() -> String {
+    // Prefer advertise host; accept legacy CLAW_E2B_OVS_GATEWAY_HOST. Author: kejiqing
+    for key in ["CLAW_E2B_GATEWAY_HOST", "CLAW_E2B_OVS_GATEWAY_HOST"] {
+        if let Ok(v) = std::env::var(key) {
+            let t = v.trim();
+            if !t.is_empty() {
+                return t.to_string();
+            }
         }
     }
     if let Ok(v) = std::env::var("CLAW_E2B_GATEWAY_ADVERTISE_HOST") {
@@ -232,7 +235,7 @@ pub fn ovs_gateway_host_for_e2b() -> String {
             };
         }
     }
-    ovs_gateway_public_host()
+    gateway_public_host()
 }
 
 /// Project worker e2b TTL on each renew (`CLAW_E2B_PROJECT_WORKER_TTL_SECS` → `CLAW_E2B_SANDBOX_TIMEOUT_SECS` → 3600).

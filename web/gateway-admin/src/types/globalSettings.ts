@@ -173,17 +173,6 @@ export interface E2bNasApiSettings {
   online: boolean;
 }
 
-export interface E2bOvsSettings {
-  templateId?: string;
-  buildId?: string;
-  appliedBuildId?: string;
-  effectiveTemplateId: string;
-  baseUrl?: string;
-  sandboxId?: string;
-  updatedAtMs: number;
-  configured: boolean;
-}
-
 export interface E2bObserveTemplateSettings {
   templateId?: string;
   buildId?: string;
@@ -202,13 +191,11 @@ export interface E2bObserveTemplateSettings {
 
 export interface E2bSingletonsStatusResponse {
   nasApi: E2bNasApiSettings;
-  ovs: E2bOvsSettings;
   observe: E2bObserveTemplateSettings;
 }
 
 export interface PutE2bSingletonTemplatesResponse {
   nasApi: E2bNasApiSettings;
-  ovs: E2bOvsSettings;
   observe: E2bObserveTemplateSettings;
 }
 
@@ -264,7 +251,6 @@ export interface GlobalSettingsResponse {
   oss?: OssStorageSettings;
   e2bPlatform?: E2bPlatformSettings;
   e2bNasApi?: E2bNasApiSettings;
-  e2bOvs?: E2bOvsSettings;
   e2bObserve?: E2bObserveTemplateSettings;
   e2bWorker?: E2bWorkerSettings;
   adminMcpTokens?: AdminMcpTokenRow[];

@@ -224,7 +224,7 @@ pub async fn prepare_e2b_worker_bind_sources(
     worker_id: &str,
 ) -> Result<(), String> {
     ensure_e2b_proj_nas_roots(nas_root, cluster_id, proj_id).await?;
-    crate::session_terminal_api::materialize_ovs_proj_workspace(session_db, nas_root, proj_id)
+    crate::session_terminal_api::materialize_proj_workspace(session_db, nas_root, proj_id)
         .await
         .map_err(|e| format!("materialize proj_{proj_id}/home on NAS: {e}"))?;
     ensure_worker_root_on_nas(runtime_bin, nas_root, cluster_id, proj_id, worker_id).await?;

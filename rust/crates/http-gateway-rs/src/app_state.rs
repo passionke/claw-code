@@ -4,8 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::{
-    claw_tap_cluster_state, gateway_llm_config_sync, pool, session_db, session_ovs_api,
-    session_terminal_api,
+    claw_tap_cluster_state, gateway_llm_config_sync, pool, session_db, session_terminal_api,
 };
 use gateway_solve_turn::ReportPolishDeepseek;
 use serde::{Deserialize, Serialize};
@@ -58,7 +57,8 @@ pub(crate) struct AppState {
     pub(crate) llm_runtime: gateway_llm_config_sync::LlmRuntimeHandle,
     /// clawTap cluster consistency (strict only; mismatch blocks solve). Author: kejiqing
     pub(crate) claw_tap_cluster: claw_tap_cluster_state::ClawTapClusterHandle,
-    /// Active interactive worker leases for OVS `agent/ws`. Author: kejiqing
+    /// Active interactive worker leases for terminal sessions. Author: kejiqing
+    #[allow(dead_code)] // read via terminal_api_ctx; HTTP agent/ws unwired
     pub(crate) terminal_registry: session_terminal_api::TerminalSessionRegistry,
     /// NAS layout + file writes via e2b claw-nas-api singleton (required in e2b mode).
     pub(crate) nas_api: Arc<pool::E2bNasApiSingleton>,
@@ -69,7 +69,9 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
+    /// Terminal interactive API context (worker lease + NAS attach). Author: kejiqing
     #[must_use]
+    #[allow(dead_code)] // retained for terminal interactive; OVS agent/ws route removed
     pub(crate) fn terminal_api_ctx(&self) -> session_terminal_api::TerminalApiContext {
         session_terminal_api::terminal_api_context(
             self.cfg.work_root.clone(),
@@ -81,11 +83,6 @@ impl AppState {
             self.claw_tap_cluster.clone(),
             self.llm_runtime.clone(),
         )
-    }
-
-    #[must_use]
-    pub(crate) fn ovs_api_ctx(&self) -> session_ovs_api::OvsApiContext {
-        session_ovs_api::ovs_api_context(self.cfg.work_root.clone())
     }
 }
 

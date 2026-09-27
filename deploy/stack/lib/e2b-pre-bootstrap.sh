@@ -21,7 +21,7 @@ while [[ $# -gt 0 ]]; do
 Usage: ./deploy/stack/gateway.sh e2b-pre-bootstrap [options]
 
   1) template publish is Admin-only (this command refuses to build templates)
-  2) e2b-singletons-up --reuse      (nas-api / ovs / observe → PG) when --skip-templates
+  2) e2b-singletons-up --reuse      (nas-api / observe → PG) when --skip-templates
   3) print gateway up --release hint
 
 Options:

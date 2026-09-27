@@ -132,13 +132,12 @@ mod tests {
 
     fn spec_with_attach(attach: Option<&str>) -> InteractiveSessionSpec {
         InteractiveSessionSpec {
-            session_id: "ovs-1".into(),
-            session_segment: "ovs-1".into(),
+            session_id: "term-1".into(),
+            session_segment: "term-1".into(),
             proj_id: 1,
             session_home: std::path::PathBuf::from("/tmp/session"),
             proj_home: std::path::PathBuf::from("/tmp/proj"),
             llm_env: std::collections::BTreeMap::new(),
-            ovs_mode: true,
             e2b_session_attach_script: attach.map(str::to_string),
             e2b_proj_bake_script: None,
         }

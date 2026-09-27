@@ -1,5 +1,8 @@
 # OVS 交互式 `@claw`：会话 ID 与 Tap 对齐
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing
 
 **原则：不新造 session 模型。** 复用 Admin 对话里已有的 `sessionId`（`record_session_id`）、solve 已有的 LLM header 契约、claude-tap 已有的 `claw-session-id` 索引。

@@ -1,5 +1,8 @@
 # OVS × claw-code 集成手册
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing  
 适用：**Podman compose** + `passionke/openvscode-server:1.109.5-ovs-chat` + claw-code Gateway 联调
 

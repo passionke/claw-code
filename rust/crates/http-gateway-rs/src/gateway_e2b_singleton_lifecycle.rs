@@ -1,11 +1,10 @@
-//! e2b singleton ensure (observe / nas-api / ovs) + lease ticker registration. Author: kejiqing
+//! e2b singleton ensure (observe / nas-api) + lease ticker registration. Author: kejiqing
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use claw_e2b_sandbox_client::{
     E2bSandboxClient, E2bSandboxHandle, SINGLETON_ROLE_NAS_API, SINGLETON_ROLE_OBSERVE,
-    SINGLETON_ROLE_OVS,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -22,7 +21,6 @@ use crate::gateway_e2b_lifecycle_decision::{
 };
 use crate::gateway_e2b_nas_api_settings::e2b_nas_api_template_from_env;
 use crate::gateway_e2b_observe_settings::e2b_observe_template_from_env;
-use crate::gateway_e2b_ovs_settings::load_e2b_ovs_template_id;
 use crate::gateway_e2b_worker_settings::e2b_project_worker_renew_interval_secs_from_env;
 use crate::gateway_global_settings::{get_gateway_global_settings, load_active_llm_runtime};
 use crate::gateway_tap_client::{tap_client_from_base_model_url, DEFAULT_TAP_CLIENT};
@@ -37,8 +35,6 @@ pub enum E2bSingletonComponent {
     NasApi,
     #[serde(rename = "observe", alias = "tap", alias = "observe-tap")]
     Observe,
-    #[serde(rename = "ovs")]
-    Ovs,
 }
 
 impl E2bSingletonComponent {
@@ -47,7 +43,6 @@ impl E2bSingletonComponent {
         match self {
             Self::NasApi => "nas-api",
             Self::Observe => "observe",
-            Self::Ovs => "ovs",
         }
     }
 
@@ -55,7 +50,6 @@ impl E2bSingletonComponent {
         match raw.trim().to_ascii_lowercase().as_str() {
             "nas-api" | "nas_api" | "nasapi" => Ok(Self::NasApi),
             "observe" | "tap" | "observe-tap" => Ok(Self::Observe),
-            "ovs" => Ok(Self::Ovs),
             other => Err(format!("unknown e2b singleton component: {other}")),
         }
     }
@@ -437,38 +431,6 @@ async fn persist_nas_api(
         .await
 }
 
-#[allow(dead_code)]
-async fn persist_ovs(
-    db: &GatewaySessionDb,
-    base_url: &str,
-    sandbox_id: &str,
-    applied_build_id: Option<&str>,
-) -> Result<(), sqlx::Error> {
-    let now = now_ms();
-    let (settings, _, _) = get_gateway_global_settings(db).await?;
-    let applied = applied_build_id
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            settings
-                .e2b_ovs
-                .applied_build_id
-                .clone()
-                .filter(|t| !t.trim().is_empty())
-        });
-    let value = serde_json::json!({
-        "templateId": settings.e2b_ovs.template_id,
-        "buildId": settings.e2b_ovs.build_id,
-        "appliedBuildId": applied,
-        "baseUrl": base_url.trim_end_matches('/'),
-        "sandboxId": sandbox_id,
-        "updatedAtMs": now,
-    });
-    db.merge_gateway_global_settings_json(&["e2bOvs"], &value)
-        .await
-}
-
 async fn persist_observe_tap(
     db: &GatewaySessionDb,
     client: &E2bSandboxClient,
@@ -742,8 +704,6 @@ async fn ensure_observe(
                     sandbox_domain: domain,
                     envd_access_token: None,
                     traffic_access_token: None,
-                    ovs_public_host: None,
-                    ovs_base_url: None,
                 };
                 let _ =
                     persist_observe_tap(db, client, &handle, live_port, &live_base, applied_build)
@@ -824,89 +784,6 @@ async fn ensure_observe(
     })
 }
 
-#[allow(dead_code)]
-async fn ensure_ovs(
-    db: &GatewaySessionDb,
-    client: &E2bSandboxClient,
-) -> Result<E2bSingletonOutcome, String> {
-    let cluster_id = gateway_cluster_id()?;
-    let template = load_e2b_ovs_template_id(db)
-        .await
-        .map_err(|e| format!("load ovs template: {e}"))?;
-    let ovs_port = client.config().ovs_port;
-    let pg_sid = get_gateway_global_settings(db)
-        .await
-        .ok()
-        .and_then(|(s, _, _)| s.e2b_ovs.sandbox_id);
-
-    let candidate =
-        resolve_sandbox_id(client, &cluster_id, SINGLETON_ROLE_OVS, pg_sid.as_deref()).await;
-
-    if let Some(ref sid) = candidate {
-        let domain = client.config().domain.clone();
-        let ovs_url = format!(
-            "{}/ovs",
-            service_base_url(client, ovs_port, sid, &domain).trim_end_matches('/')
-        );
-        let check_url = if ovs_url.ends_with('/') {
-            ovs_url.clone()
-        } else {
-            format!("{ovs_url}/")
-        };
-        if client.sandbox_running(sid).await && http_get_ok(&check_url).await {
-            client.touch_persistent_sandbox(sid).await?;
-            let _ = persist_ovs(db, &ovs_url, sid, None).await;
-            let _ = client
-                .reap_singleton_orphans(&cluster_id, SINGLETON_ROLE_OVS, sid)
-                .await;
-            info!(target: "claw_e2b_singleton", sandbox_id = %sid, "ovs singleton online");
-            return Ok(E2bSingletonOutcome {
-                sandbox_id: Some(sid.clone()),
-                base_url: Some(ovs_url),
-                traffic_reachable: true,
-                message: None,
-            });
-        }
-        warn!(
-            target: "claw_e2b_singleton",
-            sandbox_id = %sid,
-            "ovs singleton unhealthy — recreate"
-        );
-        let _ = client.kill_sandbox(sid).await;
-    }
-
-    info!(
-        target: "claw_e2b_singleton",
-        template = %template,
-        cluster_id = %cluster_id,
-        "create ovs singleton"
-    );
-    let handle = client.create_ovs_singleton(&template, &cluster_id).await?;
-    let ovs_url = format!(
-        "{}/ovs",
-        service_base_url(client, ovs_port, &handle.sandbox_id, &handle.sandbox_domain,)
-            .trim_end_matches('/')
-    );
-    let check_url = format!("{ovs_url}/");
-    let traffic_reachable = wait_http_ok(&check_url, "OVS traffic", 60).await;
-    if !traffic_reachable {
-        let _ = client.kill_sandbox(&handle.sandbox_id).await;
-        return Err(format!("OVS traffic not reachable at {check_url}"));
-    }
-    persist_ovs(db, &ovs_url, &handle.sandbox_id, None)
-        .await
-        .map_err(|e| format!("persist e2bOvs: {e}"))?;
-    let _ = client
-        .reap_singleton_orphans(&cluster_id, SINGLETON_ROLE_OVS, &handle.sandbox_id)
-        .await;
-    Ok(E2bSingletonOutcome {
-        sandbox_id: Some(handle.sandbox_id),
-        base_url: Some(ovs_url),
-        traffic_reachable,
-        message: None,
-    })
-}
-
 pub async fn ensure_e2b_singleton(
     db: &GatewaySessionDb,
     client: &E2bSandboxClient,
@@ -915,15 +792,11 @@ pub async fn ensure_e2b_singleton(
     let role = match component {
         E2bSingletonComponent::NasApi => SINGLETON_ROLE_NAS_API,
         E2bSingletonComponent::Observe => SINGLETON_ROLE_OBSERVE,
-        E2bSingletonComponent::Ovs => {
-            return deprecated_ovs_singleton_outcome(db, client).await;
-        }
     };
     db.with_e2b_singleton_role_lock(role, || async {
         match component {
             E2bSingletonComponent::NasApi => ensure_nas_api(db, client, false, false).await,
             E2bSingletonComponent::Observe => ensure_observe(db, client, false, false).await,
-            E2bSingletonComponent::Ovs => deprecated_ovs_singleton_outcome(db, client).await,
         }
     })
     .await
@@ -937,9 +810,6 @@ pub async fn reset_e2b_singleton(
     let role = match component {
         E2bSingletonComponent::NasApi => SINGLETON_ROLE_NAS_API,
         E2bSingletonComponent::Observe => SINGLETON_ROLE_OBSERVE,
-        E2bSingletonComponent::Ovs => {
-            return deprecated_ovs_singleton_outcome(db, client).await;
-        }
     };
     db.with_e2b_singleton_role_lock(role, || async {
         let cluster_id = gateway_cluster_id()?;
@@ -972,31 +842,9 @@ pub async fn reset_e2b_singleton(
                 .await;
                 ensure_observe(db, client, true, false).await
             }
-            E2bSingletonComponent::Ovs => deprecated_ovs_singleton_outcome(db, client).await,
         }
     })
     .await
-}
-
-async fn deprecated_ovs_singleton_outcome(
-    db: &GatewaySessionDb,
-    client: &E2bSandboxClient,
-) -> Result<E2bSingletonOutcome, String> {
-    let cluster_id = gateway_cluster_id()?;
-    let pg_sid = get_gateway_global_settings(db)
-        .await
-        .ok()
-        .and_then(|(s, _, _)| s.e2b_ovs.sandbox_id);
-    kill_existing_singleton(client, &cluster_id, SINGLETON_ROLE_OVS, pg_sid.as_deref()).await;
-    Ok(E2bSingletonOutcome {
-        sandbox_id: None,
-        base_url: None,
-        traffic_reachable: false,
-        message: Some(
-            "OVS cluster singleton deprecated — OVS runs inside relaxed project workers (claw-worker-relaxed)"
-                .into(),
-        ),
-    })
 }
 
 fn verify_nas_api_strict(outcome: &E2bSingletonOutcome) -> Result<(), String> {

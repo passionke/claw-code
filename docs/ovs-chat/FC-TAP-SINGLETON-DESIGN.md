@@ -1,5 +1,8 @@
 # e2b 统一 tap 单例 — 1 Gateway : 1 Observe : 1 OVS : N Workers
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing  
 Status: **implemented** — `claw-observe` 模板 + `e2b-tap-live-up.py` + worker 去数据面  
 Related: [FC-OVS-SINGLETON-DESIGN.md](./FC-OVS-SINGLETON-DESIGN.md)

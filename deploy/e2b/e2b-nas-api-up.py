@@ -3,7 +3,7 @@
 
 nas-api is started only by the claw-nas-api template startCmd (envd bootstrap on
 sandbox create). This script does NOT fc_exec a second launch path — same contract
-as e2b-ovs-up.py / e2b-tap-live-up.py. The gateway is a pure consumer: it reads the
+as e2b-tap-live-up.py. The gateway is a pure consumer: it reads the
 persisted endpoint (gateway_global_settings.settings_json.e2bNasApi) and never creates
 the sandbox itself.
 

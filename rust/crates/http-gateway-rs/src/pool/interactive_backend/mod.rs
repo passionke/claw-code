@@ -14,7 +14,7 @@ pub use e2b_worker_tap::{
     E2B_WORKER_TAP_PLACEHOLDER_API_KEY,
 };
 
-/// Admin `gateway_turns.pool_id` for OVS `@claw` interactive turns (distinct from solve `e2b-cloud`). Author: kejiqing
+/// Admin `gateway_turns.pool_id` for interactive turns (distinct from solve `e2b-cloud`). Author: kejiqing
 pub const E2B_INTERACTIVE_POOL_ID: &str = "e2b-interactive";
 
 use std::path::PathBuf;
@@ -42,7 +42,6 @@ pub struct InteractiveSessionSpec {
     pub session_home: PathBuf,
     pub proj_home: PathBuf,
     pub llm_env: std::collections::BTreeMap<String, String>,
-    pub ovs_mode: bool,
     /// FC: session attach (LLM env on `/claw_host_root`); project config on `/claw_ds`.
     pub e2b_session_attach_script: Option<String>,
     /// e2b cold fallback: project bake when proj worker unavailable.
@@ -61,21 +60,6 @@ pub fn interactive_backend_is_e2b() -> bool {
         {
             eprintln!(
                 "http-gateway-rs: CLAW_INTERACTIVE_BACKEND={v:?} removed; delete from .env (e2b-only)"
-            );
-            std::process::exit(1);
-        }
-    }
-    true
-}
-
-/// OVS always runs as e2b singleton (legacy `CLAW_OVS_BACKEND` removed).
-#[must_use]
-pub fn ovs_backend_is_e2b() -> bool {
-    if let Some(raw) = std::env::var("CLAW_OVS_BACKEND").ok() {
-        let v = raw.trim();
-        if !v.is_empty() && !v.eq_ignore_ascii_case("e2b") && !v.eq_ignore_ascii_case("fc") {
-            eprintln!(
-                "http-gateway-rs: CLAW_OVS_BACKEND={v:?} removed; delete from .env (e2b-only)"
             );
             std::process::exit(1);
         }

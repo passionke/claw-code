@@ -1,4 +1,4 @@
-//! Interactive worker lifecycle for OVS `agent/ws` (worker + registry; no in-guest server).
+//! Interactive worker lifecycle for terminal sessions (worker + registry; no in-guest server).
 //! Author: kejiqing
 
 use std::collections::HashMap;
@@ -9,11 +9,11 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::claw_tap_cluster_state::ClawTapClusterHandle;
-use crate::client_origin;
 use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::{
@@ -404,11 +404,7 @@ pub async fn terminal_start(
     let session_home_rel =
         crate::session_merge::session_home_rel_under_work_root(&ctx.work_root, &session_home)
             .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.detail()))?;
-    let client_origin = if session_id.starts_with("ovs-") {
-        Some(client_origin::CLIENT_ORIGIN_OVS_CHAT)
-    } else {
-        None
-    };
+    let client_origin = None;
     let now_ms = crate::persistence::transcript::now_ms();
     if ctx
         .session_db
@@ -493,7 +489,6 @@ pub async fn terminal_start(
         session_home: session_home.clone(),
         proj_home,
         llm_env,
-        ovs_mode: session_id.starts_with("ovs-"),
         e2b_session_attach_script,
         e2b_proj_bake_script,
     };
@@ -547,7 +542,7 @@ pub async fn terminal_stop(
     ))
 }
 
-/// Ensure an interactive worker exists for agent/OVS chat (`ovs-{projId}` default).
+/// Ensure an interactive worker exists for a terminal session. Author: kejiqing
 pub async fn ensure_terminal_active(
     ctx: &TerminalApiContext,
     proj_id: i64,
@@ -617,8 +612,8 @@ async fn materialize_proj_home(
     Ok(())
 }
 
-/// Full PG materialize for OVS workspace (`proj_N/home` + `CLAUDE.md` + interactive layout). OVS path only.
-pub async fn materialize_ovs_proj_workspace(
+/// Full PG materialize for project workspace (`proj_N/home` + interactive layout). Author: kejiqing
+pub async fn materialize_proj_workspace(
     session_db: &GatewaySessionDb,
     work_root: &Path,
     proj_id: i64,
@@ -627,8 +622,42 @@ pub async fn materialize_ovs_proj_workspace(
     materialize_proj_home(session_db, &proj_dir, proj_id).await
 }
 
+/// Merge `claw.projId` into a `.vscode/settings.json` path (create parents as needed).
+async fn merge_claw_proj_id_settings(settings_path: &Path, proj_id: i64) -> Result<(), String> {
+    if let Some(parent) = settings_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+    let mut cfg: Map<String, Value> = if settings_path.is_file() {
+        let raw = tokio::fs::read_to_string(settings_path)
+            .await
+            .map_err(|e| format!("read {}: {e}", settings_path.display()))?;
+        serde_json::from_str(&raw)
+            .unwrap_or_else(|_| json!({}))
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        Map::new()
+    };
+    cfg.insert("claw.projId".to_string(), json!(proj_id));
+    let body =
+        serde_json::to_string_pretty(&cfg).map_err(|e| format!("serialize settings: {e}"))?;
+    tokio::fs::write(settings_path, format!("{body}\n"))
+        .await
+        .map_err(|e| format!("write {}: {e}", settings_path.display()))?;
+    Ok(())
+}
+
+/// Writes `proj_N/home/.vscode/settings.json` with authoritative `claw.projId` (Gateway contract).
+pub async fn ensure_proj_claw_settings(proj_dir: &Path, proj_id: i64) -> Result<(), String> {
+    let settings_path = proj_dir.join("home").join(".vscode").join("settings.json");
+    merge_claw_proj_id_settings(&settings_path, proj_id).await
+}
+
 async fn write_proj_vscode_settings(proj_dir: &Path, proj_id: i64) -> Result<(), String> {
-    crate::session_ovs_api::ensure_proj_claw_settings(proj_dir, proj_id).await
+    ensure_proj_claw_settings(proj_dir, proj_id).await
 }
 
 #[must_use]

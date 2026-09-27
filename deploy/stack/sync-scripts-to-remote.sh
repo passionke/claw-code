@@ -23,7 +23,6 @@ rsync -avz \
   --exclude 'claw-logs/' \
   --exclude 'claw-logs-*/' \
   --exclude 'claw-postgres-data/' \
-  --exclude 'claw-ovs-extensions/' \
   --exclude 'claw-workspace-host/' \
   --exclude 'claw-from-worker.bin' \
   --exclude '.claw-from-worker.bin' \

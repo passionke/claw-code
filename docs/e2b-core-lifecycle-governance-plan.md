@@ -15,7 +15,7 @@ Author: kejiqing
 - 管理界面显示在线，但组件实际不可用（如 `baseUrl` 存在但 sandbox 已停止）。
 - 生命周期动作分散（配置、探活、续租、重建、状态展示不在同一控制面闭环）。
 - worker warm 依赖人工触发，缺少统一期望态驱动的自动收敛。
-- OVS 已迁移到 relaxed worker 内，但历史 singleton 语义仍可能造成认知与运维误导。
+- 历史 OVS（独立 singleton / relaxed 内置 OpenVSCode）已全面退出，但仍可能留在旧文档与运维口头习惯中。
 
 本计划目标是以最小架构边界变动，建立统一的“期望态-观测态-收敛动作”模型，避免继续在业务调用链上做临时兜底。
 
@@ -30,7 +30,7 @@ Author: kejiqing
   - singleton + worker reconcile
   - admin 展示契约
 - 不把生命周期修复逻辑塞进 **`exec_gateway_solve_once` / `claw gateway-solve-once` 执行链路**。
-- **允许**在 solve / interactive / OVS **执行前**、于 `prepare_e2b_worker_llm_material` **之前**调用统一门闸 `ensure_e2b_runtime_for_proj`（控制面触发，不是 exec 内 recreate）。
+- **允许**在 solve / interactive **执行前**、于 `prepare_e2b_worker_llm_material` **之前**调用统一门闸 `ensure_e2b_runtime_for_proj`（控制面触发，不是 exec 内 recreate）。
 - 不引入第二条并行路径（single default path）。
 - **不做** ZooKeeper / PG keeper 选主；多 Gateway 继续平等副本 + 已有 `pg_advisory_lock` 串行 create/kill。
 
@@ -121,21 +121,25 @@ Author: kejiqing
 
 ---
 
-## Phase C：OVS 退场收口（单路径）
+## Phase C：OVS 全面退出（已完成，2026-09-27）
 
-### C.1 语义收口
+Author: kejiqing
 
-- OVS 明确声明：由 relaxed worker 内置提供，不再作为独立 singleton 管理目标。
+### C.1 语义收口（现行）
+
+- **OpenVSCode / `ovs/workspace` / `ovs-singleton` / `claw-ovs` 模板路径已全面退出。**
+- `mode=relaxed` = **权限宽松 worker**（工具包 + home `/claw_ds` rw），**不再**等于 OVS 模式。
+- 现行架构见 [`architecture-governance.md`](architecture-governance.md)；历史取证见 `docs/ovs-chat/`（文首 ARCHIVED）。
 
 ### C.2 API/UI 收口
 
-- OVS singleton ensure/reset 入口标注 deprecated 或转为只读说明。
-- 管理界面不再暗示“需要维护 OVS singleton”。
+- 无 OVS singleton ensure/reset；管理界面不展示 OpenVSCode / ovs 入口。
+- `GET …/ovs/workspace` 等路径不可用（404 / 已移除）。
 
 ### C.3 验收标准
 
-- 用户理解路径唯一：OVS = relaxed worker 能力。
-- 代码中无活跃 OVS singleton 生命周期分支。
+- 集群核 singleton 仅 nas-api + observe；无 `clawRole=ovs-singleton`。
+- relaxed `ensure_worker` 正常；home 可写；无 `:3000/ovs` 依赖。
 
 ---
 
@@ -145,7 +149,7 @@ Author: kejiqing
 2. nas-api/observe 实时探活接入
 3. 管理端文案与状态展示调整
 4. singleton + worker 统一 reconcile
-5. OVS singleton 语义退场与文档同步
+5. OVS 全面退出与文档同步（Phase C，已完成）
 
 建议每一步独立提交，便于回滚与评审。
 
@@ -179,7 +183,7 @@ Author: kejiqing
 - 展示状态与运行事实一致（无“假在线”）。
 - 组件故障可解释（状态含可复核错误证据）。
 - 生命周期可自愈（singleton/worker 缺失能自动收敛）。
-- OVS 管理路径单一清晰（无历史双路径歧义）。
+- OVS 已全面退出；`mode=relaxed` 语义仅为权限宽松 worker（无 OpenVSCode 歧义）。
 
 ---
 
@@ -236,7 +240,7 @@ Author: kejiqing
 3 容忍度       NotRunning 立刻 / RunningUnreachable 连续 2 次
 4 请求门闸     ensure_e2b_runtime_for_proj → material 之前
 5 worker 探活  acquire_slot warm hit + ensure_warm_worker_running
-6 interactive  terminal / OVS / agent 开租前同一 ensure
+6 interactive  terminal / agent 开租前同一 ensure
 ```
 
 每片门禁：
@@ -264,7 +268,7 @@ cd rust && cargo test -p http-gateway-rs --lib
 | 决策函数 | `gateway_e2b_lifecycle_decision.rs` |
 | 门闸 | `ensure_e2b_runtime_for_proj` in `gateway_e2b_singleton_lifecycle.rs` |
 | solve 接线 | `solve_pool.rs`（material 前） |
-| interactive | `session_terminal_api.rs`、`session_agent_api.rs`、`session_ovs_api.rs` |
+| interactive | `session_terminal_api.rs`（agent 等同路径；OVS API 已移除） |
 | worker 热路径 | `e2b_proj_worker_registry.rs` — `ensure_warm_worker_running` |
 | 项目 observe 锁 | `session_db.rs` — `with_e2b_project_observe_lock` |
 
@@ -284,7 +288,7 @@ cd rust && cargo test -p http-gateway-rs --lib
 ### 10.2 请求路径
 
 3. 健康路径一次 `/v1/solve` 或 async solve 成功；日志无意外 `singleton recreate` / `proj worker rotate`。
-4. Terminal / OVS workspace 开租前经同一门闸；死 nas-api 时返回 503 而非 exec 才爆。
+4. Terminal / interactive 开租前经同一门闸；死 nas-api 时返回 503 而非 exec 才爆。
 
 ### 10.3 强制与容忍
 

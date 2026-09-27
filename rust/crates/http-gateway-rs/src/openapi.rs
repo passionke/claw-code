@@ -127,8 +127,6 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::app::patch_project,
         crate::routes::app::delete_project,
         crate::routes::app::init_workspace,
-        crate::routes::app::agent_ws_handler,
-        crate::routes::app::ovs_workspace_handler,
         crate::routes::app::list_project_sessions,
         crate::routes::app::get_session_execution,
         crate::routes::app::post_session_inbox,
@@ -369,7 +367,7 @@ mod tests {
         let document = document();
         assert_eq!(
             document["components"]["schemas"]["E2bSingletonComponent"]["enum"],
-            json!(["nas-api", "observe", "ovs"])
+            json!(["nas-api", "observe"])
         );
         assert_eq!(
             document["components"]["schemas"]["ProjectEntityDomain"]["enum"],

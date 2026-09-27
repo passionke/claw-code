@@ -1,5 +1,8 @@
 # e2b `claw-ovs` 模板构建说明
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing  
 Related: [FC-OVS-SINGLETON-DESIGN.md](./FC-OVS-SINGLETON-DESIGN.md), `deploy/e2b/build-claw-ovs-selfhosted.py`
 

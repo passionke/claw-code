@@ -68,7 +68,7 @@ claw_pool_uses_remote() {
   claw_pool_remote_base >/dev/null 2>&1
 }
 
-# Interactive solve/OVS/terminal always use e2b (legacy CLAW_INTERACTIVE_BACKEND removed). kejiqing
+# Interactive solve/terminal always use e2b (legacy CLAW_INTERACTIVE_BACKEND removed). kejiqing
 claw_interactive_backend_is_e2b() {
   return 0
 }
@@ -282,7 +282,7 @@ claw_podman_export_pool_workspace() {
   } >"${script_dir}/.claw-pool-workspace.env"
 }
 
-# Write `.claw-workspace-volume.yml` — bind (default) or NFS direct for Gateway/OVS. Author: kejiqing
+# Write `.claw-workspace-volume.yml` — bind (default) or NFS direct for Gateway. Author: kejiqing
 claw_compose_write_workspace_volume_yml() {
   local script_dir="$1"
   script_dir="$(cd "${script_dir}" && pwd)"
@@ -322,7 +322,7 @@ claw_compose_write_workspace_volume_yml() {
         ;;
     esac
     {
-      printf '%s\n' '# GENERATED — NFS workspace (Gateway/OVS mount NAS directly). Do not edit. kejiqing'
+      printf '%s\n' '# GENERATED — NFS workspace (Gateway mount NAS directly). Do not edit. kejiqing'
       printf '%s\n' 'volumes:'
       printf '%s\n' '  claw-workspace-data:'
       printf '%s\n' '    driver: local'
@@ -349,22 +349,6 @@ claw_compose_write_workspace_volume_yml() {
 }
 
 
-# Merge fc OVS backend override (skip compose openvscode-server). Author: kejiqing
-claw_compose_append_fc_ovs_backend() {
-  local script_dir="$1"
-  local rel="${2:-}"
-  if ! claw_ovs_backend_is_e2b; then
-    return 0
-  fi
-  if [[ -n "${rel}" ]]; then
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.e2b-ovs-backend.yml" )
-  else
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.e2b-ovs-backend.yml" )
-  fi
-  export PLAYGROUND_OVS_FROM_GATEWAY=1
-  echo "compose: CLAW_OVS_BACKEND=e2b — OVS e2b singleton; openvscode-server not started" >&2
-}
-
 claw_nas_mount_ok() {
   local m="$1"
   if mountpoint -q "${m}" 2>/dev/null; then
@@ -386,51 +370,16 @@ claw_compose_append_workspace_volume() {
       return 1
     fi
     export CLAW_GATEWAY_WORKSPACE_BIND="${CLAW_NAS_HOST_MOUNT}:/var/lib/claw/workspace"
-    export CLAW_OVS_WORKSPACE_BIND="${CLAW_NAS_HOST_MOUNT}:/home/workspace"
     echo "compose: workspace direct bind ${CLAW_NAS_HOST_MOUNT} (host NAS mount; no :U on NFS root)" >&2
     return 0
   fi
   claw_compose_write_workspace_volume_yml "${script_dir}" || return 1
   export CLAW_GATEWAY_WORKSPACE_BIND="claw-workspace-data:/var/lib/claw/workspace${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}"
-  export CLAW_OVS_WORKSPACE_BIND="claw-workspace-data:/home/workspace${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}"
   if [[ -n "${rel}" ]]; then
     CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/.claw-workspace-volume.yml" )
   else
     CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/.claw-workspace-volume.yml" )
   fi
-}
-
-
-claw_podman_append_ovs_public_bind() {
-  local script_dir="$1"
-  local rel="${2:-}"
-  if claw_ovs_backend_is_e2b; then
-    return 0
-  fi
-  case "${CLAW_OVS_PUBLIC_BIND:-}" in
-    1 | true | yes | on)
-      export CLAW_OVS_PUBLISH_HOST=0.0.0.0
-      echo "compose: OVS published on 0.0.0.0:${CLAW_OVS_HOST_PORT:-13000}" >&2
-      ;;
-    *) return 0 ;;
-  esac
-}
-
-
-# Merge fc OVS backend override (skip compose openvscode-server). Author: kejiqing
-claw_compose_append_fc_ovs_backend() {
-  local script_dir="$1"
-  local rel="${2:-}"
-  if ! claw_ovs_backend_is_e2b; then
-    return 0
-  fi
-  if [[ -n "${rel}" ]]; then
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.e2b-ovs-backend.yml" )
-  else
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.e2b-ovs-backend.yml" )
-  fi
-  export PLAYGROUND_OVS_FROM_GATEWAY=1
-  echo "compose: CLAW_OVS_BACKEND=e2b — OVS e2b singleton; openvscode-server not started" >&2
 }
 
 
@@ -565,8 +514,6 @@ claw_podman_load_compose_args() {
     claw_apply_deploy_profile || return 1
   fi
   claw_compose_append_workspace_volume "${script_dir}" "${rel}" || return 1
-  claw_podman_append_ovs_public_bind "${script_dir}" "${rel}"
-  claw_compose_append_fc_ovs_backend "${script_dir}" "${rel}"
   if [[ -f "${rpc_root}/pool-registry.env" ]]; then
     set -a
     # shellcheck disable=SC1090
@@ -970,9 +917,6 @@ claw_compose_gateway_service_list() {
   while IFS= read -r svc; do
     [[ -z "${svc}" ]] && continue
     [[ "${svc}" == "${pg}" ]] && continue
-    if claw_ovs_backend_is_e2b && [[ "${svc}" == "openvscode-server" ]]; then
-      continue
-    fi
     printf '%s ' "${svc}"
   done <<<"${out}"
   rm -f "${errf}"

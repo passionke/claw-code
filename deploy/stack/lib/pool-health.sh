@@ -22,7 +22,7 @@ claw_assert_remote_pool_registry_ready() {
 }
 
 # --- clawTap / LLM readiness helpers (e2b-only; not host-pool) ---
-# Used by up / bootstrap-runtime / check-connectivity / admin-solve-e2e / ovs-up / observe-tap-up.
+# Used by up / bootstrap-runtime / check-connectivity / admin-solve-e2e / observe-tap-up.
 
 claw_gateway_has_active_llm() {
   local port="${GATEWAY_HOST_PORT:-18088}"

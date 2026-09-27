@@ -35,11 +35,11 @@ flowchart LR
 
 | 曾在本机（252） | 现在 |
 |-----------------|------|
-| `claw-pool-daemon` + podman worker | e2b `claw-worker` 沙箱 |
+| `claw-pool-daemon` + podman worker | e2b `claw-worker` / `claw-worker-relaxed` 沙箱 |
 | compose `claude-tap` | e2b `claw-observe` 单例 |
-| 本机 OVS / NAS API 进程 | e2b `claw-ovs` / `claw-nas-api` 单例 |
+| 本机 OVS / NAS API 进程 | e2b `claw-nas-api` 单例（**无** OVS；OpenVSCode 已退出） |
 
-Gateway 启动时会自动 `ensure_e2b_singletons_on_startup`（nas-api / ovs / observe）并 reconcile project workers，无需单独 `pool-up` 或 `tap-up`。
+Gateway 启动时会自动 `ensure_e2b_singletons_on_startup`（nas-api / observe）并 reconcile project workers，无需单独 `pool-up` 或 `tap-up`。
 
 ---
 

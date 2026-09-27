@@ -1,5 +1,7 @@
 # e2b：relaxed worker 创建时 startCmd 解析错误（build UUID 未钉住）
 
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing  
 Date: 2026-08-18  
 Audience: e2bserver 维护者

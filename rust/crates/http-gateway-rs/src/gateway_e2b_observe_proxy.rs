@@ -39,13 +39,6 @@ pub fn e2b_traffic_browser_hosts_line(
     Err("e2b Host traffic: use wildcard DNS (no hosts line)".into())
 }
 
-pub fn fc_ovs_browser_hosts_line(
-    internal_ovs_base: &str,
-    fc_domain: &str,
-) -> Result<String, String> {
-    e2b_traffic_browser_hosts_line(internal_ovs_base, fc_domain)
-}
-
 /// Traffic proxy listen port on e2b host (nginx → :3001); gateway internal probes only.
 #[must_use]
 pub fn e2b_traffic_proxy_port() -> u16 {

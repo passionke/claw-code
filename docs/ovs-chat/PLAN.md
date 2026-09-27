@@ -1,5 +1,8 @@
 # OVS + 插件路线图（实施记录）
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing
 
 产品方向：**OVS + `claw-vscode` 为唯一交互入口**；Playground `/coding` 封存。

@@ -146,7 +146,7 @@ export default function TemplateBuildStep({
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
           Gateway 镜像不变时，选或手填 CI/镜像 tag（含升级后的{" "}
           <Typography.Text code>claw</Typography.Text>
-          ）重打 e2b 核心模板（worker / relaxed+OVS / observe / nas-api）。与集群
+          ）重打 e2b 核心模板（worker / relaxed / observe / nas-api）。与集群
           Init 里「制作模板」同一条 API；新 build 需项目 worker reset 或沙箱失活后才会换上。
         </Typography.Paragraph>
       ) : (

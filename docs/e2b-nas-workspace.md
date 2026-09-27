@@ -12,14 +12,14 @@ Author: kejiqing
 
 ## 1. 唯一逻辑根（SoT）
 
-所有 e2b 交互模式（relaxed worker 内置 OVS、worker warm pool、fc-cloud solve）共享 **同一个 NAS export 树**，用 **相对 export 根的逻辑路径** 描述，与具体机器挂载点无关：
+所有 e2b 交互模式（strict / relaxed worker warm pool、fc-cloud solve）共享 **同一个 NAS export 树**，用 **相对 export 根的逻辑路径** 描述，与具体机器挂载点无关：
 
 ```text
 <export-root>/                              ← 逻辑根（relPath ""）
 ├── {clusterId}/                              ← CLAW_CLUSTER_ID（多集群隔离）
 │   └── proj_{N}/
-│       ├── home/                             ← ds_home（管理后台 materialize；worker 只读 bind）
-│       ├── sessions/{sessionId}/             ← 真实目录（OVS + resolve 上下文 SoT）
+│       ├── home/                             ← ds_home（管理后台 materialize；strict ro / relaxed rw）
+│       ├── sessions/{sessionId}/             ← 真实目录（resolve / 续聊上下文 SoT）
 │       └── workers/{workerId}/               ← 执行缓存（e2b bind → /claw_host_root）
 └── tap-traces/                               ← observe 单例 claude-tap 写（worker 不挂载）
 ```
@@ -29,7 +29,7 @@ Author: kejiqing
 - Gateway **不** bind-mount NAS；所有 NAS 写盘（`mkdir` / `put` / `symlink` / readback `get`）经 **claw-nas-api** e2b singleton HTTP（`e2b_nas_layout_backend` + `E2bNasApiSingleton`）。
 - e2b **只**按 `nasConfig` 做 `{hostMountRoot}/{relPath}` → guest `mountDir` bind，**不**在 sandbox 内 `mount.nfs4`。
 - `sessions/{sessionId}` 为**真实目录**；禁止再把 session 目录 symlink 到 worker 目录。
-- `home/` 仅管理后台可写；worker 侧 `/claw_ds` 为只读 bind。
+- `home/` → guest `/claw_ds`：**strict 只读**；**relaxed 可写**（权限宽松 worker，非 OVS）。Author: kejiqing
 
 ---
 
@@ -55,12 +55,12 @@ Admin 只读镜像：`GET /v1/gateway/global-settings` → `e2bNas`（`nasHostMo
 | 场景 | relPath（相对 export 根） | guest mountDir | 权限 |
 |------|---------------------------|----------------|------|
 | observe singleton | ``（空 = export 根） | `/claw_ws` | rw |
-| **Relaxed worker 内置 OVS** | 同 worker warm（见下行） | `/claw_ds`（OVS `?folder=`） | ro（home） |
-| Worker warm / solve / OVS agent | `{clusterId}/proj_N/home` | `/claw_ds` | **ro** |
-| Worker warm / solve / OVS agent | `{clusterId}/proj_N/sessions` | `/claw_sessions` | rw |
-| Worker warm / solve / OVS agent | `{clusterId}/proj_N/workers/{workerId}` | `/claw_host_root` | rw（缓存） |
+| Worker warm / solve（strict） | `{clusterId}/proj_N/home` | `/claw_ds` | **ro** |
+| Worker warm / solve（relaxed） | `{clusterId}/proj_N/home` | `/claw_ds` | **rw** |
+| Worker warm / solve | `{clusterId}/proj_N/sessions` | `/claw_sessions` | rw |
+| Worker warm / solve | `{clusterId}/proj_N/workers/{workerId}` | `/claw_host_root` | rw（缓存） |
 
-create sandbox 时 Gateway 发送：
+create sandbox 时 Gateway 发送（strict 示例；`readOnly` 随 profile 变化）：
 
 ```json
 {
@@ -74,7 +74,6 @@ create sandbox 时 Gateway 发送：
 ```
 
 e2b 解析为 host 绝对路径 `{hostMountRoot}/{relPath}`，再 bind 进 e2b 微VM。
-
 ---
 
 ## 4. Gateway 与 NAS：经 claw-nas-api，不直连
@@ -198,9 +197,6 @@ curl -s "$(curl -s http://127.0.0.1:8088/v1/gateway/global-settings | jq -r .e2b
 # e2b nasConfig bind（worker 三挂载点）
 ./deploy/stack/lib/verify-e2b-nas-inject.sh
 
-# e2b 全链路（含 terminal / OVS）
-CLAW_E2B_E2E_CLEANUP=0 ./deploy/stack/lib/verify-e2b-ovs-e2e.sh
-
 # fc-cloud solve（proj sandbox 模式）
 # POST /v1/solve_async → poll /v1/tasks/{sessionId} → status succeeded
 
@@ -233,7 +229,7 @@ strict worker 在 **进程层** 做 session 隔离（非 remount、非工具层�
 - **系统级预制默认**：`gateway_global_settings.strictLandlockDefault`（Admin → 全局配置 → Strict Landlock）。
 - **项目级覆盖**：`project_config.worker_profile_json.strict.landlock`（Admin → Worker profile）；未定义时继承系统默认。
 - worker 镜像只带 DSL 解释器；调规则改系统/项目配置，**不重新发布 worker**。
-- relaxed / OVS **不**启用 Landlock。
+- relaxed **不**启用 Landlock（permissions-only worker；**无** OpenVSCode 特例）。Author: kejiqing
 
 代码：`rust/crates/gateway-solve-turn/src/landlock_dsl.rs`、`landlock_jail.rs`；resolve：`http-gateway-rs/src/gateway_strict_landlock_settings.rs`。
 

@@ -1,5 +1,8 @@
 # OVS + Claw Chat 调试记录本
 
+
+> **ARCHIVED — OVS 已全面退出（2026-09-27）。** 本文仅作历史取证；现行架构见 `docs/architecture-governance.md`。`mode=relaxed` 现为宽松 worker，不再提供 OpenVSCode / `ovs/workspace`。
+
 Author: kejiqing  
 用途：claw-code 内快速回顾；**新开源码工程请读主文档**。
 

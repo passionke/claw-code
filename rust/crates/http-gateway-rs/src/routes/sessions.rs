@@ -1,9 +1,9 @@
 //! sessions routes. Author: kejiqing
 use crate::app_state::AppState;
 use crate::routes::app::{
-    agent_ws_handler, get_conversation_translate, get_session_execution, get_session_inbox,
-    list_project_sessions, ovs_workspace_handler, post_gateway_translate, post_session_inbox,
-    post_session_inbox_drain, rebuild_conversation_translate,
+    get_conversation_translate, get_session_execution, get_session_inbox, list_project_sessions,
+    post_gateway_translate, post_session_inbox, post_session_inbox_drain,
+    rebuild_conversation_translate,
 };
 use crate::session_upload;
 use axum::routing::{get, post};
@@ -34,11 +34,6 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/v1/sessions/{session_id}/conversation_translate",
             get(get_conversation_translate).post(rebuild_conversation_translate),
-        )
-        .route("/v1/sessions/{session_id}/agent/ws", get(agent_ws_handler))
-        .route(
-            "/v1/projects/{proj_id}/ovs/workspace",
-            get(ovs_workspace_handler),
         )
         .route("/v1/gateway/translate", post(post_gateway_translate))
 }

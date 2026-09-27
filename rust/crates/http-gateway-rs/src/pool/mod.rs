@@ -45,9 +45,9 @@ pub use e2b_worker_llm_material::{
 pub use interactive_backend::E2B_INTERACTIVE_POOL_ID;
 pub use interactive_backend::{
     build_proj_bake_script, build_session_attach_script, e2b_observe_is_enabled,
-    interactive_backend_from_env, interactive_backend_is_e2b, ovs_backend_is_e2b,
-    E2bInteractiveBackend, E2bNasApiSingleton, InteractiveBackendKind, InteractiveLease,
-    InteractiveSandboxBackend, InteractiveSessionSpec, E2B_WORKER_TAP_PLACEHOLDER_API_KEY,
+    interactive_backend_from_env, interactive_backend_is_e2b, E2bInteractiveBackend,
+    E2bNasApiSingleton, InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend,
+    InteractiveSessionSpec, E2B_WORKER_TAP_PLACEHOLDER_API_KEY,
 };
 pub use live_ag_ui_sse::live_ag_ui_sse_response;
 pub use live_report_hub::{AskUserPending, HubDeltaChunk, HubMsg, LiveReportHub, ProcessEvent};

@@ -64,7 +64,7 @@ sequenceDiagram
 | 路径 | 作用 |
 |------|------|
 | `pool/e2b_orchestrated_pool.rs` | solve 租还 e2b worker |
-| `pool/interactive_backend/fc_*.rs` | terminal / agent / OVS / NAS API singleton |
+| `pool/interactive_backend/` | terminal / agent / NAS API；Observe 经 singleton |
 | `pool/session_db_sync.rs` | PG ↔ guest 路径物化 |
 | `solve_pool.rs` | solve 队列与 `PoolClients` 入口 |
 | `claw-e2b-sandbox-client/` | E2B REST 客户端 |
@@ -73,15 +73,17 @@ sequenceDiagram
 
 ---
 
-## 5. Interactive / OVS
+## 5. Interactive
 
 与 solve 共用 `CLAW_INTERACTIVE_BACKEND=e2b`：
 
-- **OVS：** `claw-ovs` singleton（`CLAW_OVS_BACKEND=e2b`）
+- **Terminal / agent：** per-project e2b worker（`claw-worker` 或 `claw-worker-relaxed`）
 - **Observe tap：** `claw-observe` singleton（统一 LLM 代理 `:8080` + Live `:3000`；worker 不内嵌 tap）
 - **NAS 写盘：** `claw-nas-api` singleton
 
-设计细节：`docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md`、`deploy/e2b/README.md`。
+**已退出：** OpenVSCode / `ovs/workspace` / `ovs-singleton`（2026-09-27）。`mode=relaxed` 仅为权限宽松 worker（home rw + 工具包），见 [`architecture-governance.md`](architecture-governance.md) §4。历史取证：`docs/ovs-chat/`。
+
+设计细节：`deploy/e2b/README.md`、[`architecture-governance.md`](architecture-governance.md)。
 
 ---
 
@@ -94,6 +96,7 @@ sequenceDiagram
 | `pool-daemon-up.sh` / `host-pool-daemon.md` | 已删除 |
 | `podman_pool` / `docker_pool` | 已删除 |
 | `gateway.sh pool-up` / `bench` / `stable-dev-up` | 显式报错 |
+| `claw-ovs` / OpenVSCode / `session_ovs_api` | 已全面退出 |
 
 历史容器池设计见 git 历史或 `sandbox/docs/system-design.md`（归档）。
 

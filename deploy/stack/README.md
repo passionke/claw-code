@@ -20,7 +20,7 @@ Author: kejiqing
 | 环境 | 模板 | 说明 |
 | --- | --- | --- |
 | **自托管 e2b（推荐）** | `env.selfhosted-e2b.example` | 外连 PG + e2b；见 `docs/architecture-governance.md` |
-| e2b interactive 叠加 | `env.e2b-interactive.example` | OVS / NAS / Observe 变量 |
+| e2b interactive 叠加 | `env.e2b-interactive.example` | NAS / Observe / e2b interactive 变量（**无** openvscode） |
 | 生产 Linux | `env.production.example` | `up --release` 拉镜像 |
 | 本地全栈 compose | `env.local.example` | `gateway.sh quick`（须 `CLAW_*_BACKEND=e2b`） |
 | ~~稳定沙箱主机~~ | ~~`env.stable-dev-host.example`~~ | **已废弃** |

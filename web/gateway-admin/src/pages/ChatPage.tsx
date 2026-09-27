@@ -37,7 +37,6 @@ import {
 } from "../utils/planConfirm";
 import { turnViewModeForStatus } from "../utils/turnViewMode";
 import type { TurnFeedbackValue } from "../types/chat";
-import { isOvsWorkerRelaxed } from "../utils/ovsUrl";
 import {
   consumeResponsesSse,
   emptyResponsesStreamState,
@@ -129,7 +128,8 @@ export default function ChatPage() {
   const sessionIdRef = useRef<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
-  const planModeAllowed = isOvsWorkerRelaxed(projectConfig?.workerProfileJson);
+  /** Plan mode only when worker profile is relaxed (unrelated to IDE). Author: kejiqing */
+  const planModeAllowed = projectConfig?.workerProfileJson?.mode === "relaxed";
   useEffect(() => {
     if (!planModeAllowed && interactionMode === "plan") {
       setInteractionMode("agent");
@@ -560,7 +560,7 @@ export default function ChatPage() {
             type="info"
             showIcon
             message="对话页仅用于审计与历史查看"
-            description="交互式编码请使用 OVS（/ovs?projId=）。"
+            description="本页仅用于审计与历史查看，不可发送新对话。"
             style={{ margin: "0 12px 8px" }}
           />
         ) : null}
