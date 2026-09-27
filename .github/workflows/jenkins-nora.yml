@@ -1,0 +1,50 @@
+# Author: kejiqing
+# release-v* → Jenkins package → Nora (private cluster). Same package set as claw-code-image.yaml.
+# GitHub-hosted runners cannot reach jenkins.workbox.spone.xyz (VPN). Prefer self-hosted on 10.8,
+# or let Gitea (code.passionke.top) webhook the same Jenkins job.
+name: jenkins-nora
+
+on:
+  push:
+    tags:
+      - "release-v*"
+
+concurrency:
+  group: jenkins-nora-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    name: trigger Jenkins claw-code → Nora
+    # workbox / Pi / any VPN self-hosted that can resolve jenkins.workbox.spone.xyz
+    runs-on: [self-hosted]
+    timeout-minutes: 10
+    steps:
+      - name: Trigger Jenkins job claw-code
+        env:
+          JENKINS_URL: ${{ secrets.JENKINS_URL }}
+          JENKINS_USER: ${{ secrets.JENKINS_USER }}
+          JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
+          JENKINS_JOB: ${{ vars.JENKINS_CLAW_JOB || 'claw-code' }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${JENKINS_URL:-}" || -z "${JENKINS_USER:-}" || -z "${JENKINS_TOKEN:-}" ]]; then
+            echo "JENKINS_URL / JENKINS_USER / JENKINS_TOKEN secrets required" >&2
+            exit 1
+          fi
+          JENKINS_URL="${JENKINS_URL%/}"
+          crumb_json="$(curl -fsS -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
+            "${JENKINS_URL}/crumbIssuer/api/json" || true)"
+          crumb_header=()
+          if [[ -n "${crumb_json}" ]]; then
+            crumb_field="$(printf '%s' "$crumb_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["crumbRequestField"])')"
+            crumb_value="$(printf '%s' "$crumb_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["crumb"])')"
+            crumb_header=(-H "${crumb_field}: ${crumb_value}")
+          fi
+          echo "trigger ${JENKINS_JOB} TAG=${TAG}"
+          curl -fsS -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
+            "${crumb_header[@]}" \
+            -X POST \
+            "${JENKINS_URL}/job/${JENKINS_JOB}/buildWithParameters?TAG=${TAG}"
+          echo "queued ${JENKINS_JOB} for ${TAG}"
