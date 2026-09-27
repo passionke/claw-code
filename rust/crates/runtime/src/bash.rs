@@ -1,8 +1,10 @@
 use std::io;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use tokio::runtime::Builder;
 use tokio::time::timeout;
@@ -13,6 +15,8 @@ use crate::sandbox::{
     SandboxConfig, SandboxStatus,
 };
 use crate::ConfigLoader;
+
+type BashLineHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Input schema for the built-in bash execution tool.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -64,6 +68,31 @@ pub struct BashCommandOutput {
     pub persisted_output_size: Option<u64>,
     #[serde(rename = "sandboxStatus")]
     pub sandbox_status: Option<SandboxStatus>,
+}
+
+std::thread_local! {
+    static BASH_LINE_HOOK: std::cell::RefCell<Option<BashLineHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Clears the bash line hook when dropped. Author: kejiqing
+pub struct BashLineHookGuard;
+
+impl Drop for BashLineHookGuard {
+    fn drop(&mut self) {
+        BASH_LINE_HOOK.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+/// Install a same-thread hook that sees each stdout/stderr chunk while bash runs.
+/// Callers that do not install a hook keep the original buffered execution. Author: kejiqing
+pub fn install_bash_line_hook(hook: BashLineHook) -> BashLineHookGuard {
+    BASH_LINE_HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
+    BashLineHookGuard
+}
+
+fn current_bash_line_hook() -> Option<BashLineHook> {
+    BASH_LINE_HOOK.with(|slot| slot.borrow().clone())
 }
 
 /// Executes a shell command with the requested sandbox settings.
@@ -203,6 +232,10 @@ async fn execute_bash_async(
     // Detect and emit ship provenance for git push operations
     detect_and_emit_ship_prepared(&input.command);
 
+    if let Some(hook) = current_bash_line_hook() {
+        return execute_bash_streaming(input, sandbox_status, cwd, hook).await;
+    }
+
     let mut command = prepare_tokio_command(&input.command, &cwd, &sandbox_status, true);
 
     let timeout_ms = effective_bash_timeout_ms(&input);
@@ -262,6 +295,124 @@ async fn execute_bash_async(
         persisted_output_size: None,
         sandbox_status: Some(sandbox_status),
     })
+}
+
+/// Same result shape as [`execute_bash_async`], but forwards each pipe chunk to `hook`.
+/// Author: kejiqing
+async fn execute_bash_streaming(
+    input: BashCommandInput,
+    sandbox_status: SandboxStatus,
+    cwd: std::path::PathBuf,
+    hook: BashLineHook,
+) -> io::Result<BashCommandOutput> {
+    let mut command = prepare_tokio_command(&input.command, &cwd, &sandbox_status, true);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let timeout_ms = effective_bash_timeout_ms(&input);
+
+    let collect = async {
+        let stdout_acc = drain_pipe(stdout, Arc::clone(&hook));
+        let stderr_acc = drain_pipe(stderr, hook);
+        let status = child.wait();
+        let (stdout_acc, stderr_acc, status) = tokio::join!(stdout_acc, stderr_acc, status);
+        Ok::<_, io::Error>((status?, stdout_acc, stderr_acc))
+    };
+
+    let (status, stdout, stderr, interrupted, return_code_interpretation) =
+        if let Some(timeout_ms) = timeout_ms {
+            if let Ok(result) = timeout(Duration::from_millis(timeout_ms), collect).await {
+                let (status, stdout, stderr) = result?;
+                let return_code_interpretation = status.code().and_then(|code| {
+                    if code == 0 {
+                        None
+                    } else {
+                        Some(format!("exit_code:{code}"))
+                    }
+                });
+                (status, stdout, stderr, false, return_code_interpretation)
+            } else {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Ok(BashCommandOutput {
+                    stdout: String::new(),
+                    stderr: format!("Command exceeded timeout of {timeout_ms} ms"),
+                    raw_output_path: None,
+                    interrupted: true,
+                    is_image: None,
+                    background_task_id: None,
+                    backgrounded_by_user: None,
+                    assistant_auto_backgrounded: None,
+                    dangerously_disable_sandbox: input.dangerously_disable_sandbox,
+                    return_code_interpretation: Some(String::from("timeout")),
+                    no_output_expected: Some(true),
+                    structured_content: None,
+                    persisted_output_path: None,
+                    persisted_output_size: None,
+                    sandbox_status: Some(sandbox_status),
+                });
+            }
+        } else {
+            let (status, stdout, stderr) = collect.await?;
+            let return_code_interpretation = status.code().and_then(|code| {
+                if code == 0 {
+                    None
+                } else {
+                    Some(format!("exit_code:{code}"))
+                }
+            });
+            (status, stdout, stderr, false, return_code_interpretation)
+        };
+    let _ = status;
+    let stdout = truncate_output(&stdout);
+    let stderr = truncate_output(&stderr);
+    let no_output_expected = Some(stdout.trim().is_empty() && stderr.trim().is_empty());
+    Ok(BashCommandOutput {
+        stdout,
+        stderr,
+        raw_output_path: None,
+        interrupted,
+        is_image: None,
+        background_task_id: None,
+        backgrounded_by_user: None,
+        assistant_auto_backgrounded: None,
+        dangerously_disable_sandbox: input.dangerously_disable_sandbox,
+        return_code_interpretation,
+        no_output_expected,
+        structured_content: None,
+        persisted_output_path: None,
+        persisted_output_size: None,
+        sandbox_status: Some(sandbox_status),
+    })
+}
+
+async fn drain_pipe<R>(pipe: Option<R>, hook: BashLineHook) -> String
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let Some(pipe) = pipe else {
+        return String::new();
+    };
+    let mut reader = BufReader::new(pipe);
+    let mut acc = String::new();
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let Ok(n) = reader.read_until(b'\n', &mut buf).await else {
+            break;
+        };
+        if n == 0 {
+            break;
+        }
+        let chunk = String::from_utf8_lossy(&buf).into_owned();
+        hook(&chunk);
+        acc.push_str(&chunk);
+    }
+    acc
 }
 
 fn sandbox_status_for_input(input: &BashCommandInput, cwd: &std::path::Path) -> SandboxStatus {
@@ -340,7 +491,7 @@ fn prepare_sandbox_dirs(cwd: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{coalesce_bash_timeout, execute_bash, BashCommandInput};
+    use super::{coalesce_bash_timeout, execute_bash, install_bash_line_hook, BashCommandInput};
     use crate::sandbox::FilesystemIsolationMode;
 
     fn bash_input(command: &str, timeout: Option<u64>) -> BashCommandInput {
@@ -362,6 +513,20 @@ mod tests {
         assert_eq!(coalesce_bash_timeout(Some(5), Some(99)), Some(5));
         assert_eq!(coalesce_bash_timeout(None, Some(99)), Some(99));
         assert_eq!(coalesce_bash_timeout(None, None), None);
+    }
+
+    #[test]
+    fn line_hook_sees_stdout_chunks() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let seen_hook = std::sync::Arc::clone(&seen);
+        let _guard = install_bash_line_hook(std::sync::Arc::new(move |chunk| {
+            seen_hook.lock().expect("hook lock").push_str(chunk);
+        }));
+        let output = execute_bash(bash_input("printf 'a\\nb\\n'", Some(5_000))).expect("bash");
+        assert!(output.stdout.contains('a'));
+        let got = seen.lock().expect("seen").clone();
+        assert!(got.contains('a'), "hook missed stdout: {got:?}");
+        assert!(got.contains('b'), "hook missed second line: {got:?}");
     }
 
     #[test]

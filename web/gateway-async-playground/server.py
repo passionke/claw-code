@@ -1352,6 +1352,16 @@ class Handler(BaseHTTPRequestHandler):
             send_redirect(self, "/admin")
             return
 
+        if path in ("/agent", "/agent.html"):
+            page = DIR / "agent.html"
+            try:
+                data = page.read_bytes()
+            except OSError:
+                self.send_error(404, "agent page missing")
+                return
+            send_html_bytes(self, 200, data)
+            return
+
         self.send_error(404, "not found")
 
     def do_POST(self) -> None:

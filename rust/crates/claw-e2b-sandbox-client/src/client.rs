@@ -1546,6 +1546,24 @@ impl E2bSandboxClient {
         Self::run_exec_helper(&self.config().exec_helper, &payload, on_stdout_line).await
     }
 
+    /// True when envd accepts a command. API `state=running` can still be a zombie. Author: kejiqing
+    pub async fn envd_echo_reachable(&self, sandbox_id: &str) -> bool {
+        let payload = json!({
+            "op": "run_sh",
+            "api_key": self.config().api_key,
+            "domain": self.config().domain,
+            "api_url": self.config().api_url,
+            "sandbox_url": self.config().sandbox_url,
+            "sandbox_id": sandbox_id,
+            "script": "echo __claw_envd_ok__",
+            "timeout": 15,
+        });
+        match Self::run_exec_helper(&self.config().exec_helper, &payload, None).await {
+            Ok(out) => out.exit_code == 0 && out.stdout.contains("__claw_envd_ok__"),
+            Err(_) => false,
+        }
+    }
+
     /// Run a shell script inside the sandbox via `deploy/e2b/e2b_exec.py` (envd gRPC).
     pub async fn exec_shell_script(
         &self,

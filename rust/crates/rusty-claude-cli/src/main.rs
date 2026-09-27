@@ -410,6 +410,7 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
                         false,
                     )
                 }),
+                responses_stream: task.responses_stream,
             },
         )
     };

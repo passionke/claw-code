@@ -27,6 +27,7 @@ import {
 } from "../utils/extraSessionStorage";
 import {
   CLIENT_ORIGIN_GATEWAY_ADMIN,
+  HEADER_CLIENT_ORIGIN,
   isExternalOrigin,
 } from "../utils/clientOrigin";
 import { extractSolveReportMessage } from "../utils/solveReportBody";
@@ -37,7 +38,21 @@ import {
 import { turnViewModeForStatus } from "../utils/turnViewMode";
 import type { TurnFeedbackValue } from "../types/chat";
 import { isOvsWorkerRelaxed } from "../utils/ovsUrl";
-
+import {
+  consumeResponsesSse,
+  emptyResponsesStreamState,
+  type ResponsesStreamBlock,
+} from "../utils/responsesSseParse";
+import {
+  clearPlaygroundNgmk,
+  ensurePlaygroundNgmk,
+} from "../utils/playgroundNgmk";
+import {
+  loadResponsesDisplay,
+  RESPONSES_DISPLAY_KINDS,
+  saveResponsesDisplay,
+  type ResponsesDisplayMap,
+} from "../utils/responsesDisplay";
 interface TurnEntry {
   id: string;
   userText: string;
@@ -61,6 +76,10 @@ interface TurnEntry {
   workerName?: string | null;
   workerProfile?: string | null;
   workerExecUser?: string | null;
+  protocol?: "responses";
+  streamBlocks?: ResponsesStreamBlock[];
+  streamLive?: boolean;
+  streamError?: string;
 }
 
 interface SysEntry {
@@ -87,7 +106,7 @@ function isSys(item: ThreadItem): item is SysEntry {
   return "kind" in item && item.kind === "sys";
 }
 
-/** solve_async 对话：按时间线 user → assistant 卡片交错展示。Author: kejiqing */
+/** Playground 主聊天：POST /v1/responses 一条流渲染多个工具。Author: kejiqing */
 const CHAT_AUDIT_ONLY = false;
 export default function ChatPage() {
   const { gatewayBase, projId, projectConfig } = useApp();
@@ -104,6 +123,9 @@ export default function ChatPage() {
   const [extraKv, setExtraKv] = useState<ExtraSessionKv>({});
   /** Session-level Plan | Agent; Plan only when worker is relaxed. Author: kejiqing */
   const [interactionMode, setInteractionMode] = useState<"agent" | "plan">("agent");
+  const [displayPref, setDisplayPref] = useState<ResponsesDisplayMap>(() =>
+    loadResponsesDisplay()
+  );
   const sessionIdRef = useRef<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -363,66 +385,128 @@ export default function ChatPage() {
       }
     }
 
-    const payload: Record<string, unknown> = {
-      projId,
-      userPrompt: userText.trim() || "请查看附件",
-      extraSession: extra,
-    };
-    if (sid) payload.sessionId = sid;
-    if (attachments?.length) payload.attachments = attachments;
-    if (planModeAllowed && interactionMode === "plan") {
-      payload.interactionMode = "plan";
-    }
-
-    let asyncRes: SolveAsyncResponse;
-    try {
-      asyncRes = await proxyHttp<SolveAsyncResponse>(
-        gatewayBase,
-        "POST",
-        "/v1/solve_async",
-        payload
-      );
-    } catch (e) {
-      appendSys({
-        tag: "solve_async 失败",
-        text: String((e as Error).message || e),
-        variant: "err",
-      });
-      return;
-    }
-
-    if (!asyncRes?.taskId) {
-      appendSys({ tag: "意外响应", text: "缺少 taskId", variant: "err" });
-      return;
-    }
-
-    sessionIdRef.current = asyncRes.sessionId;
-    setActiveSessionId(asyncRes.sessionId);
+    const cardId = `live-${Date.now()}`;
+    const promptText = userText.trim() || "请查看附件";
     setSessionClientOrigin(CLIENT_ORIGIN_GATEWAY_ADMIN);
-    setHistoryRefreshKey((k) => k + 1);
     setThread((prev) => [
       ...prev,
       {
-        id: asyncRes.turnId,
+        id: cardId,
         userText: displayText,
-        taskId: asyncRes.taskId,
-        sessionId: asyncRes.sessionId,
-        turnId: asyncRes.turnId,
-        initialStatus: asyncRes.status || "queued",
+        taskId: sid || "",
+        sessionId: sid || "",
+        turnId: "",
+        initialStatus: "queued",
         viewMode: "live",
         clientOrigin: CLIENT_ORIGIN_GATEWAY_ADMIN,
         extraSession: extra,
         attachments: attachments ?? undefined,
         createdAtMs: Date.now(),
-        poolId: asyncRes.poolId ?? undefined,
-        gatewayId: asyncRes.gatewayId ?? undefined,
-        gatewayBase: asyncRes.gatewayBase ?? undefined,
-        workerName: asyncRes.workerName ?? undefined,
-        workerProfile: asyncRes.workerProfile ?? undefined,
-        workerExecUser: asyncRes.workerExecUser ?? undefined,
+        protocol: "responses",
+        streamBlocks: [],
+        streamLive: true,
       },
     ]);
     scrollLog();
+
+    const patchCard = (fn: (item: TurnEntry) => TurnEntry) => {
+      setThread((prev) =>
+        prev.map((item) => {
+          if (isSys(item) || item.id !== cardId) return item;
+          return fn(item);
+        })
+      );
+    };
+
+    const postResponses = async (token: string, modelAlias: string) => {
+      const body: Record<string, unknown> = {
+        model: modelAlias || "agent",
+        input: promptText,
+        stream: true,
+        extra_session: extra,
+        nerogate: { display: displayPref },
+      };
+      if (sid) {
+        body.sessionId = sid;
+        body.conversation = sid;
+      } else {
+        body.conversation = cardId;
+      }
+      if (attachments?.length) body.attachments = attachments;
+      if (planModeAllowed && interactionMode === "plan") {
+        body.interactionMode = "plan";
+      }
+      return fetch("/gateway/v1/responses", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          [HEADER_CLIENT_ORIGIN]: CLIENT_ORIGIN_GATEWAY_ADMIN,
+        },
+        body: JSON.stringify(body),
+      });
+    };
+
+    try {
+      let key = await ensurePlaygroundNgmk(gatewayBase, projId);
+      let resp = await postResponses(key.token, key.modelAlias);
+      if (resp.status === 401) {
+        clearPlaygroundNgmk(gatewayBase, projId);
+        key = await ensurePlaygroundNgmk(gatewayBase, projId);
+        resp = await postResponses(key.token, key.modelAlias);
+      }
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`${resp.status} ${text.slice(0, 800)}`);
+      }
+      const headerSid = resp.headers.get("x-nerogate-session-id")?.trim();
+      if (headerSid) {
+        sessionIdRef.current = headerSid;
+        setActiveSessionId(headerSid);
+        setSessionClientOrigin(CLIENT_ORIGIN_GATEWAY_ADMIN);
+        patchCard((item) => ({
+          ...item,
+          sessionId: headerSid,
+          taskId: headerSid,
+        }));
+      }
+      setHistoryRefreshKey((k) => k + 1);
+      await consumeResponsesSse(
+        resp,
+        (state) => {
+          if (state.sessionId) {
+            sessionIdRef.current = state.sessionId;
+            setActiveSessionId(state.sessionId);
+          }
+          patchCard((item) => ({
+            ...item,
+            sessionId: state.sessionId || item.sessionId,
+            taskId: state.sessionId || item.taskId,
+            turnId: state.turnId || item.turnId,
+            streamBlocks: state.blocks,
+            streamLive: !state.completed,
+            streamError: state.error || undefined,
+          }));
+          scrollLog(false);
+        },
+        emptyResponsesStreamState()
+      );
+      setHistoryRefreshKey((k) => k + 1);
+    } catch (e) {
+      const text = String((e as Error).message || e);
+      patchCard((item) => ({
+        ...item,
+        streamLive: false,
+        streamError: text,
+        initialStatus: "failed",
+      }));
+      appendSys({
+        tag: "responses 失败",
+        text,
+        variant: "err",
+      });
+    }
   };
 
   const onSend = async () => {
@@ -585,6 +669,15 @@ export default function ChatPage() {
                   taskId={item.taskId}
                   sessionId={item.sessionId}
                   turnId={item.turnId}
+                  responsesStream={
+                    item.protocol === "responses"
+                      ? {
+                          blocks: item.streamBlocks ?? [],
+                          live: Boolean(item.streamLive),
+                          error: item.streamError,
+                        }
+                      : undefined
+                  }
                   projId={projId}
                   gatewayBase={gatewayBase}
                   tapLiveBase={tapLiveBase}
@@ -683,6 +776,26 @@ export default function ChatPage() {
               </span>
             </Tooltip>
           ) : null}
+          <div className={styles.displayPrefRow}>
+            {RESPONSES_DISPLAY_KINDS.map((kind) => (
+              <label key={kind}>
+                <input
+                  type="checkbox"
+                  checked={displayPref[kind] === "expanded"}
+                  disabled={composerDisabled}
+                  onChange={(ev) => {
+                    const next = {
+                      ...displayPref,
+                      [kind]: ev.target.checked ? "expanded" : "collapsed",
+                    } as ResponsesDisplayMap;
+                    setDisplayPref(next);
+                    saveResponsesDisplay(next);
+                  }}
+                />
+                {kind} 展开
+              </label>
+            ))}
+          </div>
           <div className={styles.quickPrompts}>
             {QUICK_PROMPTS.map((q) => (
               <button

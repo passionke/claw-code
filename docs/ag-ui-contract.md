@@ -110,6 +110,7 @@ HITL：`Text` / `MultipleChoice` / `TextField` / `Button`。
 - `biz.report.*` **协议不变**。
 - Hub **扩展 ingest**，报告分支逻辑不动。
 - Admin：报告继续 `useBizReportStream`；过程订 AG-UI。
+- Responses `stream=true` 在同一 Hub 上另投影官方推理/工具事件与 `nerogate` 扩展。AG-UI 与 `biz.report.*` 协议不变；`thinking.delta` 与 `shell.chunk` 不进入 AG-UI。
 
 ---
 
@@ -118,3 +119,4 @@ HITL：`Text` / `MultipleChoice` / `TextField` / `Button`。
 | 日期 | 说明 |
 |------|------|
 | 2026-09-07 | 初版：AG-UI 传输 + A2UI 内容；Hub 单源；biz.report 并列不动 |
+| 2026-09-26 | Responses 真流追加推理/工具事件；AG-UI 忽略 `thinking.delta` 与 `shell.chunk` |

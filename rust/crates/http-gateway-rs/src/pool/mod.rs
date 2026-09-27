@@ -50,7 +50,7 @@ pub use interactive_backend::{
     InteractiveSandboxBackend, InteractiveSessionSpec, E2B_WORKER_TAP_PLACEHOLDER_API_KEY,
 };
 pub use live_ag_ui_sse::live_ag_ui_sse_response;
-pub use live_report_hub::{AskUserPending, HubMsg, LiveReportHub, ProcessEvent};
+pub use live_report_hub::{AskUserPending, HubDeltaChunk, HubMsg, LiveReportHub, ProcessEvent};
 pub use live_report_sse::live_report_sse_response;
 #[allow(unused_imports)]
 pub use result::parse_gateway_solve_exec_stdout;

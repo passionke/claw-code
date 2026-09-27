@@ -141,12 +141,20 @@ impl LiveReportHub {
                 api::sse_burst_trace::log_pool_ingest(turn_id, chunk, emit_seq);
                 crate::biz_report_sse_log::log_stdout_ingest(turn_id, chunk.len());
             }
-            "tool.start" | "tool.end" | "progress" => {
+            "tool.start" | "tool.end" | "progress" | "thinking.delta" => {
                 let pe = ProcessEvent {
                     ev: ev.to_string(),
                     payload: value.clone(),
                 };
                 state.process_events.push(pe.clone());
+                let _ = state.tx.send(HubMsg::Process(pe));
+            }
+            // Live only: long shell output must not sit in the replay buffer. Author: kejiqing
+            "shell.chunk" => {
+                let pe = ProcessEvent {
+                    ev: ev.to_string(),
+                    payload: value.clone(),
+                };
                 let _ = state.tx.send(HubMsg::Process(pe));
             }
             "ask.user" => {
@@ -400,6 +408,47 @@ mod tests {
             Ok(HubMsg::Process(pe)) => assert_eq!(pe.ev, "tool.start"),
             other => panic!("expected Process, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn thinking_replays_and_shell_chunk_is_live_only() {
+        let hub = LiveReportHub::default();
+        let turn = "T_tags";
+        hub.ingest_json(turn, &json!({"ev": "thinking.delta", "text": "hmm"}));
+        hub.ingest_json(
+            turn,
+            &json!({"ev": "shell.chunk", "toolCallId": "tc", "text": "ls\n"}),
+        );
+        let (_, _, replay, _) = hub.subscribe_with_process_snapshot(turn);
+        assert!(replay.iter().any(|pe| pe.ev == "thinking.delta"));
+        assert!(replay.iter().all(|pe| pe.ev != "shell.chunk"));
+
+        let (mut rx, _, _, _) = hub.subscribe_with_process_snapshot(turn);
+        hub.ingest_json(
+            turn,
+            &json!({"ev": "shell.chunk", "toolCallId": "tc", "text": "pwd\n"}),
+        );
+        match rx.recv().await {
+            Ok(HubMsg::Process(pe)) => {
+                assert_eq!(pe.ev, "shell.chunk");
+                assert_eq!(pe.payload["text"], "pwd\n");
+            }
+            other => panic!("expected live shell.chunk, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn thinking_and_shell_do_not_append_report_text() {
+        let hub = LiveReportHub::default();
+        let turn = "T_quiet";
+        hub.ingest_json(turn, &json!({"ev": "thinking.delta", "text": "先想"}));
+        hub.ingest_json(
+            turn,
+            &json!({"ev": "shell.chunk", "toolCallId": "tc", "text": "ls\n"}),
+        );
+        assert!(hub.snapshot_text(turn).is_empty());
+        hub.ingest_json(turn, &json!({"ev": "report.delta", "text": "正文"}));
+        assert_eq!(hub.snapshot_text(turn), "正文");
     }
 
     #[tokio::test]

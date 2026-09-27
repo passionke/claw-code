@@ -277,6 +277,7 @@ pub(crate) async fn confirm_session_plan(
         sealed_plan_id: Some(plan.plan_id.clone()),
         sealed_plan_markdown: Some(plan.body_markdown.clone()),
         force_single_turn: Some(true),
+        responses_stream: false,
     };
 
     let http_request_id = HttpRequestId(session_id.clone());

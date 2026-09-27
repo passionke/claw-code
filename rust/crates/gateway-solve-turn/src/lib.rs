@@ -98,9 +98,9 @@ pub use extra_session_bizdate::{
     EXTRA_SESSION_BIZDATE_KEY,
 };
 pub use gateway_stdout::{
-    emit_raw_json, emit_report_delta, emit_solve_done, emit_solve_error, emit_tool_end,
-    emit_tool_start, parse_stdout_line, reset_delegate_stdout_state, tool_process_kind,
-    GATEWAY_STDOUT_LINE_PREFIX,
+    emit_raw_json, emit_report_delta, emit_shell_chunk, emit_solve_done, emit_solve_error,
+    emit_thinking_delta, emit_tool_end, emit_tool_start, parse_stdout_line,
+    reset_delegate_stdout_state, tool_process_kind, GATEWAY_STDOUT_LINE_PREFIX,
 };
 pub use inbox_address::{parse_mailbox_address, MailboxAddress};
 pub use inbox_reply::{
@@ -348,6 +348,14 @@ pub struct GatewaySolveTaskFile {
         skip_serializing_if = "Option::is_none"
     )]
     pub ask_user_question_enabled: Option<bool>,
+    /// Responses `stream=true` only. Omitted when false so other task files stay the same shape.
+    /// Author: kejiqing
+    #[serde(
+        default,
+        rename = "responsesStream",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub responses_stream: bool,
 }
 
 pub use interaction_mode::{
@@ -635,6 +643,8 @@ pub(crate) struct DirectApiClient {
     clawcode_session_id: String,
     /// When true, LLM text chunks are mirrored to live report SSE. Author: kejiqing
     stream_report_deltas: bool,
+    /// Responses `stream=true`: emit thinking deltas. Default false. Author: kejiqing
+    responses_stream: bool,
 }
 
 impl DirectApiClient {
@@ -685,12 +695,19 @@ impl DirectApiClient {
             tools,
             clawcode_session_id,
             stream_report_deltas: true,
+            responses_stream: false,
         })
     }
 
     #[must_use]
     pub(crate) fn with_stream_report_deltas(mut self, enabled: bool) -> Self {
         self.stream_report_deltas = enabled;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_responses_stream(mut self, enabled: bool) -> Self {
+        self.responses_stream = enabled;
         self
     }
 }
@@ -728,14 +745,21 @@ impl RuntimeApiClient for DirectApiClient {
             tool_choice: Some(ToolChoice::Auto),
             stream: true,
             extra_headers: api::llm_trace_headers_for_session(&self.clawcode_session_id),
-            // Boss report needs visible `content` text (live SSE + outputJson.message).
-            thinking_enabled: Some(false),
+            // Boss report needs visible `content` text. Thinking stays off unless this
+            // turn is a Responses stream. Author: kejiqing
+            thinking_enabled: Some(self.responses_stream),
             ..Default::default()
         };
         let stream_report_deltas = self.stream_report_deltas;
+        let responses_stream = self.responses_stream;
         let mut on_delta = move |text: &str| {
             if stream_report_deltas {
                 let _ = emit_report_delta(text);
+            }
+        };
+        let mut on_thinking = move |text: &str| {
+            if responses_stream {
+                let _ = emit_thinking_delta(text);
             }
         };
         tokio::task::block_in_place(|| {
@@ -743,6 +767,7 @@ impl RuntimeApiClient for DirectApiClient {
                 &self.provider,
                 &req,
                 Some(&mut on_delta),
+                Some(&mut on_thinking),
             ))
         })
         .map_err(|e| RuntimeError::new(e.to_string()))
@@ -785,6 +810,8 @@ struct DirectToolExecutorInner {
     /// `gateway-solve-once` enters this runtime on the main thread; background analysis
     /// tools call MCP via `Handle::block_on` from worker threads. Author: kejiqing
     async_runtime: tokio::runtime::Handle,
+    /// When true, shell tools stream stdout/stderr chunks. Author: kejiqing
+    responses_stream: bool,
 }
 
 impl DirectToolExecutorInner {
@@ -804,6 +831,7 @@ impl DirectToolExecutorInner {
         session_tracer: Option<SessionTracer>,
         timing: Option<Arc<SolveTimingRecorder>>,
         async_runtime: tokio::runtime::Handle,
+        responses_stream: bool,
     ) -> Self {
         Self {
             session_home,
@@ -821,6 +849,7 @@ impl DirectToolExecutorInner {
             timing,
             mcp_semaphore: Arc::new(Semaphore::new(default_mcp_max_concurrent().max(1))),
             async_runtime,
+            responses_stream,
         }
     }
 
@@ -845,6 +874,17 @@ impl DirectToolExecutorInner {
         );
         let started = Instant::now();
         let _ = emit_tool_start(&tool_call_id, tool_name, input);
+        let shell_chunks = self.responses_stream && tool_process_kind(tool_name) == "shell";
+        let _shell_hook = if shell_chunks {
+            let id = tool_call_id.clone();
+            Some(runtime::install_bash_line_hook(std::sync::Arc::new(
+                move |line| {
+                    let _ = emit_shell_chunk(&id, line);
+                },
+            )))
+        } else {
+            None
+        };
         let result = self.execute_impl_inner(tool_name, input);
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         match &result {
@@ -1132,6 +1172,7 @@ impl DirectToolExecutor {
         session_tracer: Option<SessionTracer>,
         timing: Option<Arc<SolveTimingRecorder>>,
         async_runtime: tokio::runtime::Handle,
+        responses_stream: bool,
     ) -> Self {
         Self {
             inner: Arc::new(DirectToolExecutorInner::new(
@@ -1149,6 +1190,7 @@ impl DirectToolExecutor {
                 session_tracer,
                 timing,
                 async_runtime,
+                responses_stream,
             )),
         }
     }
@@ -1241,6 +1283,7 @@ impl DirectToolExecutor {
                 timing: self.inner.timing.clone(),
                 mcp_semaphore: Arc::clone(&self.inner.mcp_semaphore),
                 async_runtime: self.inner.async_runtime.clone(),
+                responses_stream: self.inner.responses_stream,
             }),
         }
     }
@@ -1359,6 +1402,20 @@ pub fn build_user_turn_message(
     }
 }
 
+fn push_thinking_delta(
+    events: &mut Vec<AssistantEvent>,
+    thinking: String,
+    on_thinking_delta: &mut Option<&mut (dyn FnMut(&str) + Send)>,
+) {
+    if thinking.is_empty() {
+        return;
+    }
+    if let Some(cb) = on_thinking_delta.as_deref_mut() {
+        cb(&thinking);
+    }
+    events.push(AssistantEvent::ThinkingDelta(thinking));
+}
+
 fn push_text_delta<F>(
     events: &mut Vec<AssistantEvent>,
     text: String,
@@ -1379,6 +1436,7 @@ pub(crate) async fn stream_events<F>(
     provider: &ProviderClient,
     req: &MessageRequest,
     on_text_delta: Option<&mut F>,
+    on_thinking_delta: Option<&mut (dyn FnMut(&str) + Send)>,
 ) -> Result<Vec<AssistantEvent>, api::ApiError>
 where
     F: FnMut(&str),
@@ -1387,6 +1445,7 @@ where
     let mut events = Vec::new();
     let mut pending_tools: HashMap<u32, (String, String, String)> = HashMap::new();
     let mut on_text_delta = on_text_delta;
+    let mut on_thinking_delta = on_thinking_delta;
     while let Some(event) = stream.next_event().await? {
         match event {
             StreamEvent::MessageStart(start) => {
@@ -1406,9 +1465,7 @@ where
                             pending_tools.insert(0, (id, name, initial_input));
                         }
                         OutputContentBlock::Thinking { thinking, .. } => {
-                            if !thinking.is_empty() {
-                                events.push(AssistantEvent::ThinkingDelta(thinking));
-                            }
+                            push_thinking_delta(&mut events, thinking, &mut on_thinking_delta);
                         }
                         OutputContentBlock::RedactedThinking { .. } => {}
                     }
@@ -1429,9 +1486,7 @@ where
                     push_text_delta(&mut events, text, &mut on_text_delta);
                 }
                 OutputContentBlock::Thinking { thinking, .. } => {
-                    if !thinking.is_empty() {
-                        events.push(AssistantEvent::ThinkingDelta(thinking));
-                    }
+                    push_thinking_delta(&mut events, thinking, &mut on_thinking_delta);
                 }
                 OutputContentBlock::RedactedThinking { .. } => {}
             },
@@ -1445,9 +1500,7 @@ where
                     }
                 }
                 ContentBlockDelta::ThinkingDelta { thinking } => {
-                    if !thinking.is_empty() {
-                        events.push(AssistantEvent::ThinkingDelta(thinking));
-                    }
+                    push_thinking_delta(&mut events, thinking, &mut on_thinking_delta);
                 }
                 ContentBlockDelta::SignatureDelta { .. } => {}
             },
@@ -1603,7 +1656,7 @@ where
         extra_headers: api::llm_trace_headers_for_session(clawcode_session_id),
         ..Default::default()
     };
-    let events = stream_events(&provider, &req, on_text_delta.as_mut())
+    let events = stream_events(&provider, &req, on_text_delta.as_mut(), None)
         .await
         .map_err(|e| err(HTTP_INTERNAL, format!("polish stream failed: {e}")))?;
     let (output_text, output_json) = polish_output_from_events(&events, &effective_model)?;
@@ -1803,7 +1856,8 @@ pub fn run_gateway_solve_turn(
         runtime_mcp_tools,
         clawcode_session_id.clone(),
         turn_opts.ask_user_question_enabled,
-    )?;
+    )?
+    .with_responses_stream(turn_opts.responses_stream);
     reset_task_progress(work_dir, &clawcode_session_id)
         .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;
     let _ = truncate_progress_history(work_dir);
@@ -1850,6 +1904,7 @@ pub fn run_gateway_solve_turn(
         session_tracer.clone(),
         Some(Arc::clone(&turn_timing)),
         async_runtime,
+        turn_opts.responses_stream,
     );
     let mut policy = if turn_opts.interaction_mode.is_plan() {
         PermissionPolicy::new(PermissionMode::ReadOnly)
@@ -2290,8 +2345,10 @@ mod gateway_solve_task_file_tests {
             sealed_plan_id: None,
             sealed_plan_markdown: None,
             ask_user_question_enabled: None,
+            responses_stream: false,
         };
         let v = serde_json::to_value(&t).unwrap();
+        assert!(v.get("responsesStream").is_none());
         let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();
         assert_eq!(t.request_id, back.request_id);
         assert_eq!(t.user_prompt, back.user_prompt);
@@ -2312,6 +2369,62 @@ mod gateway_solve_task_file_tests {
         let t: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();
         assert_eq!(t.max_iterations, Some(2));
         assert_eq!(t.max_iterations_source, None);
+        assert!(!t.responses_stream);
+    }
+
+    #[test]
+    fn responses_stream_true_is_written_onto_the_task_file() {
+        let mut t = GatewaySolveTaskFile {
+            request_id: "r1".into(),
+            user_prompt: "hello".into(),
+            model: None,
+            timeout_seconds: None,
+            extra_session: None,
+            allowed_tools: None,
+            max_iterations: None,
+            max_iterations_source: None,
+            turn_id: "T_a1b2c3d4e5f6478990abcdef12345678".into(),
+            session_id: None,
+            pool_id: None,
+            worker_name: None,
+            attachments: None,
+            llm_route: None,
+            otel_traceparent: None,
+            landlock_dsl: None,
+            landlock_dsl_source: None,
+            interaction_mode: None,
+            force_single_turn: None,
+            sealed_plan_id: None,
+            sealed_plan_markdown: None,
+            ask_user_question_enabled: None,
+            responses_stream: true,
+        };
+        let v = serde_json::to_value(&t).unwrap();
+        assert_eq!(v["responsesStream"], true);
+        t.responses_stream = false;
+        let v = serde_json::to_value(&t).unwrap();
+        assert!(v.get("responsesStream").is_none());
+    }
+}
+
+#[cfg(test)]
+mod thinking_signal_tests {
+    use runtime::AssistantEvent;
+
+    use super::push_thinking_delta;
+
+    #[test]
+    fn thinking_delta_notifies_the_hook_and_keeps_the_event() {
+        let mut events = Vec::new();
+        let mut seen = String::new();
+        {
+            let mut hook = |text: &str| seen.push_str(text);
+            push_thinking_delta(&mut events, "先想".into(), &mut Some(&mut hook));
+            push_thinking_delta(&mut events, String::new(), &mut Some(&mut hook));
+        }
+        assert_eq!(seen, "先想");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], AssistantEvent::ThinkingDelta(ref s) if s == "先想"));
     }
 }
 
@@ -2404,6 +2517,7 @@ mod turn_max_iterations_inheritance_tests {
             None,
             None,
             tokio::runtime::Handle::current(),
+            false,
         );
         assert_eq!(exec.turn_max_iterations(), 1024);
         let cloned = exec.clone_with_allowed_tools(vec!["read_file".to_string()]);
