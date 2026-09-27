@@ -646,16 +646,15 @@ impl E2bProjWorkerRegistry {
                     .await
                     .map_err(|e| format!("renew existing project worker TTL: {e}"))?;
                 return Ok(());
-            } else {
-                info!(
-                    target: "claw_e2b_proj_worker",
-                    proj_id,
-                    slot_index,
-                    old_sandbox = %existing.sandbox_id,
-                    image_refresh,
-                    "proj worker rotate (contract / image_refresh / offline)"
-                );
             }
+            info!(
+                target: "claw_e2b_proj_worker",
+                proj_id,
+                slot_index,
+                old_sandbox = %existing.sandbox_id,
+                image_refresh,
+                "proj worker rotate (contract / image_refresh / offline)"
+            );
             let pg_busy = db
                 .project_e2b_worker_is_busy(proj_id, e2b_worker_slot_i32(slot_index))
                 .await
