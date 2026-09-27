@@ -126,6 +126,7 @@ pub fn run_multi_agent_solve_turn(
         session_tracer,
         Some(Arc::clone(&turn_timing)),
         async_runtime,
+        false,
     );
 
     session

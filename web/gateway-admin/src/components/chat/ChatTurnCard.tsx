@@ -18,6 +18,8 @@ import { isAdminOrigin } from "../../utils/clientOrigin";
 import ReportMarkdown from "./ReportMarkdown";
 import AskUserA2ui from "./AskUserA2ui";
 import ProcessStepsA2ui from "./ProcessStepsA2ui";
+import ResponsesStreamBody from "./ResponsesStreamBody";
+import type { ResponsesStreamBlock } from "../../utils/responsesSseParse";
 import TurnFeedbackButtons from "./TurnFeedbackButtons";
 import TurnToolsDrawer from "./TurnToolsDrawer";
 import TurnTimelineDrawer from "./TurnTimelineDrawer";
@@ -68,6 +70,12 @@ export interface ChatTurnCardProps {
   initialWorkerExecUser?: string | null;
   /** After Plan confirm, parent appends T2 turn card. Author: kejiqing */
   onPlanConfirmed?: (res: SolveAsyncResponse) => void;
+  /** Live POST /v1/responses timeline. When set, do not open biz.report / AG-UI. Author: kejiqing */
+  responsesStream?: {
+    blocks: ResponsesStreamBlock[];
+    live: boolean;
+    error?: string;
+  };
 }
 
 function todoStatusMark(status: string): string {
@@ -93,6 +101,24 @@ function statusLabel(task: SolveTask): string {
   if (st === "failed") return "失败";
   if (st === "cancelled") return "已取消";
   return st;
+}
+
+/** Surface `GET /v1/tasks` error objects (e.g. e2b `{detail,status_code}`). Author: kejiqing */
+function formatTaskError(err: unknown): string {
+  if (err == null) return "";
+  if (typeof err === "string") return err;
+  if (typeof err === "object" && "detail" in err) {
+    const detail = (err as { detail?: unknown }).detail;
+    if (typeof detail === "string" && detail.trim()) {
+      const code = (err as { status_code?: unknown }).status_code;
+      return code != null ? `${String(code)} ${detail.trim()}` : detail.trim();
+    }
+  }
+  try {
+    return JSON.stringify(err, null, 2);
+  } catch {
+    return String(err);
+  }
 }
 
 function gatewayHostLabel(base: string): string {
@@ -154,6 +180,7 @@ export default function ChatTurnCard({
   initialWorkerProfile,
   initialWorkerExecUser,
   onPlanConfirmed,
+  responsesStream,
 }: ChatTurnCardProps) {
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
   const prefilledFailure = initialFailureDetail?.trim() ?? "";
@@ -165,7 +192,11 @@ export default function ChatTurnCard({
     progressHistory: [],
   });
   const turnStatus = task.status ?? initialStatus ?? "";
-  const historyMode = isEffectiveHistoryTurnView(viewMode, turnStatus);
+  const responsesLive = responsesStream != null;
+  /** In-page responses card keeps the stream; do not flip to biz_report replay. Author: kejiqing */
+  const historyMode = responsesLive
+    ? false
+    : isEffectiveHistoryTurnView(viewMode, turnStatus);
   const effectiveCreatedAtMs = task.createdAtMs ?? createdAtMs;
   const effectiveFinishedAtMs = task.finishedAtMs ?? finishedAtMs;
   const wallMs =
@@ -193,7 +224,7 @@ export default function ChatTurnCard({
     reconcileReport,
   } = useBizReportStream(gatewayBase, sessionId, turnId, projId);
 
-  const agUiEnabled = shouldConnectLiveReportSse(viewMode, turnStatus);
+  const agUiEnabled = !responsesLive && shouldConnectLiveReportSse(viewMode, turnStatus);
   const { steps: processSteps } = useAgUiStream(
     gatewayBase,
     sessionId,
@@ -204,14 +235,22 @@ export default function ChatTurnCard({
 
   // Live: connect report SSE on mount; do not wait for poll → running (user sees stream earlier).
   useEffect(() => {
+    if (responsesLive) return;
     if (!shouldConnectLiveReportSse(viewMode, turnStatus)) return;
     openReportStream();
     return () => {
       closeReportStream();
     };
-  }, [viewMode, turnStatus, gatewayBase, sessionId, turnId, projId, openReportStream, closeReportStream]);
+  }, [responsesLive, viewMode, turnStatus, gatewayBase, sessionId, turnId, projId, openReportStream, closeReportStream]);
 
   useEffect(() => {
+    if (responsesLive) {
+      setTask((prev) => ({
+        ...prev,
+        status: initialStatus || prev.status,
+      }));
+      return;
+    }
     const prefilled = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
     const resetHistoryMode = isEffectiveHistoryTurnView(viewMode, initialStatus);
     setTask({
@@ -232,9 +271,11 @@ export default function ChatTurnCard({
     hasReport,
     initialHistoricalReport,
     initialFailureDetail,
+    responsesLive,
   ]);
 
   useEffect(() => {
+    if (responsesLive) return;
     if (!historyMode) return;
     if (prefilledFailure) {
       setErrorText(prefilledFailure);
@@ -271,6 +312,7 @@ export default function ChatTurnCard({
       cancelled = true;
     };
   }, [
+    responsesLive,
     historyMode,
     gatewayBase,
     sessionId,
@@ -318,6 +360,7 @@ export default function ChatTurnCard({
 
   useEffect(() => {
     if (historyMode) return;
+    if (!taskId) return;
 
     let cancelled = false;
 
@@ -332,7 +375,9 @@ export default function ChatTurnCard({
         setTask(t);
         return t;
       } catch (e) {
-        if (!cancelled) setErrorText(String((e as Error).message || e));
+        if (!cancelled && !responsesLive) {
+          setErrorText(String((e as Error).message || e));
+        }
         return null;
       }
     };
@@ -343,8 +388,10 @@ export default function ChatTurnCard({
         if (!t) break;
         const terminal = isTerminalTurnStatus(t.status);
         if (terminal) {
-          // Let pool/gateway send `biz.report.done` (full text) before cutting SSE.
-          await waitForSettled(2500);
+          // Responses cards do not wait for biz.report.done. Author: kejiqing
+          if (!responsesLive) {
+            await waitForSettled(2500);
+          }
           if (t.result?.outputText) {
             reconcileReport(t.result.outputText);
             const txt = extractSolveReportMessage(t.result.outputText);
@@ -355,7 +402,7 @@ export default function ChatTurnCard({
           }
           closeReportStream();
           if (t.error) {
-            setErrorText(JSON.stringify(t.error, null, 2));
+            setErrorText(formatTaskError(t.error));
           } else if (t.status === "succeeded" && t.result?.outputText) {
             const txt = extractSolveReportMessage(t.result.outputText);
             if (txt) {
@@ -377,7 +424,7 @@ export default function ChatTurnCard({
     return () => {
       cancelled = true;
     };
-  }, [gatewayBase, taskId, historyMode, waitForSettled, reconcileReport, closeReportStream]);
+  }, [gatewayBase, taskId, historyMode, responsesLive, waitForSettled, reconcileReport, closeReportStream]);
 
   // Preserve streamed text when poll flips status to terminal before DB fetch completes.
   useEffect(() => {
@@ -389,6 +436,12 @@ export default function ChatTurnCard({
   }, [historyMode, historyReport, streamText]);
 
   const st = task.status || "unknown";
+  const shownTurnId = turnId || task.turnId || "";
+  const responsesTerminal = responsesLive && isTerminalTurnStatus(st);
+  const responsesStreamLive = Boolean(responsesStream?.live) && !responsesTerminal;
+  const responsesErrorText =
+    responsesStream?.error ||
+    (responsesTerminal && errorText ? errorText : "");
   const history = task.progressHistory || [];
   const reportView = deriveTurnCardReportView({
     viewMode,
@@ -410,7 +463,11 @@ export default function ChatTurnCard({
   const canFeedback =
     Boolean(onTurnFeedback) &&
     (historyMode || isTerminalTurnStatus(st)) &&
-    (reportVisible || Boolean(fallbackOutput) || Boolean(errorText) || historyMode);
+    (reportVisible ||
+      Boolean(fallbackOutput) ||
+      Boolean(errorText) ||
+      historyMode ||
+      (responsesLive && (responsesStream?.blocks.length ?? 0) > 0));
   const feedbackEditable = isAdminOrigin(clientOrigin);
   const showFeedback = canFeedback && (feedbackEditable || Boolean(turnFeedback));
 
@@ -525,7 +582,7 @@ export default function ChatTurnCard({
             )}
           </span>
           <span>
-            turn <code>{turnId}</code>
+            turn <code>{shownTurnId}</code>
           </span>
         </div>
         <div className={styles.turnRoute}>
@@ -576,14 +633,14 @@ export default function ChatTurnCard({
             <TurnExtraSessionDrawer extraSession={extraSession} />
             <TurnTimelineDrawer
               sessionId={sessionId}
-              turnId={turnId}
+              turnId={shownTurnId}
               projId={projId}
               gatewayBase={gatewayBase}
               taskStatus={st}
             />
             <TurnToolsDrawer
               sessionId={sessionId}
-              turnId={turnId}
+              turnId={shownTurnId}
               projId={projId}
               gatewayBase={gatewayBase}
             />
@@ -591,7 +648,14 @@ export default function ChatTurnCard({
         </div>
       </div>
 
-      {processSteps.length > 0 ? <ProcessStepsA2ui steps={processSteps} /> : null}
+      {responsesStream ? (
+        <ResponsesStreamBody
+          blocks={responsesStream.blocks}
+          live={responsesStreamLive}
+        />
+      ) : processSteps.length > 0 ? (
+        <ProcessStepsA2ui steps={processSteps} />
+      ) : null}
 
       {task.status === "awaiting_user" && task.askUserQuestionId && !historyMode ? (
         <AskUserA2ui
@@ -721,29 +785,34 @@ export default function ChatTurnCard({
       )}
 
       <div className={styles.turnBody}>
-        {showHistoryLoadingPlaceholder && (
+        {!responsesLive && showHistoryLoadingPlaceholder && (
           <div className={styles.turnBodyPlaceholder}>加载报告中…</div>
         )}
-        {showStreamingPlaceholder && (
+        {!responsesLive && showStreamingPlaceholder && (
           <div className={styles.turnBodyPlaceholder}>报告流式生成中…</div>
         )}
-        {reportVisible && !(task.planPhase === "awaiting_confirm" && task.planMarkdown) && (
+        {!responsesLive &&
+          reportVisible &&
+          !(task.planPhase === "awaiting_confirm" && task.planMarkdown) && (
           <div className={styles.section}>
             <div className={styles.sectionLabel}>报告</div>
             <ReportMarkdown text={reportText} streaming={reportStreaming} />
           </div>
         )}
-        {fallbackOutput && !reportVisible && !(task.planPhase === "awaiting_confirm" && task.planMarkdown) && (
+        {!responsesLive &&
+          fallbackOutput &&
+          !reportVisible &&
+          !(task.planPhase === "awaiting_confirm" && task.planMarkdown) && (
           <div className={styles.section}>
             <div className={styles.sectionLabel}>回复</div>
             <ReportMarkdown text={fallbackOutput} />
           </div>
         )}
-        {errorText && (
+        {(responsesErrorText || (!responsesLive && errorText)) && (
           <div className={styles.section}>
             <div className={styles.sectionLabel}>错误</div>
             <Typography.Paragraph type="danger" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-              {errorText}
+              {responsesErrorText || errorText}
             </Typography.Paragraph>
           </div>
         )}

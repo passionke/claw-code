@@ -104,6 +104,7 @@ mod tests {
             sealed_plan_id: None,
             sealed_plan_markdown: None,
             ask_user_question_enabled: None,
+            responses_stream: false,
         };
         let ctx = gateway_mcp_call_context_from_task(&task);
         assert_eq!(ctx.session_id, "sess-stable");
@@ -136,6 +137,7 @@ mod tests {
             sealed_plan_id: None,
             sealed_plan_markdown: None,
             ask_user_question_enabled: None,
+            responses_stream: false,
         };
         let from_task = gateway_mcp_call_context_from_task(&task);
         let resolved = resolve_gateway_mcp_call_context(

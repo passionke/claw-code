@@ -7,7 +7,7 @@ import { isOvsWorkerRelaxed, ovsIdeHref } from "../utils/ovsUrl";
 
 const { Header, Content } = Layout;
 
-/** solve_async 对话壳。Author: kejiqing */
+/** Playground 主聊天壳（POST /v1/responses 真流）。Author: kejiqing */
 export default function ChatLayout() {
   const {
     projId,

@@ -82,7 +82,7 @@ pub(crate) fn build_turn_entry_params_json(
     turn_id: &str,
     client_origin: Option<&str>,
 ) -> Value {
-    json!({
+    let mut entry = json!({
         "projId": req.proj_id,
         "userPrompt": req.user_prompt,
         "sessionId": session_id,
@@ -98,7 +98,11 @@ pub(crate) fn build_turn_entry_params_json(
         "sealedPlanId": req.sealed_plan_id,
         "sealedPlanMarkdown": req.sealed_plan_markdown,
         "forceSingleTurn": req.force_single_turn,
-    })
+    });
+    if req.responses_stream {
+        entry["responsesStream"] = json!(true);
+    }
+    entry
 }
 
 pub(crate) async fn apply_turn_pool_fields_from_db(
@@ -685,6 +689,7 @@ mod max_iterations_entry_params_tests {
             sealed_plan_id: None,
             sealed_plan_markdown: None,
             force_single_turn: None,
+            responses_stream: false,
         }
     }
 
@@ -693,6 +698,7 @@ mod max_iterations_entry_params_tests {
         let entry =
             build_turn_entry_params_json(&request(Some(4)), "session-1", "T_1", None);
         assert_eq!(entry["maxIterations"], 4);
+        assert!(entry.get("responsesStream").is_none());
     }
 
     #[test]

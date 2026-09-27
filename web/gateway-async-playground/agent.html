@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Responses 真流 · playground</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, "PingFang SC", sans-serif;
+    }
+    header, main { max-width: 920px; margin: 0 auto; padding: 16px; }
+    header { display: grid; gap: 10px; }
+    label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+    input, textarea, button {
+      font: inherit;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    textarea { min-height: 72px; resize: vertical; }
+    .row { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: end; }
+    .checks { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 13px; color: var(--text); }
+    .checks label { flex-direction: row; align-items: center; color: var(--text); }
+    button {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #log { display: flex; flex-direction: column; gap: 8px; }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+    .card summary, .card .head {
+      padding: 8px 12px;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .card pre, .card .body {
+      margin: 0;
+      padding: 0 12px 10px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 14px;
+    }
+    .text { border: 0; background: transparent; padding: 4px 2px; }
+    .err { color: #f87171; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 style="margin:0;font-size:18px">POST /v1/responses 真流</h1>
+    <p style="margin:0;color:var(--muted);font-size:13px">Bearer <code>ngmk_</code>。正文往后追加；shell 输出只刷新对应工具块。</p>
+    <div class="row">
+      <label style="flex:1;min-width:220px">ngmk token
+        <input id="token" autocomplete="off" placeholder="ngmk_…" />
+      </label>
+      <label>model alias
+        <input id="model" value="agent" />
+      </label>
+    </div>
+    <label>消息
+      <textarea id="prompt">看一下当前目录，用一行说明里面有什么。</textarea>
+    </label>
+    <div class="checks" id="display"></div>
+    <button id="send" type="button">发送</button>
+  </header>
+  <main><div id="log"></div></main>
+  <script>
+    const KINDS = ["thinking", "search", "read", "edit", "shell", "mcp", "delegate", "tool", "ask"];
+    const DEFAULT_OPEN = new Set(["shell", "ask"]);
+    const displayEl = document.getElementById("display");
+    for (const kind of KINDS) {
+      const label = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.dataset.kind = kind;
+      box.checked = DEFAULT_OPEN.has(kind);
+      label.append(box, document.createTextNode(" " + kind + " 默认展开"));
+      displayEl.append(label);
+    }
+
+    const log = document.getElementById("log");
+    const cards = new Map();
+    let textEl = null;
+
+    function displayMap() {
+      const display = {};
+      for (const box of displayEl.querySelectorAll("input")) {
+        display[box.dataset.kind] = box.checked ? "expanded" : "collapsed";
+      }
+      return display;
+    }
+
+    function ensureText() {
+      if (textEl) return textEl;
+      textEl = document.createElement("div");
+      textEl.className = "text";
+      log.append(textEl);
+      return textEl;
+    }
+
+    function card(id, title, open) {
+      let node = cards.get(id);
+      if (node) return node;
+      node = document.createElement("details");
+      node.className = "card";
+      node.open = !!open;
+      const summary = document.createElement("summary");
+      summary.textContent = title || id;
+      const body = document.createElement("pre");
+      body.className = "body";
+      node.append(summary, body);
+      log.append(node);
+      cards.set(id, node);
+      return node;
+    }
+
+    function appendText(delta) {
+      const el = ensureText();
+      el.textContent += delta;
+    }
+
+    function handleEvent(name, data) {
+      if (name === "response.output_text.delta") {
+        appendText(data.delta || "");
+        return;
+      }
+      if (name === "response.reasoning_text.delta") {
+        const open = data.nerogate && data.nerogate.display === "expanded";
+        const node = card(data.item_id || "thinking", "thinking", open);
+        node.querySelector("pre").textContent += data.delta || "";
+        return;
+      }
+      if (name === "response.output_item.added" && data.item && data.item.type === "reasoning") {
+        const open = data.nerogate && data.nerogate.display === "expanded";
+        card(data.item.id, "thinking", open);
+        return;
+      }
+      if (name === "response.output_item.added" && data.item && data.item.type === "function_call") {
+        const title = (data.item.name || "tool") + (data.item.arguments ? ": " + data.item.arguments : "");
+        card(data.item.id, title, false);
+        return;
+      }
+      if (name === "response.function_call_arguments.delta" || name === "response.mcp_call_arguments.delta" || name === "response.mcp_call.in_progress") {
+        const kind = (data.nerogate && data.nerogate.kind) || "tool";
+        const open = data.nerogate && data.nerogate.display === "expanded";
+        const node = card(data.item_id, kind + (data.delta ? ": " + data.delta : ""), open);
+        if (open) node.open = true;
+        else if (data.nerogate && data.nerogate.display === "collapsed") node.open = false;
+        return;
+      }
+      if (name === "response.nerogate.shell_output.delta") {
+        const node = card(data.item_id, "shell", true);
+        node.querySelector("pre").textContent += data.delta || "";
+        return;
+      }
+      if (name === "response.function_call_arguments.done" || name === "response.mcp_call.completed" || name === "response.mcp_call.failed") {
+        const node = cards.get(data.item_id);
+        if (node) node.querySelector("summary").textContent += name.endsWith("failed") ? " · failed" : " · done";
+        return;
+      }
+      if (name === "response.nerogate.ask") {
+        const open = !data.nerogate || data.nerogate.display !== "collapsed";
+        const node = card("ask-" + (data.questionId || "q"), "ask: " + (data.question || ""), open);
+        node.querySelector("pre").textContent = JSON.stringify(data.options || [], null, 2);
+        return;
+      }
+      if (name === "response.completed") {
+        appendText("");
+      }
+    }
+
+    function parseFrames(buffer) {
+      const parts = buffer.split("\n\n");
+      const rest = parts.pop();
+      for (const part of parts) {
+        let event = "message";
+        const dataLines = [];
+        for (const line of part.split("\n")) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+        }
+        const raw = dataLines.join("\n");
+        if (!raw || raw === "[DONE]") continue;
+        let data;
+        try { data = JSON.parse(raw); } catch { continue; }
+        handleEvent(event, data);
+      }
+      return rest;
+    }
+
+    document.getElementById("send").onclick = async () => {
+      const button = document.getElementById("send");
+      const token = document.getElementById("token").value.trim();
+      button.disabled = true;
+      log.replaceChildren();
+      cards.clear();
+      textEl = null;
+      if (!token) {
+        log.textContent = "需要 ngmk_ token";
+        log.className = "err";
+        button.disabled = false;
+        return;
+      }
+      log.className = "";
+      try {
+        const resp = await fetch("/gateway/v1/responses", {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+          },
+          body: JSON.stringify({
+            model: document.getElementById("model").value.trim() || "agent",
+            input: document.getElementById("prompt").value,
+            stream: true,
+            nerogate: { display: displayMap() },
+          }),
+        });
+        if (!resp.ok || !resp.body) {
+          const text = await resp.text();
+          log.textContent = resp.status + " " + text;
+          log.className = "err";
+          return;
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const step = await reader.read();
+          if (step.done) break;
+          buf += decoder.decode(step.value, { stream: true });
+          buf = parseFrames(buf);
+        }
+        parseFrames(buf + "\n\n");
+      } catch (err) {
+        log.textContent = String(err && err.message || err);
+        log.className = "err";
+      } finally {
+        button.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>

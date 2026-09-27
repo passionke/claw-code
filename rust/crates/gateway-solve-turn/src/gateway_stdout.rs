@@ -288,6 +288,49 @@ pub fn emit_tool_start(tool_call_id: &str, tool_name: &str, input: &str) -> io::
     }))
 }
 
+/// JSON body for `thinking.delta`. `None` when there is nothing to emit. Author: kejiqing
+#[must_use]
+pub fn thinking_delta_event(text: &str) -> Option<Value> {
+    if text.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({
+            "ev": "thinking.delta",
+            "text": text,
+        }))
+    }
+}
+
+/// JSON body for `shell.chunk`. `None` when the id or text is empty. Author: kejiqing
+#[must_use]
+pub fn shell_chunk_event(tool_call_id: &str, text: &str) -> Option<Value> {
+    if text.is_empty() || tool_call_id.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({
+            "ev": "shell.chunk",
+            "toolCallId": tool_call_id,
+            "text": text,
+        }))
+    }
+}
+
+/// Emit `thinking.delta` for Responses stream projection. Not a report body chunk. Author: kejiqing
+pub fn emit_thinking_delta(text: &str) -> io::Result<()> {
+    let Some(body) = thinking_delta_event(text) else {
+        return Ok(());
+    };
+    emit_raw_json(&body)
+}
+
+/// Emit one live shell output chunk. Not stored as report text. Author: kejiqing
+pub fn emit_shell_chunk(tool_call_id: &str, text: &str) -> io::Result<()> {
+    let Some(body) = shell_chunk_event(tool_call_id, text) else {
+        return Ok(());
+    };
+    emit_raw_json(&body)
+}
+
 /// Emit `tool.end` for AG-UI / process disclosure. Author: kejiqing
 pub fn emit_tool_end(
     tool_call_id: &str,
@@ -348,5 +391,38 @@ mod tests {
             Some("delegate.active")
         );
         assert_eq!(v.get("sessionId").and_then(|x| x.as_str()), Some("dgt_x"));
+    }
+
+    #[test]
+    fn thinking_and_shell_events_roundtrip_on_stdout_prefix() {
+        assert!(thinking_delta_event("").is_none());
+        assert!(shell_chunk_event("", "ls\n").is_none());
+        assert!(shell_chunk_event("tc1", "").is_none());
+        assert!(emit_thinking_delta("").is_ok());
+        assert!(emit_shell_chunk("tc1", "").is_ok());
+
+        let thinking = thinking_delta_event("先看目录").expect("thinking");
+        let line = format!("{GATEWAY_STDOUT_LINE_PREFIX}{thinking}");
+        let parsed = parse_stdout_line(&line).expect("parse thinking");
+        assert_eq!(parsed["ev"], "thinking.delta");
+        assert_eq!(parsed["text"], "先看目录");
+        assert!(parsed.get("report").is_none());
+
+        let shell = shell_chunk_event("tc_bash", "a\n").expect("shell");
+        let line = format!("{GATEWAY_STDOUT_LINE_PREFIX}{shell}");
+        let parsed = parse_stdout_line(&line).expect("parse shell");
+        assert_eq!(parsed["ev"], "shell.chunk");
+        assert_eq!(parsed["toolCallId"], "tc_bash");
+        assert_eq!(parsed["text"], "a\n");
+        assert_ne!(parsed["ev"], "report.delta");
+    }
+
+    #[test]
+    fn shell_is_the_only_kind_that_streams_chunks() {
+        assert_eq!(tool_process_kind("Bash"), "shell");
+        assert_eq!(tool_process_kind("Grep"), "search");
+        assert_eq!(tool_process_kind("Edit"), "edit");
+        assert_ne!(tool_process_kind("Grep"), "shell");
+        assert_ne!(tool_process_kind("mcp_call"), "shell");
     }
 }

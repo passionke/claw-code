@@ -965,8 +965,17 @@ impl E2bProjWorkerRegistry {
             }
         }
         if running {
-            registry.record_success(&probe_key, now);
-            return Ok(());
+            if self.client.envd_echo_reachable(sandbox_id).await {
+                registry.record_success(&probe_key, now);
+                return Ok(());
+            }
+            warn!(
+                target: "claw_e2b_proj_worker",
+                proj_id,
+                slot_index,
+                sandbox_id,
+                "e2b API reports running but envd is unreachable; recreating worker"
+            );
         }
         self.reconcile_proj_slot(proj_id, slot_index, false).await
     }

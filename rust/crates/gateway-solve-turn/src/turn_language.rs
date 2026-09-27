@@ -288,7 +288,7 @@ async fn run_language_inference_llm(
         ..Default::default()
     };
     let mut noop_delta = |_delta: &str| {};
-    let events = stream_events(&provider, &req, Some(&mut noop_delta))
+    let events = stream_events(&provider, &req, Some(&mut noop_delta), None)
         .await
         .map_err(|e| {
             err(

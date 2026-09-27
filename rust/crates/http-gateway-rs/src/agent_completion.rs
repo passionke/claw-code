@@ -41,6 +41,10 @@ pub struct AgentCompletionRequest {
     pub stream: bool,
     pub timeout_seconds: Option<u64>,
     pub extra_session: Option<Value>,
+    /// Session-relative attachments already uploaded to the session. Author: kejiqing
+    pub attachments: Option<Vec<gateway_solve_turn::SolveAttachment>>,
+    /// `agent` or `plan`. Author: kejiqing
+    pub interaction_mode: Option<String>,
     /// Current-turn images (`input_image` / `image_url`). Not folded into `user_prompt`.
     pub(crate) images: Vec<CompatImageSource>,
 }
@@ -94,6 +98,17 @@ pub struct ResponsesRequest {
     #[serde(default)]
     #[schema(value_type = Option<Object>)]
     pub extra_session: Option<Value>,
+    /// Optional display hints (`display` map). Omitted by existing clients. Author: kejiqing
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub nerogate: Option<Value>,
+    /// Continue a gateway session (playground Chat). Author: kejiqing
+    #[serde(default, rename = "sessionId")]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub attachments: Option<Vec<gateway_solve_turn::SolveAttachment>>,
+    #[serde(default, rename = "interactionMode")]
+    pub interaction_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -542,6 +557,8 @@ pub fn normalize_chat_completions(
             stream: req.stream,
             timeout_seconds: req.timeout,
             extra_session: req.extra_session.clone(),
+            attachments: None,
+            interaction_mode: None,
             images: last_user_images,
         },
         req.model.trim().to_string(),
@@ -597,6 +614,25 @@ fn responses_input_parts(
     }
 }
 
+/// Explicit session from body or `nerogate.sessionId`. Author: kejiqing
+pub fn responses_explicit_session_id(req: &ResponsesRequest) -> Option<String> {
+    let from_body = req
+        .session_id
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if from_body.is_some() {
+        return from_body;
+    }
+    req.nerogate
+        .as_ref()
+        .and_then(|v| v.get("sessionId").or_else(|| v.get("session_id")))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 pub fn normalize_responses(
     req: &ResponsesRequest,
 ) -> Result<(AgentCompletionRequest, String), OpenAiErrorBody> {
@@ -622,7 +658,7 @@ pub fn normalize_responses(
                 .as_ref()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
-            session_id: None,
+            session_id: responses_explicit_session_id(req),
             previous_response_id: req
                 .previous_response_id
                 .as_ref()
@@ -631,6 +667,12 @@ pub fn normalize_responses(
             stream: req.stream,
             timeout_seconds: req.timeout,
             extra_session: req.extra_session.clone(),
+            attachments: req.attachments.clone(),
+            interaction_mode: req
+                .interaction_mode
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             images,
         },
         req.model.trim().to_string(),
@@ -1000,6 +1042,10 @@ mod tests {
             tools: None,
             timeout: None,
             extra_session: None,
+            nerogate: None,
+            session_id: None,
+            attachments: None,
+            interaction_mode: None,
         };
         let (norm, _) = normalize_responses(&req).unwrap();
         assert!(norm.user_prompt.contains("what is in this image?"));
@@ -1029,6 +1075,10 @@ mod tests {
             tools: None,
             timeout: None,
             extra_session: None,
+            nerogate: None,
+            session_id: None,
+            attachments: None,
+            interaction_mode: None,
         };
         let (norm, _) = normalize_responses(&req).unwrap();
         assert!(norm.user_prompt.trim().is_empty());
@@ -1050,6 +1100,10 @@ mod tests {
             tools: None,
             timeout: None,
             extra_session: None,
+            nerogate: None,
+            session_id: None,
+            attachments: None,
+            interaction_mode: None,
         };
         let err = normalize_responses(&req).unwrap_err();
         assert_eq!(err.error.code.as_deref(), Some("unsupported_feature"));
@@ -1098,5 +1152,51 @@ mod tests {
         assert!(https_host_blocked("10.1.2.3"));
         assert!(https_host_blocked("localhost"));
         assert!(!https_host_blocked("cdn.example.com"));
+    }
+
+    #[test]
+    fn responses_explicit_session_id_from_body_and_nerogate() {
+        let from_body = ResponsesRequest {
+            model: "agent".into(),
+            input: json!("hi"),
+            instructions: None,
+            stream: true,
+            conversation: None,
+            previous_response_id: None,
+            tools: None,
+            timeout: None,
+            extra_session: None,
+            nerogate: Some(json!({ "sessionId": "ignored" })),
+            session_id: Some("sess-body".into()),
+            attachments: None,
+            interaction_mode: Some("plan".into()),
+        };
+        assert_eq!(
+            responses_explicit_session_id(&from_body).as_deref(),
+            Some("sess-body")
+        );
+        let (norm, _) = normalize_responses(&from_body).unwrap();
+        assert_eq!(norm.session_id.as_deref(), Some("sess-body"));
+        assert_eq!(norm.interaction_mode.as_deref(), Some("plan"));
+
+        let from_nerogate = ResponsesRequest {
+            model: "agent".into(),
+            input: json!("hi"),
+            instructions: None,
+            stream: true,
+            conversation: None,
+            previous_response_id: None,
+            tools: None,
+            timeout: None,
+            extra_session: None,
+            nerogate: Some(json!({ "sessionId": "sess-ng" })),
+            session_id: None,
+            attachments: None,
+            interaction_mode: None,
+        };
+        assert_eq!(
+            responses_explicit_session_id(&from_nerogate).as_deref(),
+            Some("sess-ng")
+        );
     }
 }

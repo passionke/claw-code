@@ -53,6 +53,7 @@ pub(crate) fn admin_mcp_input_to_solve_request(input: admin_mcp_solve::AdminMcpS
         sealed_plan_id: None,
         sealed_plan_markdown: None,
         force_single_turn: None,
+        responses_stream: false,
     }
 }
 

@@ -246,6 +246,12 @@ pub fn ag_ui_from_ask_user(pending: &AskUserPending) -> Value {
 /// Map one HubMsg to zero or more AG-UI JSON events (excluding RUN_*). Author: kejiqing
 pub fn project_hub_msg(turn_id: &str, msg: &HubMsg, steps: &mut Vec<ProcessStep>) -> Vec<Value> {
     match msg {
+        HubMsg::Process(pe)
+            if pe.ev == "thinking.delta" || pe.ev == "shell.chunk" =>
+        {
+            // Responses-only events. Do not refresh A2UI. Author: kejiqing
+            Vec::new()
+        }
         HubMsg::Process(pe) => {
             apply_process_event(steps, pe);
             let mut out = Vec::new();
@@ -308,5 +314,46 @@ mod tests {
         let a2ui = build_process_a2ui("T1", &steps);
         assert_eq!(a2ui["catalogId"], "claw-process/v1");
         assert_eq!(a2ui["components"][0]["status"], "ok");
+    }
+
+    #[test]
+    fn thinking_and_shell_chunks_do_not_refresh_a2ui() {
+        let mut steps = Vec::new();
+        let thinking = HubMsg::Process(ProcessEvent {
+            ev: "thinking.delta".into(),
+            payload: json!({"ev": "thinking.delta", "text": "hmm"}),
+        });
+        assert!(project_hub_msg("T1", &thinking, &mut steps).is_empty());
+        let shell = HubMsg::Process(ProcessEvent {
+            ev: "shell.chunk".into(),
+            payload: json!({"ev": "shell.chunk", "toolCallId": "tc1", "text": "hi\n"}),
+        });
+        assert!(project_hub_msg("T1", &shell, &mut steps).is_empty());
+        assert!(steps.is_empty());
+    }
+
+    #[test]
+    fn tool_start_still_projects_after_ignored_thinking() {
+        let mut steps = Vec::new();
+        let thinking = HubMsg::Process(ProcessEvent {
+            ev: "thinking.delta".into(),
+            payload: json!({"text": "hmm"}),
+        });
+        assert!(project_hub_msg("T1", &thinking, &mut steps).is_empty());
+        let start = HubMsg::Process(ProcessEvent {
+            ev: "tool.start".into(),
+            payload: json!({
+                "toolCallId": "tc1",
+                "name": "Grep",
+                "kind": "search",
+                "title": "Searching 订单",
+                "argsSummary": "订单"
+            }),
+        });
+        let frames = project_hub_msg("T1", &start, &mut steps);
+        assert!(frames.iter().any(|v| v["type"] == "TOOL_CALL_START"));
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].kind, "search");
+        assert!(!frames.iter().any(|v| v["type"] == "response.reasoning_text.delta"));
     }
 }

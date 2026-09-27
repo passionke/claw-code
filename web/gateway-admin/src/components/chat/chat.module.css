@@ -250,6 +250,86 @@
   margin-left: 4px;
 }
 
+.streamTimeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px 12px;
+}
+
+.streamText {
+  min-width: 0;
+}
+
+.streamTag {
+  border: 1px solid #2d3a4d;
+  border-radius: 8px;
+  background: rgba(15, 20, 25, 0.55);
+  overflow: hidden;
+}
+
+.streamTagHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+  color: #8b9cb3;
+  font-size: 13px;
+}
+
+.streamTagHead::-webkit-details-marker {
+  display: none;
+}
+
+.streamKindTag {
+  margin-inline-end: 0 !important;
+  font-size: 11px;
+}
+
+.streamTagTitle {
+  flex: 1;
+  min-width: 0;
+  color: #e6edf3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.streamTagStatus {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.streamTagBody {
+  margin: 0;
+  padding: 0 10px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #c9d6e5;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.displayPrefRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 12px;
+  color: #8b9cb3;
+}
+
+.displayPrefRow label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
 .processSummary {
   margin: 0;
   padding: 8px 10px;

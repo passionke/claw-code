@@ -148,6 +148,30 @@ async fn resolve_session(
         return Ok(req);
     }
 
+    if let Some(explicit) = req.session_id.clone() {
+        let exists = state
+            .session_db
+            .get_session_home_rel(&explicit, key.proj_id)
+            .await
+            .map_err(|e| {
+                openai_err_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    openai_error(e.to_string(), "server_error", "server_error"),
+                )
+            })?;
+        if exists.is_none() {
+            return Err(openai_err_response(
+                StatusCode::BAD_REQUEST,
+                openai_error(
+                    "unknown sessionId (no session history for this projId)",
+                    "invalid_request",
+                    "invalid_request_error",
+                ),
+            ));
+        }
+        return Ok(req);
+    }
+
     if let Some(conv) = req.conversation_key.clone() {
         if let Some((proj_id, session_id)) = state
             .session_db
@@ -197,12 +221,13 @@ fn solve_request_from_agent(proj_id: i64, req: &AgentCompletionRequest) -> Solve
         extra_session: req.extra_session.clone(),
         allowed_tools: None,
         max_iterations: None,
-        attachments: None,
+        attachments: req.attachments.clone(),
         compat_images: req.images.clone(),
-        interaction_mode: None,
+        interaction_mode: req.interaction_mode.clone(),
         sealed_plan_id: None,
         sealed_plan_markdown: None,
         force_single_turn: None,
+        responses_stream: false,
     }
 }
 
@@ -371,19 +396,29 @@ pub(crate) async fn responses(
         if session_hint.is_none() {
             solve_req.session_id = None;
         }
+        solve_req.responses_stream = true;
         if let Err(e) = validate_solve_request(&state.session_db, &solve_req).await {
             return openai_err_response(
                 e.status,
                 openai_error(e.message, "invalid_request", "invalid_request_error"),
             );
         }
+        let origin = client_origin::resolve_client_origin(
+            solve_req.extra_session.as_ref(),
+            headers
+                .get(header::HeaderName::from_static(
+                    client_origin::HEADER_CLIENT_ORIGIN,
+                ))
+                .and_then(|v| v.to_str().ok()),
+        )
+        .unwrap_or_else(|| client_origin::CLIENT_ORIGIN_OPENAI_COMPAT.to_string());
         let async_resp = match enqueue_solve_async(
             state.clone(),
             HttpRequestId(Uuid::new_v4().to_string()),
             session_merge::HttpRequestIdKind::Generated,
             solve_req,
             "/v1/responses",
-            Some(client_origin::CLIENT_ORIGIN_OPENAI_COMPAT.to_string()),
+            Some(origin),
         )
         .await
         {
@@ -407,12 +442,14 @@ pub(crate) async fn responses(
             .session_db
             .insert_openai_response(&turn_id, &key.id, key.proj_id, &session_id, &turn_id)
             .await;
+        let display = crate::responses_hub_stream::ResponsesDisplay::parse(body.nerogate.as_ref());
         let resp = responses_hub_sse_response(
             std::sync::Arc::clone(&state.live_report_hub),
             model,
             session_id.clone(),
             turn_id,
             std::sync::Arc::clone(&state.session_db),
+            display,
         );
         return with_session_header(resp, &session_id);
     }

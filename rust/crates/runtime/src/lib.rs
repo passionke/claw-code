@@ -56,7 +56,9 @@ mod usage;
 pub mod worker_boot;
 mod workspace_root;
 
-pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
+pub use bash::{
+    execute_bash, install_bash_line_hook, BashCommandInput, BashCommandOutput, BashLineHookGuard,
+};
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
 pub use branch_lock::{detect_branch_lock_collisions, BranchLockCollision, BranchLockIntent};
 pub use compact::{

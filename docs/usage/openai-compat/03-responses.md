@@ -19,6 +19,9 @@ OpenAI Responses 形状的入口，与 Chat Completions 共用同一 Agent solve
 | `stream` | 否 | 默认 `false`；语义同 Chat（先跑完再 SSE） |
 | `timeout` | 否 | 秒 |
 | `extra_session` | 否 | JSON 对象，同 solve `extraSession` |
+| `sessionId` | 否 | 续已有网关 session（须属于当前 Key 的项目）；也可用 `nerogate.sessionId` |
+| `attachments` | 否 | 已上传到该 session 的附件，同 solve |
+| `interactionMode` | 否 | `agent`（默认）或 `plan` |
 | `tools` | 否 | 非空 → `400 unsupported_feature` |
 
 ### `input` 形态
@@ -108,13 +111,29 @@ curl -sS -X POST "$GATEWAY/v1/responses" \
 
 ## 流式（`stream: true`）
 
-**真流（灌 LiveReportHub）**：先开 SSE，再异步入队 Agent；过程中推送：
+**真流（灌 LiveReportHub）**：先开 SSE，再异步入队 Agent。已有帧的 JSON 不变：
 
 1. `response.created` — 开始  
 2. `response.output_text.delta` — 报告正文增量（同源 `report.delta`）  
-3. `response.output_item.added` — 工具开始（若有 `tool.start`）  
-4. `response.completed` — 完整 response JSON  
+3. `response.output_item.added` — 工具开始（`item.type` / `id` / `name` / `arguments`）  
+4. `response.completed` — 完整 response JSON；`output` 仍只有一条 `message` / `output_text`  
 5. `done` / `[DONE]`
+
+在此之上追加事件（不认识的 `type` 跳过即可）：
+
+- `response.in_progress`
+- `response.output_text.done` — 一段正文结束
+- `response.reasoning_text.delta` / `response.reasoning_text.done` — thinking，不进 `report.delta`
+- `response.function_call_arguments.delta` / `done` — 非 MCP 工具；`nerogate.kind` 与 `nerogate.display` 只在这些新事件上
+- `response.mcp_call.in_progress` / `response.mcp_call_arguments.delta` / `response.mcp_call.completed` 或 `failed`
+- `response.nerogate.shell_output.delta` — 本地 shell 标准输出，`item_id` 指向已打开的 `function_call`，正文继续往后追加
+- `response.nerogate.ask` — HITL，不写入正文
+
+请求可带 `nerogate.display`，按 kind 取 `collapsed` 或 `expanded`。缺省：`shell` 与 `ask` 为 `expanded`，其余（含 thinking）为 `collapsed`。非法值忽略。
+
+Playground 主聊天（`/admin` Chat）走这条真流：一条 SSE 里交错渲染正文、thinking、search/read/edit、mcp、shell；shell 只刷新对应工具块，正文继续往后追加。`/v1/solve` 与 `/v1/solve_async` 的输出不变。
+
+`stream=false` 的 JSON 不变。`/v1/solve` 与 `/v1/solve_async`（resolve 系列）以及 `biz.report.*` 不发射这些增量。
 
 过程 UI 另见 [`ag-ui-contract.md`](../../ag-ui-contract.md)；报告产品面仍可用 `biz.report.*`。
 

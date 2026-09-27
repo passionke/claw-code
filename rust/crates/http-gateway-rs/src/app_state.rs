@@ -180,6 +180,11 @@ pub(crate) struct SolveRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) force_single_turn: Option<bool>,
+    /// Internal. Set only by `POST /v1/responses` when `stream=true`. Not a public JSON field.
+    /// Author: kejiqing
+    #[serde(default, skip)]
+    #[schema(ignore)]
+    pub(crate) responses_stream: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, utoipa::ToSchema)]

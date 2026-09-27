@@ -56,6 +56,7 @@ export interface TurnCancelResponse {
 
 export interface SolveTask {
   status?: string;
+  turnId?: string;
   hasReport?: boolean;
   /** Wall-clock start from `GET /v1/tasks`. Author: kejiqing */
   createdAtMs?: number;

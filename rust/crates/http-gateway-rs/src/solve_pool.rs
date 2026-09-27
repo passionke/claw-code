@@ -295,6 +295,7 @@ pub(crate) async fn run_solve_request_docker(
         sealed_plan_id: req.sealed_plan_id.clone(),
         sealed_plan_markdown: req.sealed_plan_markdown.clone(),
         ask_user_question_enabled: Some(ask_user_question_enabled),
+        responses_stream: req.responses_stream,
     };
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(
