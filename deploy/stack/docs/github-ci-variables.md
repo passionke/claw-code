@@ -33,8 +33,7 @@ Workflow：`.github/workflows/claw-code-image.yaml`（push `release-v*` tag）�
 
 | Key | 类型 | 说明 |
 |-----|------|------|
-| `ACTIONS_RUNNER_LIST_TOKEN` | **Secret** | Classic PAT 或 fine-grained token，权限 **Administration: Read**。用于 `pick-runner` 列出在线 self-hosted runner；**未配置时默认 GITHUB_TOKEN 403，始终回退 `ubuntu-latest`**。 |
-| `CONTAINER_BASE_REGISTRY` | Variable | 可选；未设 → `docker.io`（github-hosted 推荐）。SG self-hosted 可设 `docker.1ms.run`。 |
+| `CONTAINER_BASE_REGISTRY` | Variable | 可选；未设 → `docker.io`（github-hosted 编译推荐）。 |
 
 **release 编译 cache 验收**（`linux-compile-once` job 日志）：
 
@@ -133,56 +132,43 @@ tar xzf actions-runner.tar.gz
 | 集群 id | `sunmi-ci-01` | `github-ci-01` |
 | 宿主机 | `10.22.28.94` | `62.72.45.75` |
 
-## 8. mirror-to-acr：SG → 杭州 ACR（VPN 路由）
+## 8. mirror-to-acr：香港阿里云 → 杭州 ACR（公网，无 VPN）
 
-SG 公网直连个人版 ACR 常 **TLS 握手超时**；build/push GHCR 不受影响。凭证仍在 Environment **`claw-acr`**（`ACR_USERNAME` / `ACR_PASSWORD` / `ACR_REGISTRY`）。
+**路径**（Author: kejiqing）：
 
-**仅 SG 打包机 VPN**：在 **Settings → Secrets and variables → Actions → Variables** 配置（与仓库 e2b `10.8.0.x` 无关）：
+1. **github-hosted (`ubuntu-latest`)**：编译并推 GHCR  
+2. **self-hosted `aliyun-hk`**（`cn-hongkong`，`8.210.177.9`）：`skopeo copy --format v2s2` 从 GHCR 拉到 ACR  
 
-| Key | 说明 | 示例 |
-|-----|------|------|
-| `ACR_MIRROR_VPN_GW` | ACR 域名解析出的 IP 走此 next-hop（10.8 跳板） | `10.8.0.2` |
-| `ACR_MIRROR_VPN_DEV` | 可选，VPN 网卡名 | `wg0` |
+个人版 ACR 不接受 OCI empty layer；必须用 **skopeo v2s2**，不要 `docker pull/tag/push`。凭证仍在 Environment（`vars.ACR_GITHUB_ENVIRONMENT`，默认 `claw-acr`）：`ACR_USERNAME` / `ACR_PASSWORD`；registry 前缀用 repo Variable **`ACR_REGISTRY`**。
 
-`mirror-to-acr` **仅在 self-hosted runner** 上、且设了 `ACR_MIRROR_VPN_GW` 时，才会在 login/push 前执行 `deploy/stack/lib/ci-acr-vpn-route.sh up`（为 registry hostname 的 `/32` 加路由），job 结束 `down` 清理。落在 **GitHub-hosted (`ubuntu-latest`)** 时跳过 VPN（公网直连 ACR）；未设 `ACR_MIRROR_VPN_GW` 时脚本也 no-op。
+`mirror-to-acr`：`runs-on: [self-hosted, aliyun-hk]`，`max-parallel: 1`（机器约 1G 内存）。
 
-**SG 宿主机前提**：
-
-1. VPN 已连，能 ping 通 `ACR_MIRROR_VPN_GW`（当前 **10.8.0.1**）
-2. SG VPN 地址通常在 **10.82.0.0/24**（如 `10.82.0.2`）；出站 ACR 必须带 **VPN 网卡**（脚本会自动从 `ip route get 10.8.0.1` 检测，或手动设 `ACR_MIRROR_VPN_DEV`）
-3. runner 用户可执行 `ip route`（root 或 `sudo -n` 免密）
-4. **跳板 10.8.0.1** 必须对 **10.82.0.0/24** 做转发 + SNAT（仅 ping 通不够）
-
-**跳板 10.8.0.1 上**（一次性，按实际出口网卡改 `eth0`）：
+### 安装 / 验收 aliyun-hk runner
 
 ```bash
-sysctl -w net.ipv4.ip_forward=1
-# 持久化: echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.d/99-forward.conf
-iptables -t nat -C POSTROUTING -s 10.82.0.0/24 -o eth0 -j MASQUERADE 2>/dev/null || \
-  iptables -t nat -A POSTROUTING -s 10.82.0.0/24 -o eth0 -j MASQUERADE
+# 在香港机（user runner，已加 docker 组）
+cd /home/runner/actions-runner
+# GitHub → Settings → Actions → Runners → New self-hosted runner → token
+sudo -u runner ./config.sh --url https://github.com/passionke/claw-code \
+  --token <REGISTRATION_TOKEN> --name aliyun-hk --labels aliyun-hk --unattended
+./svc.sh install runner && ./svc.sh start
 ```
 
-**SG 宿主机验收**（`DEV` 用 `ip route get 10.8.0.1` 里的 `dev`）：
+验收：`systemctl status actions.runner.passionke-claw-code.aliyun-hk` active；GitHub Runners 页 **aliyun-hk** Idle；本机：
 
 ```bash
-HOST=crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com
-GW=10.8.0.1
-DEV=$(ip route get "$GW" | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
-ping -c 2 "$GW"
-for ip in $(getent ahostsv4 "$HOST" | awk '{print $1}' | sort -u); do
-  sudo ip route add "${ip}/32" via "$GW" dev "$DEV"
-  ip route get "$ip"
-done
-curl -v --connect-timeout 15 "https://${HOST}/v2/"   # TLS 成功即可（401 正常）
+curl -sS -o /dev/null -w "%{http_code} tls=%{time_appconnect}\n" \
+  --connect-timeout 15 \
+  https://crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/v2/
+# 期望 401 且 tls 远小于 1s
 ```
 
-若仍 `No route to host`（源地址 `10.82.0.2`）：先查 SG 上 `DEV` 是否正确，再查 **10.8.0.1 是否已对 10.82 做 NAT**。
+> 旧 SG VPN 路由（`ACR_MIRROR_VPN_*` / `ci-acr-vpn-route.sh`）已不再用于 `claw-code-image` mirror；deploy 仍可走 `contabo-sg`（§5）。
 
 ## 9. 参考
 
 - 变量模板：`deploy/stack/env.ci.github.example`
 - 生成脚本：`deploy/stack/lib/render-env-from-ci.sh`
-- ACR VPN 路由：`deploy/stack/lib/ci-acr-vpn-route.sh`
 - Workflow：`.github/workflows/claw-ci-deploy.yml`、`.github/workflows/claw-code-image.yaml`
 - release 编译 cache 验收：`deploy/stack/lib/ci-verify-linux-compile-cache.sh`
 - Sunmi 对照：`deploy/stack/docs/gitlab-ci-variables.md`
