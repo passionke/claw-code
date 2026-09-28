@@ -119,8 +119,8 @@ pub use mcp_call_context::{
     inject_mcp_call_meta, resolve_gateway_mcp_call_context, resolve_gateway_trace_id,
     GatewayMcpCallContext, CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID,
 };
-pub use runtime::EXTRA_SESSION_TRACE_ID;
 pub use runtime::McpCallContext;
+pub use runtime::EXTRA_SESSION_TRACE_ID;
 pub use session_report::{
     final_assistant_report_text_from_jsonl,
     final_assistant_report_text_from_jsonl_for_user_turn_index,

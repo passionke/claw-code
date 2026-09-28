@@ -95,10 +95,7 @@ pub fn trace_id_from_extra_session(extra_session: Option<&Value>) -> Option<Stri
 /// Priority: `extra_session.trace_id` → `generated_fallback` → `CLAW_TRACE_ID` env.
 /// Author: kejiqing
 #[must_use]
-pub fn resolve_gateway_trace_id(
-    extra_session: Option<&Value>,
-    generated_fallback: &str,
-) -> String {
+pub fn resolve_gateway_trace_id(extra_session: Option<&Value>, generated_fallback: &str) -> String {
     if let Some(tid) = trace_id_from_extra_session(extra_session) {
         return tid;
     }
@@ -199,7 +196,10 @@ mod tests {
         let es = &meta["extra_session"];
         assert_eq!(es[CLAW_EXTRA_SESSION_SESSION_ID], "sess");
         assert_eq!(es[CLAW_EXTRA_SESSION_TURN_ID], "T_1");
-        assert_eq!(es[EXTRA_SESSION_TRACE_ID], "aabbccddeeff00112233445566778899");
+        assert_eq!(
+            es[EXTRA_SESSION_TRACE_ID],
+            "aabbccddeeff00112233445566778899"
+        );
         assert_eq!(es["store_id"], "S1");
         assert_eq!(ctx.trace_id, "aabbccddeeff00112233445566778899");
         assert!(meta.get("claw").is_none());

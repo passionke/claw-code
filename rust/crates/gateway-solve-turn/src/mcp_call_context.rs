@@ -232,8 +232,7 @@ mod tests {
             responses_stream: false,
         };
         let bytes = serde_json::to_vec(&task).expect("serialize task");
-        let back: GatewaySolveTaskFile =
-            serde_json::from_slice(&bytes).expect("deserialize task");
+        let back: GatewaySolveTaskFile = serde_json::from_slice(&bytes).expect("deserialize task");
         assert_eq!(
             back.extra_session.as_ref().unwrap()[EXTRA_SESSION_TRACE_ID],
             expected
@@ -286,8 +285,7 @@ mod tests {
         assert!(!ctx.trace_id.is_empty());
         assert_ne!(ctx.trace_id, session);
         assert_eq!(
-            build_mcp_call_meta(&ctx)["extra_session"][EXTRA_SESSION_TRACE_ID]
-                .as_str(),
+            build_mcp_call_meta(&ctx)["extra_session"][EXTRA_SESSION_TRACE_ID].as_str(),
             Some(ctx.trace_id.as_str())
         );
     }

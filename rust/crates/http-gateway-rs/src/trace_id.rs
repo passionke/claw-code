@@ -53,10 +53,7 @@ pub fn ensure_extra_session_trace_id(extra_session: &mut Option<Value>, trace_id
 
 /// Resolve from headers + body, write back into `extra_session`, return effective id. Author: kejiqing
 #[must_use]
-pub fn apply_inbound_trace_id(
-    header: Option<&str>,
-    extra_session: &mut Option<Value>,
-) -> String {
+pub fn apply_inbound_trace_id(header: Option<&str>, extra_session: &mut Option<Value>) -> String {
     let tid = resolve_request_trace_id(header, extra_session.as_ref());
     ensure_extra_session_trace_id(extra_session, &tid);
     tid
@@ -76,7 +73,9 @@ pub fn trace_id_from_headers(headers: &axum::http::HeaderMap) -> Option<&str> {
 mod tests {
     use super::*;
     use axum::http::{HeaderMap, HeaderValue};
-    use runtime::{build_mcp_call_meta, inject_mcp_call_meta, McpCallContext, EXTRA_SESSION_TRACE_ID};
+    use runtime::{
+        build_mcp_call_meta, inject_mcp_call_meta, McpCallContext, EXTRA_SESSION_TRACE_ID,
+    };
 
     #[test]
     fn header_overrides_body() {
@@ -145,7 +144,10 @@ mod tests {
 
         let meta = build_mcp_call_meta(&ctx);
         assert_eq!(meta["extra_session"][EXTRA_SESSION_TRACE_ID], tid);
-        assert_eq!(inject_mcp_call_meta(&ctx)["extra_session"][EXTRA_SESSION_TRACE_ID], tid);
+        assert_eq!(
+            inject_mcp_call_meta(&ctx)["extra_session"][EXTRA_SESSION_TRACE_ID],
+            tid
+        );
     }
 
     /// KEY 只传 body.trace_id 时贯通到 meta. Author: kejiqing
