@@ -30,10 +30,12 @@ use crate::gateway_e2b_worker_settings::{
     load_e2b_worker_template_id,
 };
 use crate::project_config_draft;
+use crate::project_scope::{parse_scope_json, scope_worker_cap_from_env};
 use crate::session_db::{
     e2b_worker_slot_i32, e2b_worker_slot_u32, GatewaySessionDb, ProjectFcWorkerRow,
     WorkerRotationEvent,
 };
+use serde_json::json;
 
 use super::config::relaxed_worker_allowed_from_env;
 use super::e2b_nas_layout::allocate_worker_id;
@@ -46,11 +48,31 @@ use super::NasLayoutBackend;
 const PROJECT_WORKER_CONTRACT_VERSION: &str = "nas-session-root-v3";
 /// Parallel sandbox switches during gateway startup. Author: kejiqing
 const STARTUP_WORKER_SWITCH_CONCURRENCY: usize = 8;
+/// Idle-pause ticker interval for scope workers. Author: kejiqing
+const SCOPE_IDLE_PAUSE_TICK_SECS: u64 = 60;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct WorkerSlotKey {
     proj_id: i64,
+    /// Empty = singleton project pool slot. Author: kejiqing
+    scope_key: String,
     slot_index: u32,
+}
+
+fn singleton_slot_key(proj_id: i64, slot_index: u32) -> WorkerSlotKey {
+    WorkerSlotKey {
+        proj_id,
+        scope_key: String::new(),
+        slot_index,
+    }
+}
+
+fn scope_slot_key(proj_id: i64, scope_key: &str, slot_index: u32) -> WorkerSlotKey {
+    WorkerSlotKey {
+        proj_id,
+        scope_key: scope_key.to_string(),
+        slot_index,
+    }
 }
 
 /// Split `{template}` or `{template}@{buildId}` head. Author: kejiqing
@@ -402,7 +424,7 @@ impl E2bProjWorkerRegistry {
         let mut keep_by_proj: HashMap<i64, Vec<String>> = HashMap::new();
         if let Ok(proj_ids) = db.list_project_config_proj_ids().await {
             for proj_id in proj_ids {
-                if let Ok(rows) = db.list_project_e2b_workers(proj_id).await {
+                if let Ok(rows) = db.list_project_e2b_singleton_workers(proj_id).await {
                     let ids: Vec<String> = rows.into_iter().map(|r| r.sandbox_id).collect();
                     if !ids.is_empty() {
                         keep_by_proj.insert(proj_id, ids);
@@ -505,9 +527,9 @@ impl E2bProjWorkerRegistry {
     async fn retire_overflow_slots(&self, proj_id: i64, pool_size: u32) -> Result<(), String> {
         let db = self.session_db().await?;
         let existing = db
-            .list_project_e2b_workers(proj_id)
+            .list_project_e2b_singleton_workers(proj_id)
             .await
-            .map_err(|e| format!("list project_e2b_workers: {e}"))?;
+            .map_err(|e| format!("list project_e2b_singleton_workers: {e}"))?;
         for row in existing {
             if e2b_worker_slot_u32(row.slot_index) >= pool_size {
                 self.try_retire_slot(proj_id, e2b_worker_slot_u32(row.slot_index))
@@ -526,11 +548,8 @@ impl E2bProjWorkerRegistry {
     }
 
     async fn try_retire_slot_locked(&self, proj_id: i64, slot_index: u32) -> Result<(), String> {
-        let key = WorkerSlotKey {
-            proj_id,
-            slot_index,
-        };
-        let active = self.active_leases(key).await;
+        let key = singleton_slot_key(proj_id, slot_index);
+        let active = self.active_leases(key.clone()).await;
         let db = self.session_db().await?;
         let pg_busy = db
             .project_e2b_worker_is_busy(proj_id, e2b_worker_slot_i32(slot_index))
@@ -600,13 +619,11 @@ impl E2bProjWorkerRegistry {
             .await
             .map_err(|e| format!("get project_e2b_worker: {e}"))?;
 
-        let key = WorkerSlotKey {
-            proj_id,
-            slot_index,
-        };
+        let key = singleton_slot_key(proj_id, slot_index);
 
         if let Some(ref existing) = row {
-            let sandbox_alive = self.client.sandbox_running(&existing.sandbox_id).await;
+            let sandbox_alive = self.client.sandbox_running(&existing.sandbox_id).await
+                || self.client.sandbox_paused(&existing.sandbox_id).await;
             let must_recreate = needs_recreate(
                 &existing.template_id,
                 &desired_contract,
@@ -614,6 +631,33 @@ impl E2bProjWorkerRegistry {
                 sandbox_alive,
             );
             if !must_recreate {
+                if existing.lifecycle_state == "sleeping"
+                    || self.client.sandbox_paused(&existing.sandbox_id).await
+                {
+                    let handle = self
+                        .client
+                        .resume_sandbox(&existing.sandbox_id, self.worker_ttl_secs)
+                        .await
+                        .map_err(|e| format!("resume paused project worker: {e}"))?;
+                    let handle_json = E2bSandboxClient::handle_to_json(&handle);
+                    db.update_project_e2b_worker_lifecycle(
+                        proj_id,
+                        "",
+                        e2b_worker_slot_i32(slot_index),
+                        "running",
+                        Some(&handle_json),
+                    )
+                    .await
+                    .map_err(|e| format!("update lifecycle after resume: {e}"))?;
+                    self.cache_worker(
+                        key,
+                        handle,
+                        existing.worker_id.clone(),
+                        existing.template_id.clone(),
+                    )
+                    .await;
+                    return Ok(());
+                }
                 let handle = E2bSandboxClient::handle_from_json(&existing.handle_json)?;
                 if existing.template_id != desired_contract
                     && same_applied_build(&existing.template_id, &desired_contract)
@@ -659,7 +703,7 @@ impl E2bProjWorkerRegistry {
                 .project_e2b_worker_is_busy(proj_id, e2b_worker_slot_i32(slot_index))
                 .await
                 .map_err(|e| format!("project_e2b_worker_is_busy: {e}"))?;
-            if self.active_leases(key).await > 0 || pg_busy {
+            if self.active_leases(key.clone()).await > 0 || pg_busy {
                 self.pending_retire.lock().await.insert(key);
                 return Ok(());
             }
@@ -684,14 +728,14 @@ impl E2bProjWorkerRegistry {
             self.workers.lock().await.remove(&key);
         }
 
-        self.create_and_persist_slot(proj_id, slot_index, &spec)
+        self.create_and_persist_slot(proj_id, "", slot_index, &spec)
             .await?;
         if let Ok(Some(row)) = db
             .get_project_e2b_worker(proj_id, e2b_worker_slot_i32(slot_index))
             .await
         {
             let keep: Vec<String> = db
-                .list_project_e2b_workers(proj_id)
+                .list_project_e2b_singleton_workers(proj_id)
                 .await
                 .unwrap_or_default()
                 .into_iter()
@@ -710,6 +754,7 @@ impl E2bProjWorkerRegistry {
     async fn create_and_persist_slot(
         &self,
         proj_id: i64,
+        scope_key: &str,
         slot_index: u32,
         spec: &WorkerSpec,
     ) -> Result<(), String> {
@@ -761,6 +806,7 @@ impl E2bProjWorkerRegistry {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let row = ProjectFcWorkerRow {
             proj_id,
+            scope_key: scope_key.to_string(),
             slot_index: e2b_worker_slot_i32(slot_index),
             sandbox_id: handle.sandbox_id.clone(),
             worker_id: worker_id.clone(),
@@ -769,6 +815,9 @@ impl E2bProjWorkerRegistry {
             updated_at_ms: now_ms,
             in_use_count: 0,
             in_use_until_ms: 0,
+            lifecycle_state: "running".to_string(),
+            last_idle_at_ms: 0,
+            mcp_bind_json: json!({}),
         };
         db.upsert_project_e2b_worker(&row)
             .await
@@ -781,21 +830,23 @@ impl E2bProjWorkerRegistry {
                 sandbox_id: Some(row.sandbox_id.clone()),
                 worker_id: Some(row.worker_id.clone()),
                 template_id: Some(contract_key.clone()),
-                reason: None,
+                reason: if scope_key.is_empty() {
+                    None
+                } else {
+                    Some(format!("scope_key={scope_key}"))
+                },
                 at_ms: now_ms,
             },
         )
         .await;
 
-        let key = WorkerSlotKey {
-            proj_id,
-            slot_index,
-        };
+        let key = scope_slot_key(proj_id, scope_key, slot_index);
         self.cache_worker(key, handle.clone(), worker_id, contract_key.clone())
             .await;
         info!(
             target: "claw_e2b_proj_worker",
             proj_id,
+            scope_key = %scope_key,
             slot_index,
             sandbox_id = %handle.sandbox_id,
             contract = %contract_key,
@@ -826,10 +877,7 @@ impl E2bProjWorkerRegistry {
     /// Ensure slot-0 worker (relaxed / legacy callers).
     pub async fn ensure_worker(&self, proj_id: i64) -> Result<(E2bSandboxHandle, String), String> {
         self.reconcile_proj_slot(proj_id, 0, false).await?;
-        let key = WorkerSlotKey {
-            proj_id,
-            slot_index: 0,
-        };
+        let key = singleton_slot_key(proj_id, 0);
         let guard = self.workers.lock().await;
         let rt = guard
             .get(&key)
@@ -847,6 +895,17 @@ impl E2bProjWorkerRegistry {
         proj_id: i64,
         _session_id: &str,
     ) -> Result<(E2bSandboxHandle, String, u32), String> {
+        let db = self.session_db().await?;
+        let role = db
+            .get_project_role(proj_id)
+            .await
+            .map_err(|e| format!("get_project_role: {e}"))?;
+        if role == crate::master_observer::PROJECT_ROLE_SCOPE {
+            return Err(
+                "proj role=scope must use acquire_for_scope_solve (not singleton pool acquire)"
+                    .into(),
+            );
+        }
         let pool_size = self.desired_pool_size(proj_id).await?;
         // poolSize=0: on-demand create slot 0 (no warm pool). Author: kejiqing
         if pool_size == 0 {
@@ -862,17 +921,142 @@ impl E2bProjWorkerRegistry {
         Ok((handle, worker_id, slot_index))
     }
 
+    /// Scope-role solve: one worker per `(proj_id, scope_key)` at slot 0. Author: kejiqing
+    pub async fn acquire_for_scope_solve(
+        &self,
+        proj_id: i64,
+        scope_key: &str,
+    ) -> Result<(E2bSandboxHandle, String, u32), String> {
+        if scope_key.trim().is_empty() {
+            return Err("scope_key must be non-empty for scope solve".into());
+        }
+        let db = self.session_db().await?;
+        let key = scope_slot_key(proj_id, scope_key, 0);
+
+        // Warm cache hit: verify running / resume if paused.
+        {
+            let guard = self.workers.lock().await;
+            if let Some(rt) = guard.get(&key) {
+                let sandbox_id = rt.handle.sandbox_id.clone();
+                drop(guard);
+                self.ensure_scope_worker_running(proj_id, scope_key, 0, &sandbox_id)
+                    .await?;
+                let guard = self.workers.lock().await;
+                let rt = guard.get(&key).ok_or_else(|| {
+                    format!(
+                        "scope worker missing after warm verify proj_{proj_id} scope={scope_key}"
+                    )
+                })?;
+                let handle = rt.handle.clone();
+                let worker_id = rt.worker_id.clone();
+                drop(guard);
+                self.bump_scope_lease(proj_id, scope_key, 0).await;
+                return Ok((handle, worker_id, 0));
+            }
+        }
+
+        let row = db
+            .get_project_e2b_worker_scoped(proj_id, scope_key, 0)
+            .await
+            .map_err(|e| format!("get project_e2b_worker scoped: {e}"))?;
+
+        if let Some(existing) = row {
+            let need_resume = existing.lifecycle_state == "sleeping"
+                || self.client.sandbox_paused(&existing.sandbox_id).await;
+            if need_resume {
+                let handle = self
+                    .client
+                    .resume_sandbox(&existing.sandbox_id, self.worker_ttl_secs)
+                    .await
+                    .map_err(|e| format!("resume scope worker: {e}"))?;
+                let handle_json = E2bSandboxClient::handle_to_json(&handle);
+                db.update_project_e2b_worker_lifecycle(
+                    proj_id,
+                    scope_key,
+                    0,
+                    "running",
+                    Some(&handle_json),
+                )
+                .await
+                .map_err(|e| format!("update scope lifecycle after resume: {e}"))?;
+                self.cache_worker(
+                    key.clone(),
+                    handle.clone(),
+                    existing.worker_id.clone(),
+                    existing.template_id.clone(),
+                )
+                .await;
+                self.bump_scope_lease(proj_id, scope_key, 0).await;
+                return Ok((handle, existing.worker_id, 0));
+            }
+            // Running in PG but not in cache: verify + cache.
+            self.ensure_scope_worker_running(proj_id, scope_key, 0, &existing.sandbox_id)
+                .await?;
+            let handle = E2bSandboxClient::handle_from_json(&existing.handle_json)?;
+            self.cache_worker(
+                key.clone(),
+                handle.clone(),
+                existing.worker_id.clone(),
+                existing.template_id.clone(),
+            )
+            .await;
+            self.bump_scope_lease(proj_id, scope_key, 0).await;
+            return Ok((handle, existing.worker_id, 0));
+        }
+
+        // Missing: enforce cap then create.
+        let count = db
+            .count_project_e2b_scope_workers(proj_id)
+            .await
+            .map_err(|e| format!("count scope workers: {e}"))?;
+        let cap = i64::from(scope_worker_cap_from_env());
+        if count >= cap {
+            return Err(format!(
+                "CLAW_E2B_SCOPE_WORKER_CAP={cap} reached for proj_{proj_id} (have {count})"
+            ));
+        }
+        let spec = self.desired_worker_spec(proj_id).await?;
+        self.create_and_persist_slot(proj_id, scope_key, 0, &spec)
+            .await?;
+        let guard = self.workers.lock().await;
+        let rt = guard.get(&key).ok_or_else(|| {
+            format!("scope worker missing after create proj_{proj_id} scope={scope_key}")
+        })?;
+        let handle = rt.handle.clone();
+        let worker_id = rt.worker_id.clone();
+        drop(guard);
+        self.bump_scope_lease(proj_id, scope_key, 0).await;
+        Ok((handle, worker_id, 0))
+    }
+
+    async fn bump_scope_lease(&self, proj_id: i64, scope_key: &str, slot_index: u32) {
+        let key = scope_slot_key(proj_id, scope_key, slot_index);
+        let mut leases = self.leases.lock().await;
+        *leases.entry(key).or_insert(0) += 1;
+        drop(leases);
+        if let Ok(db) = self.session_db().await {
+            let _ = db
+                .bump_project_e2b_worker_in_use_scoped(
+                    proj_id,
+                    scope_key,
+                    e2b_worker_slot_i32(slot_index),
+                    30 * 60 * 1000,
+                )
+                .await;
+        }
+    }
+
     async fn pick_least_lease_slot(&self, proj_id: i64, pool_size: u32) -> Result<u32, String> {
         let workers = self.workers.lock().await;
         let leases = self.leases.lock().await;
         let present: Vec<u32> = workers
             .keys()
-            .filter(|k| k.proj_id == proj_id)
+            .filter(|k| k.proj_id == proj_id && k.scope_key.is_empty())
             .map(|k| k.slot_index)
             .collect();
         let lease_by_slot: HashMap<u32, u32> = leases
             .iter()
-            .filter(|(k, _)| k.proj_id == proj_id)
+            .filter(|(k, _)| k.proj_id == proj_id && k.scope_key.is_empty())
             .map(|(k, &n)| (k.slot_index, n))
             .collect();
         let tie = self.acquire_tie_break.fetch_add(1, Ordering::Relaxed);
@@ -896,6 +1080,30 @@ impl E2bProjWorkerRegistry {
         slot_index: u32,
         sandbox_id: &str,
     ) -> Result<(), String> {
+        if self.client.sandbox_paused(sandbox_id).await {
+            let handle = self
+                .client
+                .resume_sandbox(sandbox_id, self.worker_ttl_secs)
+                .await
+                .map_err(|e| format!("resume paused warm worker: {e}"))?;
+            if let Ok(db) = self.session_db().await {
+                let handle_json = E2bSandboxClient::handle_to_json(&handle);
+                let _ = db
+                    .update_project_e2b_worker_lifecycle(
+                        proj_id,
+                        "",
+                        e2b_worker_slot_i32(slot_index),
+                        "running",
+                        Some(&handle_json),
+                    )
+                    .await;
+            }
+            let key = singleton_slot_key(proj_id, slot_index);
+            if let Some(rt) = self.workers.lock().await.get_mut(&key) {
+                rt.handle = handle;
+            }
+            return Ok(());
+        }
         let probe_key = worker_slot_probe_key(proj_id, slot_index);
         let registry = lifecycle_probe_registry();
         let now = chrono::Utc::now().timestamp_millis();
@@ -938,15 +1146,51 @@ impl E2bProjWorkerRegistry {
         self.reconcile_proj_slot(proj_id, slot_index, false).await
     }
 
+    async fn ensure_scope_worker_running(
+        &self,
+        proj_id: i64,
+        scope_key: &str,
+        slot_index: u32,
+        sandbox_id: &str,
+    ) -> Result<(), String> {
+        if self.client.sandbox_paused(sandbox_id).await {
+            let handle = self
+                .client
+                .resume_sandbox(sandbox_id, self.worker_ttl_secs)
+                .await
+                .map_err(|e| format!("resume paused scope worker: {e}"))?;
+            if let Ok(db) = self.session_db().await {
+                let handle_json = E2bSandboxClient::handle_to_json(&handle);
+                let _ = db
+                    .update_project_e2b_worker_lifecycle(
+                        proj_id,
+                        scope_key,
+                        e2b_worker_slot_i32(slot_index),
+                        "running",
+                        Some(&handle_json),
+                    )
+                    .await;
+            }
+            let key = scope_slot_key(proj_id, scope_key, slot_index);
+            if let Some(rt) = self.workers.lock().await.get_mut(&key) {
+                rt.handle = handle;
+            }
+            return Ok(());
+        }
+        if self.client.sandbox_running(sandbox_id).await {
+            return Ok(());
+        }
+        Err(format!(
+            "scope worker sandbox {sandbox_id} not running for proj_{proj_id} scope={scope_key}"
+        ))
+    }
+
     async fn acquire_slot(
         &self,
         proj_id: i64,
         slot_index: u32,
     ) -> Result<(E2bSandboxHandle, String), String> {
-        let key = WorkerSlotKey {
-            proj_id,
-            slot_index,
-        };
+        let key = singleton_slot_key(proj_id, slot_index);
         let warm_hit = {
             let guard = self.workers.lock().await;
             if let Some(rt) = guard.get(&key) {
@@ -1004,11 +1248,8 @@ impl E2bProjWorkerRegistry {
         Ok((handle, worker_id))
     }
 
-    pub async fn release_slot(&self, proj_id: i64, slot_index: u32) {
-        let key = WorkerSlotKey {
-            proj_id,
-            slot_index,
-        };
+    pub async fn release_slot(&self, proj_id: i64, slot_index: u32, scope_key: &str) {
+        let key = scope_slot_key(proj_id, scope_key, slot_index);
         let mut leases = self.leases.lock().await;
         if let Some(n) = leases.get_mut(&key) {
             *n = n.saturating_sub(1);
@@ -1019,11 +1260,15 @@ impl E2bProjWorkerRegistry {
         drop(leases);
         if let Ok(db) = self.session_db().await {
             let _ = db
-                .release_project_e2b_worker_in_use(proj_id, e2b_worker_slot_i32(slot_index))
+                .release_project_e2b_worker_in_use_scoped(
+                    proj_id,
+                    scope_key,
+                    e2b_worker_slot_i32(slot_index),
+                )
                 .await;
         }
-        let leases_left = self.active_leases(key).await;
-        if leases_left == 0 {
+        let leases_left = self.active_leases(key.clone()).await;
+        if leases_left == 0 && scope_key.is_empty() {
             let pending = self.pending_retire.lock().await.contains(&key);
             let desired_zero = self
                 .desired_pool_size(proj_id)
@@ -1038,7 +1283,7 @@ impl E2bProjWorkerRegistry {
 
     /// Release slot 0 (relaxed interactive).
     pub async fn release(&self, proj_id: i64) {
-        self.release_slot(proj_id, 0).await;
+        self.release_slot(proj_id, 0, "").await;
     }
 
     async fn active_leases(&self, key: WorkerSlotKey) -> u32 {
@@ -1047,11 +1292,8 @@ impl E2bProjWorkerRegistry {
 
     #[must_use]
     pub async fn active_leases_for_slot(&self, proj_id: i64, slot_index: u32) -> u32 {
-        self.active_leases(WorkerSlotKey {
-            proj_id,
-            slot_index,
-        })
-        .await
+        self.active_leases(singleton_slot_key(proj_id, slot_index))
+            .await
     }
 
     #[must_use]
@@ -1059,10 +1301,7 @@ impl E2bProjWorkerRegistry {
         self.workers
             .lock()
             .await
-            .get(&WorkerSlotKey {
-                proj_id,
-                slot_index: 0,
-            })
+            .get(&singleton_slot_key(proj_id, 0))
             .map(|rt| rt.handle.clone())
     }
 
@@ -1080,7 +1319,22 @@ impl E2bProjWorkerRegistry {
             .collect()
     }
 
-    /// Best-effort TTL touch for persisted workers (`spawn_lease_ticker` is primary at 60s).
+    async fn singleton_persisted_sandbox_ids(&self) -> Vec<String> {
+        if let Some(db) = self.db.read().await.clone() {
+            if let Ok(ids) = db.list_project_e2b_singleton_sandbox_ids().await {
+                return ids;
+            }
+        }
+        self.workers
+            .lock()
+            .await
+            .iter()
+            .filter(|(k, _)| k.scope_key.is_empty())
+            .map(|(_, rt)| rt.handle.sandbox_id.clone())
+            .collect()
+    }
+
+    /// Best-effort TTL touch for singleton workers (`spawn_lease_ticker` is primary at 60s).
     /// Does not run full `reconcile_proj`. Author: kejiqing
     pub fn spawn_renewal_ticker(self: Arc<Self>) {
         tokio::spawn(async move {
@@ -1088,7 +1342,7 @@ impl E2bProjWorkerRegistry {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-                let sandbox_ids = self.all_persisted_sandbox_ids().await;
+                let sandbox_ids = self.singleton_persisted_sandbox_ids().await;
                 for sandbox_id in sandbox_ids {
                     if let Err(e) = self.client.touch_sandbox_lease(&sandbox_id).await {
                         warn!(
@@ -1101,6 +1355,101 @@ impl E2bProjWorkerRegistry {
                 }
             }
         });
+    }
+
+    /// Pause idle scope workers when past per-project `idleSleepSecs`. Author: kejiqing
+    pub fn spawn_scope_idle_pause_ticker(self: Arc<Self>) {
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(SCOPE_IDLE_PAUSE_TICK_SECS));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                if let Err(e) = self.pause_idle_scope_workers_once().await {
+                    warn!(
+                        target: "claw_e2b_proj_worker",
+                        error = %e,
+                        "scope idle pause ticker failed"
+                    );
+                }
+            }
+        });
+    }
+
+    async fn pause_idle_scope_workers_once(&self) -> Result<(), String> {
+        let db = self.session_db().await?;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        // Pass now so SQL returns candidates with last_idle_at_ms > 0; threshold checked below.
+        let candidates = db
+            .list_idle_scope_workers_for_pause(now_ms)
+            .await
+            .map_err(|e| format!("list_idle_scope_workers_for_pause: {e}"))?;
+        for row in candidates {
+            if row.in_use_count > 0 {
+                continue;
+            }
+            let key = scope_slot_key(
+                row.proj_id,
+                &row.scope_key,
+                e2b_worker_slot_u32(row.slot_index),
+            );
+            if self.active_leases(key.clone()).await > 0 {
+                continue;
+            }
+            let scope_json = db
+                .get_scope_json(row.proj_id)
+                .await
+                .map_err(|e| format!("get_scope_json: {e}"))?;
+            let Ok(cfg) = parse_scope_json(&scope_json) else {
+                continue;
+            };
+            if row.last_idle_at_ms <= 0 {
+                continue;
+            }
+            let idle_ms = now_ms.saturating_sub(row.last_idle_at_ms);
+            if idle_ms < cfg.idle_sleep_ms() {
+                continue;
+            }
+            if let Err(e) = self.client.pause_sandbox(&row.sandbox_id).await {
+                warn!(
+                    target: "claw_e2b_proj_worker",
+                    proj_id = row.proj_id,
+                    scope_key = %row.scope_key,
+                    sandbox_id = %row.sandbox_id,
+                    error = %e,
+                    "pause idle scope worker failed"
+                );
+                continue;
+            }
+            if let Err(e) = db
+                .update_project_e2b_worker_lifecycle(
+                    row.proj_id,
+                    &row.scope_key,
+                    row.slot_index,
+                    "sleeping",
+                    None,
+                )
+                .await
+            {
+                warn!(
+                    target: "claw_e2b_proj_worker",
+                    proj_id = row.proj_id,
+                    scope_key = %row.scope_key,
+                    error = %e,
+                    "set lifecycle sleeping after pause failed"
+                );
+            }
+            self.workers.lock().await.remove(&key);
+            info!(
+                target: "claw_e2b_proj_worker",
+                proj_id = row.proj_id,
+                scope_key = %row.scope_key,
+                sandbox_id = %row.sandbox_id,
+                idle_ms,
+                "paused idle scope worker"
+            );
+        }
+        Ok(())
     }
 
     /// Admin force reset: always kill + create (manual recreate window). Author: kejiqing
@@ -1135,16 +1484,13 @@ impl E2bProjWorkerRegistry {
             .get_project_e2b_worker(proj_id, e2b_worker_slot_i32(slot_index))
             .await
             .map_err(|e| format!("get project_e2b_worker: {e}"))?;
-        let key = WorkerSlotKey {
-            proj_id,
-            slot_index,
-        };
+        let key = singleton_slot_key(proj_id, slot_index);
         if let Some(ref existing) = row {
             let pg_busy = db
                 .project_e2b_worker_is_busy(proj_id, e2b_worker_slot_i32(slot_index))
                 .await
                 .map_err(|e| format!("project_e2b_worker_is_busy: {e}"))?;
-            if self.active_leases(key).await > 0 || pg_busy {
+            if self.active_leases(key.clone()).await > 0 || pg_busy {
                 return Err(format!(
                     "proj_{proj_id} slot {slot_index} has active leases; wait for turns to finish"
                 ));
@@ -1176,7 +1522,7 @@ impl E2bProjWorkerRegistry {
                 .map_err(|e| format!("delete project_e2b_worker: {e}"))?;
             self.workers.lock().await.remove(&key);
         }
-        self.create_and_persist_slot(proj_id, slot_index, &spec)
+        self.create_and_persist_slot(proj_id, "", slot_index, &spec)
             .await?;
         Ok(())
     }

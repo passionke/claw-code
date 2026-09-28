@@ -76,6 +76,11 @@ impl SandboxSnapshot {
     }
 
     #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.state == "paused"
+    }
+
+    #[must_use]
     pub fn remaining_ttl_secs(&self, now_ms: i64) -> Option<u64> {
         let end = self.end_at_ms?;
         if end <= now_ms {
@@ -1285,6 +1290,74 @@ impl E2bSandboxClient {
             Ok(snap) => snap.is_running(),
             Err(_) => false,
         }
+    }
+
+    /// True when platform reports `state:"paused"` (stop-keep). Author: kejiqing
+    pub async fn sandbox_paused(&self, sandbox_id: &str) -> bool {
+        match self.fetch_sandbox_snapshot(sandbox_id).await {
+            Ok(snap) => snap.is_paused(),
+            Err(_) => false,
+        }
+    }
+
+    /// Pause sandbox (`POST /sandboxes/{id}/pause`) — docker/podman stop, keep container.
+    pub async fn pause_sandbox(&self, sandbox_id: &str) -> Result<(), String> {
+        let url = format!("{}/sandboxes/{}/pause", self.config().api_url, sandbox_id);
+        let resp = self
+            .http
+            .post(&url)
+            .headers(self.auth_headers()?)
+            .json(&json!({ "memory": false }))
+            .send()
+            .await
+            .map_err(|e| format!("e2b pause sandbox request: {e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if status.is_success() || status.as_u16() == 204 {
+            self.unregister_sandbox_lease(sandbox_id);
+            return Ok(());
+        }
+        Err(format!("e2b pause sandbox HTTP {status}: {text}"))
+    }
+
+    /// Resume paused sandbox (`POST /sandboxes/{id}/resume`); returns fresh handle.
+    pub async fn resume_sandbox(
+        &self,
+        sandbox_id: &str,
+        timeout_secs: u64,
+    ) -> Result<E2bSandboxHandle, String> {
+        let url = format!("{}/sandboxes/{}/resume", self.config().api_url, sandbox_id);
+        let resp = self
+            .http
+            .post(&url)
+            .headers(self.auth_headers()?)
+            .json(&json!({ "timeout": timeout_secs }))
+            .send()
+            .await
+            .map_err(|e| format!("e2b resume sandbox request: {e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(format!("e2b resume sandbox HTTP {status}: {text}"));
+        }
+        let parsed: CreateSandboxResponse = serde_json::from_str(&text)
+            .map_err(|e| format!("e2b resume sandbox decode: {e}; body={text}"))?;
+        let domain = parsed
+            .domain
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| self.config().domain.clone());
+        let handle = E2bSandboxHandle {
+            sandbox_id: parsed.sandbox_id,
+            sandbox_domain: domain,
+            envd_access_token: parsed.envd_access_token,
+            traffic_access_token: parsed.traffic_access_token,
+        };
+        self.register_tracked_sandbox(&handle.sandbox_id);
+        let _ = self
+            .renew_sandbox_ttl_secs(&handle.sandbox_id, timeout_secs)
+            .await;
+        Ok(handle)
     }
 
     /// Renew sandbox TTL; verifies platform `endAt` after `POST /timeout`.

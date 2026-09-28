@@ -120,6 +120,10 @@ pub(crate) struct ProjectConfigResponse {
     #[serde(rename = "kbSourcesJson")]
     #[schema(value_type = Object)]
     kb_sources_json: Value,
+    /// Scope role config (`scopeKeys` + `idleSleepSecs`). Author: kejiqing
+    #[serde(rename = "scopeJson")]
+    #[schema(value_type = Object)]
+    scope_json: Value,
     #[serde(rename = "projectCode")]
     project_code: String,
     #[serde(rename = "projectDescription")]
@@ -622,6 +626,11 @@ pub(crate) async fn project_config_row_to_response(
     state: &AppState,
     row: session_db::ProjectConfigRow,
 ) -> ProjectConfigResponse {
+    let scope_json = state
+        .session_db
+        .get_scope_json(row.proj_id)
+        .await
+        .unwrap_or_else(|_| json!({}));
     ProjectConfigResponse {
         proj_id: row.proj_id,
         project_role: state
@@ -654,6 +663,7 @@ pub(crate) async fn project_config_row_to_response(
         worker_profile_json: row.worker_profile_json,
         worker_env_json: row.worker_env_json,
         kb_sources_json: row.kb_sources_json,
+        scope_json,
         project_code: row.project_code,
         project_description: row.project_description,
         max_iterations: row.max_iterations,
@@ -1115,6 +1125,11 @@ pub(crate) async fn put_project_config(
         Some(incoming) => incoming.clone(),
         None => existing.extra_session_fields_json.clone(),
     };
+    crate::project_scope::validate_mcp_template_placeholders(
+        &req.mcp_servers_json,
+        &extra_session_fields_json,
+    )
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     let prompt_limits_json = match &req.prompt_limits_json {
         Some(incoming) => incoming.clone(),
         None => existing.prompt_limits_json.clone(),
@@ -1509,6 +1524,7 @@ mod max_iterations_project_response_tests {
             worker_profile_json: json!({"mode": "strict"}),
             worker_env_json: json!({}),
             kb_sources_json: json!([]),
+            scope_json: json!({}),
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: Some(5),

@@ -22,6 +22,8 @@ pub const PROJECT_ROLE_ROUTER: &str = "router";
 pub const PROJECT_ROLE_KNOWLEDGE_BASE: &str = "knowledge_base";
 /// Session may open gateway inbox + mid-turn steer drain. Author: kejiqing
 pub const PROJECT_ROLE_STEERABLE: &str = "steerable";
+/// Spring-style custom scope: worker identity from extraSession scopeKeys. Author: kejiqing
+pub const PROJECT_ROLE_SCOPE: &str = "scope";
 
 pub const MASTER_MCP_SERVER_NAME: &str = "claw-master-observer";
 pub const MASTER_MCP_HTTP_PATH_PREFIX: &str = "/v1/master";
@@ -402,9 +404,10 @@ pub fn validate_project_role(role: &str) -> Result<&str, String> {
         | PROJECT_ROLE_OBSERVATION
         | PROJECT_ROLE_ROUTER
         | PROJECT_ROLE_KNOWLEDGE_BASE
-        | PROJECT_ROLE_STEERABLE => Ok(role.trim()),
+        | PROJECT_ROLE_STEERABLE
+        | PROJECT_ROLE_SCOPE => Ok(role.trim()),
         other => Err(format!(
-            "invalid project_role={other:?}; expected normal|master|observation|router|knowledge_base|steerable"
+            "invalid project_role={other:?}; expected normal|master|observation|router|knowledge_base|steerable|scope"
         )),
     }
 }
@@ -1294,6 +1297,7 @@ mod tests {
         assert_eq!(validate_project_role("observation").unwrap(), "observation");
         assert_eq!(validate_project_role("router").unwrap(), "router");
         assert_eq!(validate_project_role("steerable").unwrap(), "steerable");
+        assert_eq!(validate_project_role("scope").unwrap(), "scope");
         assert!(validate_project_role("boss").is_err());
         assert!(validate_project_role("").is_err());
     }

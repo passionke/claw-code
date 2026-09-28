@@ -60,11 +60,19 @@ pub fn desired_strict_pool_size_from_profile(
         .unwrap_or(global_pool_size)
 }
 
-/// Relaxed → 1; strict → per-project override or PG `e2bWorker.poolSize`. Author: kejiqing
+/// Relaxed → 1; strict → per-project override or PG `e2bWorker.poolSize`.
+/// Scope role → 0 (no warm singleton pool; workers are on-demand per scope key). Author: kejiqing
 pub async fn load_desired_worker_pool_size(
     db: &GatewaySessionDb,
     proj_id: i64,
 ) -> Result<u32, String> {
+    let role = db
+        .get_project_role(proj_id)
+        .await
+        .map_err(|e| format!("load project_role for proj {proj_id}: {e}"))?;
+    if role == crate::master_observer::PROJECT_ROLE_SCOPE {
+        return Ok(0);
+    }
     let json = db
         .get_worker_profile_json(proj_id)
         .await

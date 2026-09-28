@@ -8,9 +8,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use claw_e2b_sandbox_client::E2bSandboxClient;
+use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 use tracing::warn;
 
+use crate::master_observer::PROJECT_ROLE_SCOPE;
+use crate::project_config_apply::{build_settings_json_from_row, enabled_mcp_servers};
+use crate::project_scope::{
+    build_scope_key, mcp_bind_is_initialized, mcp_bind_snapshot, mcp_bind_values_match,
+    parse_scope_json, render_mcp_template, scope_bind_values,
+};
 use crate::session_db::GatewaySessionDb;
 
 use super::e2b_proj_worker_registry::E2bProjWorkerRegistry;
@@ -30,6 +37,8 @@ struct E2bSlot {
     session_segment: String,
     proj_id: i64,
     worker_slot_index: u32,
+    /// Empty = singleton pool; non-empty = scope role key. Author: kejiqing
+    scope_key: String,
 }
 
 /// Per-turn leases on shared per-project worker sandboxes. Author: kejiqing
@@ -106,6 +115,96 @@ impl E2bOrchestratedPool {
     }
 }
 
+/// Bind MCP once per scope worker; same rendered settings → workers + sessions (claw reads session).
+/// Project `mcp_servers_json` stays templated (`${…}`). Author: kejiqing
+pub async fn ensure_scope_mcp_bind(
+    db: &GatewaySessionDb,
+    nas_layout: &NasLayoutBackend,
+    proj_id: i64,
+    scope_key: &str,
+    worker_id: &str,
+    session_segment: &str,
+    slot: i32,
+    extra_session: Option<&Value>,
+    mcp_servers_template: &Value,
+) -> Result<(), String> {
+    let scope_json = db
+        .get_scope_json(proj_id)
+        .await
+        .map_err(|e| format!("get_scope_json: {e}"))?;
+    let cfg = parse_scope_json(&scope_json)?;
+    let values = scope_bind_values(&cfg.scope_keys, extra_session)?;
+
+    let row = db
+        .get_project_e2b_worker_scoped(proj_id, scope_key, slot)
+        .await
+        .map_err(|e| format!("get worker for mcp bind: {e}"))?
+        .ok_or_else(|| format!("missing worker for mcp bind proj_{proj_id} scope={scope_key}"))?;
+
+    let config_row = db
+        .get_project_config(proj_id)
+        .await
+        .map_err(|e| format!("load project_config for scope settings: {e}"))?;
+
+    let mcp_servers = if mcp_bind_is_initialized(&row.mcp_bind_json) {
+        mcp_bind_values_match(&row.mcp_bind_json, &values)?;
+        row.mcp_bind_json
+            .get("mcpServers")
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+    } else {
+        let rendered = render_mcp_template(mcp_servers_template, &values);
+        let mcp_servers = Value::Object(enabled_mcp_servers(&rendered));
+        let snapshot = mcp_bind_snapshot(&values, &mcp_servers);
+        db.update_project_e2b_worker_mcp_bind(proj_id, scope_key, slot, &snapshot)
+            .await
+            .map_err(|e| format!("save mcp_bind_json: {e}"))?;
+        mcp_servers
+    };
+
+    write_scope_settings_mcp(
+        nas_layout,
+        proj_id,
+        worker_id,
+        session_segment,
+        config_row.as_ref(),
+        &mcp_servers,
+    )
+    .await
+}
+
+/// One render result → `workers/{id}/.claw/settings.json` and `sessions/{seg}/.claw/settings.json`.
+async fn write_scope_settings_mcp(
+    nas_layout: &NasLayoutBackend,
+    proj_id: i64,
+    worker_id: &str,
+    session_segment: &str,
+    config_row: Option<&crate::session_db::ProjectConfigRow>,
+    mcp_servers: &Value,
+) -> Result<(), String> {
+    let mut settings = config_row
+        .map(build_settings_json_from_row)
+        .unwrap_or_else(|| {
+            json!({
+                "mcpServers": serde_json::Map::new(),
+                "auto_hidden_system_prompt": 1
+            })
+        });
+    if let Some(obj) = settings.as_object_mut() {
+        obj.insert("mcpServers".to_string(), mcp_servers.clone());
+    }
+    let bytes = serde_json::to_vec_pretty(&settings)
+        .map_err(|e| format!("serialize scope settings.json: {e}"))?;
+
+    nas_layout.ensure_worker_root(proj_id, worker_id).await?;
+    nas_layout
+        .put_worker_file(proj_id, worker_id, ".claw/settings.json", &bytes)
+        .await?;
+    nas_layout
+        .put_session_claw_file(proj_id, session_segment, "settings.json", &bytes)
+        .await
+}
+
 #[async_trait]
 impl PoolOps for E2bOrchestratedPool {
     async fn acquire_slot(
@@ -121,11 +220,58 @@ impl PoolOps for E2bOrchestratedPool {
             .map_err(|reason| format!("session acquire blocked: {reason}"))?;
 
         let session_segment = crate::session_merge::sessions_directory_segment(&session_id);
-        let (handle, worker_id, worker_slot_index) =
-            self.workers.acquire_for_solve(proj_id, &session_id).await?;
-        self.nas_layout
-            .ensure_session_context(proj_id, &session_segment, &worker_id)
+        let role = db
+            .get_project_role(proj_id)
+            .await
+            .map_err(|e| format!("get_project_role: {e}"))?;
+
+        let (handle, _worker_id, worker_slot_index, scope_key) = if role == PROJECT_ROLE_SCOPE {
+            let scope_json = db
+                .get_scope_json(proj_id)
+                .await
+                .map_err(|e| format!("get_scope_json: {e}"))?;
+            let cfg = parse_scope_json(&scope_json)?;
+            let task = db
+                .get_solve_task_json(&turn_id)
+                .await
+                .map_err(|e| format!("load solve_task_json for scope: {e}"))?
+                .ok_or_else(|| format!("missing solve_task_json for turn {turn_id}"))?;
+            let extra_session = task.get("extraSession");
+            let scope_key = build_scope_key(&cfg.scope_keys, extra_session)?;
+            let (handle, worker_id, slot) = self
+                .workers
+                .acquire_for_scope_solve(proj_id, &scope_key)
+                .await?;
+            let mcp_template = db
+                .get_project_config(proj_id)
+                .await
+                .map_err(|e| format!("load project_config for mcp bind: {e}"))?
+                .map(|r| r.mcp_servers_json)
+                .unwrap_or_else(|| json!({}));
+            self.nas_layout
+                .ensure_session_context(proj_id, &session_segment, &worker_id)
+                .await?;
+            ensure_scope_mcp_bind(
+                db.as_ref(),
+                &self.nas_layout,
+                proj_id,
+                &scope_key,
+                &worker_id,
+                &session_segment,
+                crate::session_db::e2b_worker_slot_i32(slot),
+                extra_session,
+                &mcp_template,
+            )
             .await?;
+            (handle, worker_id, slot, scope_key)
+        } else {
+            let (handle, worker_id, slot) =
+                self.workers.acquire_for_solve(proj_id, &session_id).await?;
+            self.nas_layout
+                .ensure_session_context(proj_id, &session_segment, &worker_id)
+                .await?;
+            (handle, worker_id, slot, String::new())
+        };
 
         let slot_index = self.alloc_slot_index();
         let worker_name = format!("e2b:{}", handle.sandbox_id);
@@ -140,6 +286,7 @@ impl PoolOps for E2bOrchestratedPool {
                 session_segment: session_segment.clone(),
                 proj_id,
                 worker_slot_index,
+                scope_key,
             },
         );
         self.turn_slots.lock().await.insert(turn_id, slot_index);
@@ -293,7 +440,11 @@ impl PoolOps for E2bOrchestratedPool {
             .retain(|_, idx| *idx != slot.slot_index);
         if let Some(e2b_slot) = removed {
             self.workers
-                .release_slot(e2b_slot.proj_id, e2b_slot.worker_slot_index)
+                .release_slot(
+                    e2b_slot.proj_id,
+                    e2b_slot.worker_slot_index,
+                    &e2b_slot.scope_key,
+                )
                 .await;
         }
         Ok(())

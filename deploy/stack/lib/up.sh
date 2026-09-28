@@ -149,14 +149,6 @@ claw_ensure_default_project_ds "${CLAW_BOOTSTRAP_DS_ID:-1}" || {
   exit 1
 }
 
-# Pool-scoped claude-tap (single sidecar; NAS traces) + Admin register. kejiqing
-if claw_stack_manages_local_claude_tap; then
-  claw_bootstrap_pool_tap_runtime "${PODMAN_DIR}" "${REPO_ROOT}" || {
-    echo "error: pool tap bootstrap failed (LLM / clawTap register)" >&2
-    exit 1
-  }
-fi
-
 _gw_tag="${GATEWAY_IMAGE##*:}"
 if [[ -z "${_gw_tag}" || "${_gw_tag}" == "${GATEWAY_IMAGE}" ]]; then
   _gw_tag="unknown"

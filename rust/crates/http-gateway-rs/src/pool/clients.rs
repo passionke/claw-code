@@ -65,6 +65,7 @@ impl PoolClients {
         ));
         E2bSandboxClient::spawn_lease_ticker(Arc::clone(&e2b_client));
         E2bProjWorkerRegistry::spawn_renewal_ticker(Arc::clone(&e2b_workers));
+        E2bProjWorkerRegistry::spawn_scope_idle_pause_ticker(Arc::clone(&e2b_workers));
 
         let e2b_pool = Arc::new(E2bOrchestratedPool::new(
             Arc::clone(&e2b_client),

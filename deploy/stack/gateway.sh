@@ -43,7 +43,7 @@ Commands:
   e2b-pre-bootstrap  singletons only (--skip-templates); template publish is Admin-only
   pre-252-e2b-up     REMOVED — use up --release (e2b internalizes former host pool/tap)
   tap-down      Stop pool claude-tap only (legacy compose; production uses e2b observe)
-  build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
+  build-tap     REMOVED — use published CLAUDE_TAP_IMAGE (ACR/CI); up never builds tap
   bench         REMOVED — local pool bench deleted
   logs          Follow gateway logs
   ps            Show relevant containers
@@ -135,17 +135,9 @@ case "${cmd}" in
     ;;
   tap-down) bash "${LIB}/tap-down.sh" "$@" ;;
   build-tap)
-    set -a
-    # shellcheck disable=SC1090
-    [[ -f "${REPO_ROOT}/.env" ]] && source "${REPO_ROOT}/.env"
-    set +a
-    # shellcheck source=/dev/null
-    source "${LIB}/compose-include.sh"
-    # shellcheck source=/dev/null
-    source "${LIB}/claude-tap-local.sh"
-    ctx="$(claw_claude_tap_resolve_context "${REPO_ROOT}")"
-    rt="$(claw_container_runtime_cli)"
-    claw_claude_tap_build_image "${rt}" "${ctx}" "${CLAUDE_TAP_IMAGE:-claude-tap:local}"
+    echo "error: build-tap removed — local Dockerfile/cargo pack of claude-tap is gone" >&2
+    echo "hint: set CLAUDE_TAP_IMAGE to a published ACR/CI tag (up only pulls)" >&2
+    exit 1
     ;;
   bench)
     echo "error: bench removed (local pool deleted)" >&2

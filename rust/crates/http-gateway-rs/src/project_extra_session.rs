@@ -31,7 +31,7 @@ pub fn validate_project_extra_session_fields_json(value: &Value) -> Result<(), S
     parse_extra_session_fields_json(value).map(|_| ())
 }
 
-fn validate_field_key(key: &str) -> Result<(), String> {
+pub fn validate_field_key(key: &str) -> Result<(), String> {
     if key.starts_with("_claw_") {
         return Err("field names must not use _claw_ prefix".to_string());
     }

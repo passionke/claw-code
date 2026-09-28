@@ -132,6 +132,7 @@ DELETE	/v1/projects/{proj_id}/model-api-keys/{token_id}	revoke_model_api_key
 GET	/v1/projects/{proj_id}/repair-runs	list_master_repair_runs
 GET	/v1/projects/{proj_id}/repair-runs/{run_id}	get_master_repair_run
 PUT	/v1/projects/{proj_id}/role	put_master_role
+PUT	/v1/projects/{proj_id}/scope	put_project_scope
 GET	/v1/projects/{proj_id}/schedules	list_master_schedules
 PUT	/v1/projects/{proj_id}/schedules	put_master_schedule
 DELETE	/v1/projects/{proj_id}/schedules/{job_id}	delete_master_schedule

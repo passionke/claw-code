@@ -60,6 +60,9 @@ export default function ProjectPage() {
   const [savingMaxIter, setSavingMaxIter] = useState(false);
   const [projectRole, setProjectRole] = useState<string>("normal");
   const [savingRole, setSavingRole] = useState(false);
+  const [scopeKeys, setScopeKeys] = useState<string[]>([]);
+  const [idleSleepSecs, setIdleSleepSecs] = useState<number>(900);
+  const [savingScope, setSavingScope] = useState(false);
   const [kbSources, setKbSources] = useState<
     { key: string; sourceUrl: string; targetRelPath: string; enabled: boolean }[]
   >([]);
@@ -300,6 +303,17 @@ export default function ProjectPage() {
   }, [projectConfig?.projectRole, row?.projectRole]);
 
   useEffect(() => {
+    const sj = projectConfig?.scopeJson;
+    const keys = Array.isArray(sj?.scopeKeys)
+      ? sj.scopeKeys.filter((k): k is string => typeof k === "string" && !!k.trim())
+      : [];
+    setScopeKeys(keys);
+    setIdleSleepSecs(
+      typeof sj?.idleSleepSecs === "number" && sj.idleSleepSecs >= 1 ? sj.idleSleepSecs : 900
+    );
+  }, [projectConfig?.scopeJson]);
+
+  useEffect(() => {
     if (!projectConfig) {
       setDetailJson("");
       return;
@@ -375,6 +389,12 @@ export default function ProjectPage() {
       await proxyHttp(gatewayBase, "PUT", `/v1/projects/${projId}/role`, {
         projectRole,
       });
+      if (projectRole === "scope") {
+        await proxyHttp(gatewayBase, "PUT", `/v1/projects/${projId}/scope`, {
+          scopeKeys,
+          idleSleepSecs,
+        });
+      }
       message.success("项目角色已更新");
       await refreshProjects();
       await refreshProjectConfig();
@@ -384,6 +404,22 @@ export default function ProjectPage() {
       message.error(e instanceof Error ? e.message : "设置项目角色失败");
     } finally {
       setSavingRole(false);
+    }
+  };
+
+  const saveProjectScope = async () => {
+    setSavingScope(true);
+    try {
+      await proxyHttp(gatewayBase, "PUT", `/v1/projects/${projId}/scope`, {
+        scopeKeys,
+        idleSleepSecs,
+      });
+      message.success("scope 配置已保存");
+      await refreshProjectConfig();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "保存 scope 失败");
+    } finally {
+      setSavingScope(false);
     }
   };
 
@@ -683,7 +719,7 @@ export default function ProjectPage() {
         <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
           `router` 用于对外承接入口并串行委托 specialist；`master` 用于学徒 / 观察空间；
           `knowledge_base` 用于承载 Mind 知识库源与同步任务；`steerable` 用于会话 inbox 与 mid-turn steer；
-          `observation` 仅能通过学徒配对自动生成。
+          `scope` 按 extraSession 键组合常驻/休眠 worker；`observation` 仅能通过学徒配对自动生成。
         </Typography.Paragraph>
         <Space wrap style={{ marginBottom: 12 }}>
           <Tag
@@ -696,7 +732,9 @@ export default function ProjectPage() {
                     ? "cyan"
                     : projectRole === "steerable"
                       ? "green"
-                      : "default"
+                      : projectRole === "scope"
+                        ? "orange"
+                        : "default"
             }
           >
             role={projectRole}
@@ -711,6 +749,7 @@ export default function ProjectPage() {
               { value: "master", label: "master" },
               { value: "knowledge_base", label: "knowledge_base" },
               { value: "steerable", label: "steerable" },
+              { value: "scope", label: "scope" },
               { value: "observation", label: "observation（只读）", disabled: true },
             ]}
           />
@@ -718,6 +757,37 @@ export default function ProjectPage() {
             保存角色
           </Button>
         </Space>
+        {projectRole === "scope" && (
+          <Space direction="vertical" style={{ width: "100%", marginTop: 8 }}>
+            <Typography.Text type="secondary">
+              从 extraSession 字段中选择组成 scope key 的字段；空闲超过 idleSleepSecs 后 pause worker。
+            </Typography.Text>
+            <Space wrap>
+              <Select
+                mode="multiple"
+                style={{ minWidth: 280 }}
+                placeholder="选择 scopeKeys"
+                value={scopeKeys}
+                onChange={(v) => setScopeKeys(v)}
+                options={(Array.isArray(projectConfig?.extraSessionFieldsJson)
+                  ? projectConfig.extraSessionFieldsJson
+                  : []
+                )
+                  .filter((f): f is string => typeof f === "string" && !!f.trim())
+                  .map((f) => ({ value: f, label: f }))}
+              />
+              <InputNumber
+                min={1}
+                value={idleSleepSecs}
+                onChange={(v) => setIdleSleepSecs(typeof v === "number" ? v : 900)}
+                addonBefore="idleSleepSecs"
+              />
+              <Button loading={savingScope} onClick={() => void saveProjectScope()}>
+                保存 scope
+              </Button>
+            </Space>
+          </Space>
+        )}
       </Card>
       )}
 

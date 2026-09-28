@@ -397,6 +397,12 @@ async fn upsert_project_draft(
     };
     let rules_json = patch.rules_json.unwrap_or(&existing.rules_json);
     let mcp_servers_json = patch.mcp_servers_json.unwrap_or(&existing.mcp_servers_json);
+    if patch.mcp_servers_json.is_some() {
+        crate::project_scope::validate_mcp_template_placeholders(
+            mcp_servers_json,
+            &existing.extra_session_fields_json,
+        )?;
+    }
     let skills_json = patch.skills_json.unwrap_or(&existing.skills_json);
     let worker_profile_json = patch
         .worker_profile_json
