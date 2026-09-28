@@ -272,12 +272,17 @@ pub(crate) async fn run_solve_request_docker(
     if inbox_enabled {
         gateway_solve_turn::ensure_inbox_reply_in_allowed_tools(&mut effective_allowed_tools);
     }
+    let mut extra_session = req.extra_session.clone();
+    if runtime::trace_id_from_extra_session(extra_session.as_ref()).is_none() {
+        let tid = crate::trace_id::mint_request_trace_id();
+        crate::trace_id::ensure_extra_session_trace_id(&mut extra_session, &tid);
+    }
     let task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),
         model: req.model.clone(),
         timeout_seconds: Some(timeout_seconds),
-        extra_session: req.extra_session.clone(),
+        extra_session,
         allowed_tools: Some(effective_allowed_tools),
         max_iterations: Some(max_iterations),
         max_iterations_source: Some(max_iterations_source.as_str().to_string()),

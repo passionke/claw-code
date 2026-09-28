@@ -86,14 +86,19 @@ pub(crate) async fn solve(
     headers: HeaderMap,
     Extension(http_request_id): Extension<HttpRequestId>,
     Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
-    Json(req): Json<SolveRequest>,
+    Json(mut req): Json<SolveRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let body_sid = session_merge::trim_session_id(req.session_id.as_deref());
     let effective =
         session_merge::merge_effective_session_id(body_sid, &http_request_id.0, id_kind)
             .map_err(session_routing_error)?;
+    let trace_id = trace_id::apply_inbound_trace_id(
+        trace_id::trace_id_from_headers(&headers),
+        &mut req.extra_session,
+    );
     info!(
         request_id = %effective,
+        trace_id = %trace_id,
         proj_id = req.proj_id,
         endpoint = "/v1/solve",
         phase = "accepted",
@@ -153,32 +158,36 @@ pub(crate) async fn solve(
         }
     }
     let result = result?;
-    let claw = HeaderValue::from_str(&effective).map_err(|_| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "invalid characters in session id for response header",
-        )
-    })?;
-    let xrid = header::HeaderName::from_static("x-request-id");
-    let csid = header::HeaderName::from_static("claw-session-id");
-    Ok((
-        AppendHeaders([(xrid, claw.clone()), (csid, claw)]),
-        Json(result),
-    ))
+    let headers = solve_async_response_headers(&effective, Some(&trace_id))?;
+    Ok((headers, Json(result)))
 }
 
 pub(crate) fn solve_async_response_headers(
     effective: &str,
-) -> Result<AppendHeaders<[(header::HeaderName, HeaderValue); 2]>, ApiError> {
+    inbound_trace_id: Option<&str>,
+) -> Result<HeaderMap, ApiError> {
     let claw = HeaderValue::from_str(effective).map_err(|_| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "invalid characters in session id for response header",
         )
     })?;
-    let xrid = header::HeaderName::from_static("x-request-id");
-    let csid = header::HeaderName::from_static("claw-session-id");
-    Ok(AppendHeaders([(xrid, claw.clone()), (csid, claw)]))
+    let mut map = HeaderMap::new();
+    map.insert(header::HeaderName::from_static("x-request-id"), claw.clone());
+    map.insert(header::HeaderName::from_static("claw-session-id"), claw);
+    if let Some(tid) = inbound_trace_id.map(str::trim).filter(|s| !s.is_empty()) {
+        let xt = HeaderValue::from_str(tid).map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid characters in trace id for response header",
+            )
+        })?;
+        map.insert(
+            header::HeaderName::from_static(crate::trace_id::HEADER_TRACE_ID),
+            xt,
+        );
+    }
+    Ok(map)
 }
 
 pub(crate) async fn enqueue_solve_async(
@@ -205,11 +214,16 @@ pub(crate) async fn enqueue_solve_async_with_turn(
     state: AppState,
     http_request_id: HttpRequestId,
     id_kind: session_merge::HttpRequestIdKind,
-    req: SolveRequest,
+    mut req: SolveRequest,
     endpoint: &'static str,
     client_origin: Option<String>,
     preassigned_turn_id: Option<String>,
 ) -> Result<SolveAsyncResponse, ApiError> {
+    // Belt-and-suspenders: callers with headers should have applied already; mint if missing.
+    if trace_id_from_extra_session(req.extra_session.as_ref()).is_none() {
+        let tid = trace_id::mint_request_trace_id();
+        trace_id::ensure_extra_session_trace_id(&mut req.extra_session, &tid);
+    }
     let body_sid = session_merge::trim_session_id(req.session_id.as_deref());
     let effective =
         session_merge::merge_effective_session_id(body_sid, &http_request_id.0, id_kind)
@@ -560,7 +574,7 @@ pub(crate) async fn solve_start(
         phase = "session_ready",
         "gateway_start: session registered in SQLite before response"
     );
-    let headers = solve_async_response_headers(&effective)?;
+    let headers = solve_async_response_headers(&effective, None)?;
     Ok((
         headers,
         Json(SolveStartResponse {
@@ -643,8 +657,12 @@ pub(crate) async fn solve_async(
     headers: HeaderMap,
     Extension(http_request_id): Extension<HttpRequestId>,
     Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
-    Json(req): Json<SolveRequest>,
+    Json(mut req): Json<SolveRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let trace_id = trace_id::apply_inbound_trace_id(
+        trace_id::trace_id_from_headers(&headers),
+        &mut req.extra_session,
+    );
     let client_origin = resolve_request_client_origin(req.extra_session.as_ref(), &headers);
     let out = enqueue_solve_async(
         state,
@@ -655,7 +673,7 @@ pub(crate) async fn solve_async(
         client_origin,
     )
     .await?;
-    let headers = solve_async_response_headers(&out.session_id)?;
+    let headers = solve_async_response_headers(&out.session_id, Some(&trace_id))?;
     Ok((headers, Json(out)))
 }
 

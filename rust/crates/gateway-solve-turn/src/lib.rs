@@ -120,6 +120,7 @@ pub use mcp_call_context::{
     GatewayMcpCallContext, CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID,
 };
 pub use runtime::McpCallContext;
+pub use runtime::EXTRA_SESSION_TRACE_ID;
 pub use session_report::{
     final_assistant_report_text_from_jsonl,
     final_assistant_report_text_from_jsonl_for_user_turn_index,
@@ -520,11 +521,15 @@ fn gateway_trace_file_path(trace_id: &str, work_root: &Path) -> Option<PathBuf> 
     Some(dir.join(format!("{trace_id}.ndjson")))
 }
 
-pub(crate) fn gateway_session_tracer(request_id: &str, work_root: &Path) -> Option<SessionTracer> {
-    let trace_id = resolve_gateway_trace_id(request_id);
-    let path = gateway_trace_file_path(&trace_id, work_root)?;
+/// NDJSON tracer keyed by resolved distributed `trace_id` (not sessionId). Author: kejiqing
+pub(crate) fn gateway_session_tracer(trace_id: &str, work_root: &Path) -> Option<SessionTracer> {
+    let tid = trace_id.trim();
+    if tid.is_empty() {
+        return None;
+    }
+    let path = gateway_trace_file_path(tid, work_root)?;
     let sink = JsonlTelemetrySink::new(path).ok()?;
-    Some(SessionTracer::new(trace_id, Arc::new(sink)))
+    Some(SessionTracer::new(tid.to_string(), Arc::new(sink)))
 }
 
 /// Pick MCP tool for multi-agent parallel fan-out: `queryMcpTool`, else description `parallel-friendly`, else annotations.
@@ -1871,7 +1876,7 @@ pub fn run_gateway_solve_turn(
         Session::new().with_persistence_path(gateway_jsonl.clone())
     }
     .with_workspace_root(work_dir);
-    let session_tracer = gateway_session_tracer(&mcp.request_id, work_root);
+    let session_tracer = gateway_session_tracer(&mcp.trace_id, work_root);
     let async_runtime = tokio::runtime::Handle::try_current().map_err(|_| {
         err(
             HTTP_INTERNAL,

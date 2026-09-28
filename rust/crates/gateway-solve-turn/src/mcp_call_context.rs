@@ -7,7 +7,7 @@ use crate::{normalize_extra_session, GatewaySolveTaskFile};
 
 pub use runtime::{
     build_mcp_call_meta, inject_mcp_call_meta, resolve_gateway_trace_id, with_mcp_call_context,
-    CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID,
+    CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID, EXTRA_SESSION_TRACE_ID,
 };
 
 /// Stable alias for gateway / CLI callers. Author: kejiqing
@@ -151,6 +151,143 @@ mod tests {
         let meta = build_mcp_call_meta(&resolved);
         assert_eq!(meta["extra_session"]["store_id"], "S1");
         assert_eq!(meta["extra_session"][CLAW_EXTRA_SESSION_TURN_ID], "T_1");
+        assert!(meta["extra_session"][EXTRA_SESSION_TRACE_ID].is_string());
+        assert_ne!(
+            meta["extra_session"][EXTRA_SESSION_TRACE_ID].as_str(),
+            Some("sess")
+        );
+    }
+
+    #[test]
+    fn from_task_uses_extra_session_trace_id() {
+        let task = GatewaySolveTaskFile {
+            request_id: "sess-same-as-request".into(),
+            user_prompt: "q".into(),
+            model: None,
+            timeout_seconds: None,
+            extra_session: Some(json!({
+                "store_id": "S1",
+                "trace_id": "deadbeefdeadbeefdeadbeefdeadbeef"
+            })),
+            allowed_tools: None,
+            max_iterations: None,
+            max_iterations_source: None,
+            turn_id: "T_1".into(),
+            session_id: Some("sess-same-as-request".into()),
+            pool_id: None,
+            worker_name: None,
+            attachments: None,
+            llm_route: None,
+            otel_traceparent: None,
+            landlock_dsl: None,
+            landlock_dsl_source: None,
+            interaction_mode: None,
+            force_single_turn: None,
+            sealed_plan_id: None,
+            sealed_plan_markdown: None,
+            ask_user_question_enabled: None,
+            responses_stream: false,
+        };
+        let ctx = gateway_mcp_call_context_from_task(&task);
+        assert_eq!(ctx.trace_id, "deadbeefdeadbeefdeadbeefdeadbeef");
+        assert_eq!(ctx.session_id, "sess-same-as-request");
+        let meta = build_mcp_call_meta(&ctx);
+        assert_eq!(
+            meta["extra_session"][EXTRA_SESSION_TRACE_ID],
+            "deadbeefdeadbeefdeadbeefdeadbeef"
+        );
+    }
+
+    /// Task JSON 落盘再读回后，trace_id 仍驱动 ctx / _meta（防序列化丢字段）. Author: kejiqing
+    #[test]
+    fn pipeline_task_file_roundtrip_preserves_trace_to_meta() {
+        let expected = "ffffffffffffffffffffffffffffffff";
+        let task = GatewaySolveTaskFile {
+            request_id: "session-aaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            user_prompt: "q".into(),
+            model: None,
+            timeout_seconds: None,
+            extra_session: Some(json!({
+                "store_id": "S1",
+                "org_id": "",
+                "trace_id": expected
+            })),
+            allowed_tools: None,
+            max_iterations: None,
+            max_iterations_source: None,
+            turn_id: "T_roundtrip".into(),
+            session_id: Some("session-aaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            pool_id: None,
+            worker_name: None,
+            attachments: None,
+            llm_route: None,
+            otel_traceparent: None,
+            landlock_dsl: None,
+            landlock_dsl_source: None,
+            interaction_mode: None,
+            force_single_turn: None,
+            sealed_plan_id: None,
+            sealed_plan_markdown: None,
+            ask_user_question_enabled: None,
+            responses_stream: false,
+        };
+        let bytes = serde_json::to_vec(&task).expect("serialize task");
+        let back: GatewaySolveTaskFile = serde_json::from_slice(&bytes).expect("deserialize task");
+        assert_eq!(
+            back.extra_session.as_ref().unwrap()[EXTRA_SESSION_TRACE_ID],
+            expected
+        );
+
+        let ctx = gateway_mcp_call_context_from_task(&back);
+        assert_eq!(ctx.trace_id, expected);
+        assert_ne!(ctx.trace_id, ctx.session_id);
+        // Worker NDJSON uses mcp.trace_id — same source as MCP meta.
+        assert_eq!(
+            build_mcp_call_meta(&ctx)["extra_session"][EXTRA_SESSION_TRACE_ID],
+            expected
+        );
+        assert_eq!(
+            inject_mcp_call_meta(&ctx)["extra_session"][EXTRA_SESSION_TRACE_ID],
+            expected
+        );
+    }
+
+    /// 任务未带 trace_id 时 worker 仍铸造独立值并写入 _meta（≠ session）. Author: kejiqing
+    #[test]
+    fn pipeline_task_without_trace_still_injects_meta_distinct_from_session() {
+        let session = "session-bbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let task = GatewaySolveTaskFile {
+            request_id: session.into(),
+            user_prompt: "q".into(),
+            model: None,
+            timeout_seconds: None,
+            extra_session: Some(json!({"store_id": "S1"})),
+            allowed_tools: None,
+            max_iterations: None,
+            max_iterations_source: None,
+            turn_id: "T_2".into(),
+            session_id: Some(session.into()),
+            pool_id: None,
+            worker_name: None,
+            attachments: None,
+            llm_route: None,
+            otel_traceparent: None,
+            landlock_dsl: None,
+            landlock_dsl_source: None,
+            interaction_mode: None,
+            force_single_turn: None,
+            sealed_plan_id: None,
+            sealed_plan_markdown: None,
+            ask_user_question_enabled: None,
+            responses_stream: false,
+        };
+        let ctx = gateway_mcp_call_context_from_task(&task);
+        assert!(!ctx.trace_id.is_empty());
+        assert_ne!(ctx.trace_id, session);
+        assert_eq!(
+            build_mcp_call_meta(&ctx)["extra_session"][EXTRA_SESSION_TRACE_ID].as_str(),
+            Some(ctx.trace_id.as_str())
+        );
     }
 
     #[test]

@@ -116,9 +116,10 @@ pub use mcp_arg_type_gate::{
     MCP_ARG_GATE_MAX_DEPTH, MCP_ARG_GATE_MAX_NODES,
 };
 pub use mcp_call_context::{
-    build_mcp_call_meta, current_mcp_call_context, inject_mcp_call_meta, resolve_gateway_trace_id,
-    with_mcp_call_context, McpCallContext, CLAW_EXTRA_SESSION_SESSION_ID,
-    CLAW_EXTRA_SESSION_TURN_ID,
+    build_mcp_call_meta, current_mcp_call_context, inject_mcp_call_meta,
+    mint_gateway_trace_id_fallback, non_empty_trace_id, resolve_gateway_trace_id,
+    trace_id_from_extra_session, with_mcp_call_context, McpCallContext,
+    CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID, EXTRA_SESSION_TRACE_ID,
 };
 pub use mcp_client::{
     default_mcp_max_concurrent, McpClientAuth, McpClientBootstrap, McpClientTransport,

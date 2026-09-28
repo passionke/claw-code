@@ -26,7 +26,7 @@ Base URL 示例：`http://127.0.0.1:18088`
 | `GET` / `POST` | `/v1/projects/{proj_id}/model-api-keys` | 可选 `camt_…` | 列表 / 签发（明文 `token` 仅创建时返回） |
 | `DELETE` | `/v1/projects/{proj_id}/model-api-keys/{token_id}` | 可选 `camt_…` | 吊销 |
 
-要点：非空 OpenAI `tools` → `400 unsupported_feature`；`stream=true` 先同步跑完再推最终内容（非 token 流）；响应 `id`=`turnId`，头 `x-nerogate-session-id`=`sessionId`。本路径不暴露 `allowedTools`，也不接受 solve 的 `attachments` 字段。图片用 Responses `input_image` 或 Chat `image_url`（https 或 `data:image/*;base64`），网关写入会话 `uploads/` 后走同一套 solve 附件；模型须 `supportsVision`。`file_id` 不支持。
+要点：非空 OpenAI `tools` → `400 unsupported_feature`；`stream=true` 先同步跑完再推最终内容（非 token 流）；响应 `id`=`turnId`，头 `x-nerogate-session-id`=`sessionId`，头 **`X-Trace-Id`**=生效分布式 `trace_id`（入站头 / `extra_session.trace_id` / 网关新造；**不等于** `sessionId`）。本路径不暴露 `allowedTools`，也不接受 solve 的 `attachments` 字段。图片用 Responses `input_image` 或 Chat `image_url`（https 或 `data:image/*;base64`），网关写入会话 `uploads/` 后走同一套 solve 附件；模型须 `supportsVision`。`file_id` 不支持。
 
 ## Solve
 
@@ -46,7 +46,7 @@ Base URL 示例：`http://127.0.0.1:18088`
     - `extraSession`：可选，**JSON 对象**，业务会话级上下文（例如用户、租户、workspace 等标识）
       - 若存在但不是 object，将返回 `400`（`extraSession must be a JSON object when present`）
       - 序列化后大小上限约为 `8KB`，超出将返回 `400`（`extraSession is too large (max 8KB)`）
-      - 若 `project_config.extra_session_fields_json` 非空：请求体须为 object，且**每个定义字段**均存在且值为 **string**（可为 `""`）；允许额外系统 key（`tenant_code`、`solution_code`、`biz_type`、`_claw_*`）。否则 `400`（`extraSession 不符合要求：…`）
+      - 若 `project_config.extra_session_fields_json` 非空：请求体须为 object，且**每个定义字段**均存在且值为 **string**（可为 `""`）；允许额外系统 key（`tenant_code`、`solution_code`、`biz_type`、`trace_id`、`_claw_*`）。否则 `400`（`extraSession 不符合要求：…`）
       - enqueue 时将完整入口参数写入 `gateway_turns.entry_params_json`（含 `extraSession` / `attachments`）；`GET /v1/sessions/{sessionId}/turns` 每项返回 `extraSession` 与 `attachments` 快照（有 `ossKey` 时附 `ossSignedUrl`）
     - `allowedTools`：可选，字符串数组，指定**本次 solve**允许暴露给模型并执行的工具名（与异步 `/v1/solve_async` 相同）。
       - **未传 `allowedTools`**：沿用网关进程环境变量 `CLAW_ALLOWED_TOOLS`（逗号分隔，与 `GET /healthz` 中 `allowedTools` 字段一致）。若该环境变量也未配置（空），则下游 `gateway-solve-turn` 将空列表视为「不额外收紧」，**内置 MVP 工具（含 `bash` 等）会全部挂上**。
@@ -54,13 +54,14 @@ Base URL 示例：`http://127.0.0.1:18088`
       - 常见内置名（与 `rust/crates/tools` 中 `mvp_tool_specs` 一致，按需选用）：`bash`、`read_file`、`write_file`、`edit_file`、`glob_search`、`grep_search`、`WebFetch`、`WebSearch`、`MCP`、`Skill`、`TodoWrite` 等；MCP 动态工具名按运行时注册为准。
       - 典型「交给 resolve/solve 里强 agent 自决」时，在**全局白名单已包含**的前提下，可在一次调用里显式放宽，例如：`"allowedTools": ["read_file","glob_search","grep_search","bash","write_file","edit_file","MCP"]`。
   - 追踪约定：
-    - 网关会为本次调用确定 `sessionId`（等于 `claw-session-id`）
+    - **`sessionId`**：内部对话串联 + 业务记录拉取；等于响应头 `claw-session-id` / `x-request-id`（`x-request-id` **仅会话兼容**，不再承担分布式日志语义）
+    - **`trace_id` / `X-Trace-Id`**：分布式日志串联。优先级：入站头 `X-Trace-Id` → body `extraSession.trace_id` → 网关新造 UUID（32 hex，**不等于** `sessionId`）。响应头始终回写 `X-Trace-Id`；MCP `_meta.extra_session.trace_id` 与 worker NDJSON 同值（见 [`gateway-mcp-call-meta.md`](gateway-mcp-call-meta.md)）
     - 响应体主字段使用 `sessionId`，并保留 `requestId` 兼容字段（同值）
     - 响应体含 `sessionHomeRel`：相对 `CLAW_WORK_ROOT` 的会话工作目录（与 PG 表 `gateway_sessions.session_home` 一致），与 `workDir`（绝对路径）成对出现；含 **`turnId`**（当次轮次，`T_<32位小写hex>`）。**新建会话**时目录名为 `proj_{projId}/sessions/<segment>`：在 `sessionId` 可作为安全单段路径名时 `<segment>` **与 `sessionId` 相同**（网关生成的 32 位十六进制 id 即落在该目录下）；若 `sessionId` 含路径分隔符等不安全字符，则 `<segment>` 为对该 id 做 UUID v5 派生的 32 位十六进制名（与 id 一一对应、可复现）。续聊仍按库中已有 `session_home` 打开原目录。
     - 在访问上游模型时透传 HTTP 头：
       - `clawcode-session-id: <sessionId>`
       - `claw-session-id: <sessionId>`
-    - 在访问下游 MCP 服务（包括 SQLBot）时，`tools/call` 的 `_meta` 仅含 `extra_session` 对象（详见 [`gateway-mcp-call-meta.md`](gateway-mcp-call-meta.md)）：业务字段来自请求体 `extraSession`，并注入 `_claw_session_id`、`_claw_turn_id` 供串联。非 MCP HTTP 出站 header。
+    - 在访问下游 MCP 服务（包括 SQLBot）时，`tools/call` 的 `_meta` 仅含 `extra_session` 对象（详见 [`gateway-mcp-call-meta.md`](gateway-mcp-call-meta.md)）：业务字段来自请求体 `extraSession`，并注入 **`trace_id`**、`_claw_session_id`、`_claw_turn_id` 供串联。非 MCP 出站 HTTP header。
   - 对话状态：worker 容器内用 `.claw/gateway-solve-session.jsonl` 续聊；读回后 HTTP 消费端只读 PG `cc_messages`（`render_session_jsonl`）。见 [`docs/pool-v1-consumer-matrix.md`](pool-v1-consumer-matrix.md)。
   - **Solve preflight（按项目、可选）**：在 `proj_<id>/home/.claw/solve-preflight.json` 声明，例如 `{"kinds":["sqlbot_mcp_start"]}`（兼容历史 `{"kind":"sqlbot_mcp_start"}`）。仅**该 `sessionId` 第一次**（尚无 `gateway-solve-session.jsonl`）时：先写入用户问题，再按 `kinds` 顺序执行 preflight 并注入 transcript（当前仅 `sqlbot_mcp_start`：一次 `mcp_start`，暴露 `access_token` / `chat_id`）。续聊 turn 不跑 preflight。表结构不在 transcript 注入：由外部 job 维护 `proj_<id>/home/schema.md`（`CREATE TABLE` DDL），worker ro mount 到 `home/schema.md`，系统提示词引导模型读取该文件。
 
@@ -73,10 +74,10 @@ Base URL 示例：`http://127.0.0.1:18088`
 - `POST /v1/solve_async`
   - 用途：异步提交 solve 任务，返回 `taskId`
   - ID 约定：`taskId` 与 `sessionId` 为同一个值（同一逻辑会话 ID），用于统一追踪与轮询。
-  - 响应兼容：同时返回 `requestId`（值等于 `sessionId`）、**`turnId`**（当次轮次，`T_<32位小写hex>`）；响应头 `claw-session-id` / `x-request-id` 与有效 `sessionId` 一致（与 `/v1/solve` 相同合并规则）。
+  - 响应兼容：同时返回 `requestId`（值等于 `sessionId`）、**`turnId`**（当次轮次，`T_<32位小写hex>`）；响应头 `claw-session-id` / `x-request-id` 与有效 `sessionId` 一致；响应头 **`X-Trace-Id`** 为生效分布式 `trace_id`（与 `/v1/solve` 相同）。
   - **显式续聊**：请求体带非空 `sessionId` 时，若库中无该 `(sessionId, projId)`，在入队前返回 `400`（文案同同步接口）。
   - **串行**：同一 `sessionId` 已存在状态为 `queued` 或 `running` 的异步任务时，再次 `POST /v1/solve_async` 返回 **`409 Conflict`**（`session has active async task`），需等待完成或取消后再提交。
-  - 追踪约定：异步调用同样透传 `clawcode-session-id` 与 `claw-session-id`（值均为该次任务的网关层会话 ID）
+  - 追踪约定：会话头 `clawcode-session-id` / `claw-session-id`（=`sessionId`）；日志头 `X-Trace-Id`（=`trace_id`）
   - **Live 报告**：stdout-v1 全链路见 [`docs/live-report-contract.md`](live-report-contract.md)（含顺序保证、已知缺陷与 `pack-deploy` 验收）
 
 - `POST /v1/internal/turns/{turnId}/stdout-event`

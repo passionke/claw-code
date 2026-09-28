@@ -101,6 +101,7 @@ pub mod session_terminal_api;
 pub mod skill_archive;
 pub mod solve_llm_route;
 pub mod task_status;
+pub mod trace_id;
 pub mod turn_id;
 pub mod turn_timeline_api;
 pub mod turn_tools_api;

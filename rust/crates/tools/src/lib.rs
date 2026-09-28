@@ -9326,7 +9326,11 @@ mod tests {
             "sess-parent",
             "T_parent",
             "req-77",
-            Some(json!({"store_id": "S9", "org_id": ""})),
+            Some(json!({
+                "store_id": "S9",
+                "org_id": "",
+                "trace_id": "parenttraceparenttraceparenttrace00"
+            })),
         );
 
         execute_agent_with_spawn(
@@ -9358,11 +9362,17 @@ mod tests {
         let stored = job.mcp_call_context.expect("mcp context on job");
         assert_eq!(stored.session_id, "sess-parent");
         assert_eq!(stored.turn_id, "T_parent");
+        assert_eq!(stored.trace_id, "parenttraceparenttraceparenttrace00");
+        assert_eq!(stored.trace_id, ctx.trace_id);
         let meta = inject_mcp_call_meta(&stored);
         assert_eq!(meta["extra_session"]["store_id"], "S9");
         assert_eq!(
             meta["extra_session"][CLAW_EXTRA_SESSION_TURN_ID],
             "T_parent"
+        );
+        assert_eq!(
+            meta["extra_session"]["trace_id"],
+            "parenttraceparenttraceparenttrace00"
         );
     }
 
