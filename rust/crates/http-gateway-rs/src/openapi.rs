@@ -150,6 +150,7 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::app::cancel_session_turn,
         crate::session_upload::upload_session_files,
         crate::routes::app::put_master_role,
+        crate::routes::app::put_project_scope,
         crate::routes::app::get_master_apprentices,
         crate::routes::app::put_master_apprentices,
         crate::routes::app::get_delegate_targets,

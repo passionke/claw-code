@@ -48,45 +48,13 @@ claw_claude_tap_stop() {
   pkill -f 'claude-tap.*--tap-no-launch' 2>/dev/null || true
 }
 
-# True when this host runs compose/pool claude-tap sidecar (not e2b e2b worker tap + observe singleton). Author: kejiqing
+# Always false: host claude-tap sidecar path removed; tap/observe is e2b-only. Author: kejiqing
 claw_stack_manages_local_claude_tap() {
-  case "${CLAW_LLM_PROXY:-direct}" in
-    remote) return 1 ;;
-  esac
-  case "${CLAUDE_TAP_MODE:-docker}" in
-    off | none | disabled | false | '0') return 1 ;;
-    *) return 0 ;;
-  esac
+  return 1
 }
 
-claw_claude_tap_build_image() {
-  local rt="$1"
-  local ctx="$2"
-  local image="$3"
-  local platform="${CLAUDE_TAP_PLATFORM:-}"
-
-  [[ -d "${ctx}" ]] || {
-    echo "CLAUDE_TAP_BUILD_CONTEXT not found: ${ctx}" >&2
-    exit 1
-  }
-  [[ -f "${ctx}/Dockerfile" ]] || {
-    echo "missing Dockerfile in ${ctx}" >&2
-    exit 1
-  }
-
-  local -a build_args=()
-  if [[ -n "${platform}" ]]; then
-    build_args+=(--platform "${platform}")
-  fi
-  echo "==> building ${image} from ${ctx} (${rt})" >&2
-  if ((${#build_args[@]})); then
-    "${rt}" build "${build_args[@]}" -f "${ctx}/Dockerfile" -t "${image}" "${ctx}"
-  else
-    "${rt}" build -f "${ctx}/Dockerfile" -t "${image}" "${ctx}"
-  fi
-}
-
-# Local fork build, or `docker pull` when only CLAUDE_TAP_IMAGE is set (production). Author: kejiqing
+# Local Dockerfile build of claude-tap removed (up must never cargo-compile tap).
+# Published CLAUDE_TAP_IMAGE only (ACR/CI pull). Author: kejiqing
 claw_claude_tap_upstream_config_path() {
   local root_dir="$1"
   if [[ -n "${CLAW_TAP_UPSTREAM_CONFIG_FILE:-}" ]]; then
@@ -219,20 +187,14 @@ claw_claude_tap_export_cluster_env() {
   export CLAW_GATEWAY_DATABASE_URL="${tap_db}"
 }
 
+# Pull-only: never build from ../claude-tap (docker has no `image exists`; old path
+# always fell through to docker build + cargo). Author: kejiqing
 claw_claude_tap_ensure_image() {
   local rt="$1"
-  local ctx="$2"
+  local _ctx="$2"
   local image="$3"
 
-  if [[ "${CLAUDE_TAP_REBUILD:-0}" == "1" ]] && [[ -d "${ctx}" && -f "${ctx}/Dockerfile" ]]; then
-    claw_claude_tap_build_image "${rt}" "${ctx}" "${image}"
-    return 0
-  fi
-  if "${rt}" image exists "${image}" >/dev/null 2>&1; then
-    return 0
-  fi
-  if [[ -d "${ctx}" && -f "${ctx}/Dockerfile" ]]; then
-    claw_claude_tap_build_image "${rt}" "${ctx}" "${image}"
+  if "${rt}" image inspect "${image}" >/dev/null 2>&1; then
     return 0
   fi
   echo "==> pull ${image} (${rt})" >&2
@@ -257,12 +219,7 @@ claw_claude_tap_start_docker() {
   mkdir -p "${traces_dir}"
   traces_dir="$(cd "${traces_dir}" && pwd)"
 
-  if [[ "${CLAUDE_TAP_REBUILD:-0}" == "1" ]] && [[ ! -d "${ctx}" || ! -f "${ctx}/Dockerfile" ]]; then
-    echo "==> pull ${image} (CLAUDE_TAP_REBUILD=1, no local Dockerfile)" >&2
-    "${rt}" pull "${image}"
-  else
-    claw_claude_tap_ensure_image "${rt}" "${ctx}" "${image}"
-  fi
+  claw_claude_tap_ensure_image "${rt}" "${ctx}" "${image}"
 
   "${rt}" rm -f "${container_name}" 2>/dev/null || true
 
@@ -495,47 +452,8 @@ claw_claude_tap_is_running() {
 }
 
 claw_claude_tap_start() {
-  local podman_dir="$1"
-  local root_dir="$2"
-  local mode="${CLAUDE_TAP_MODE:-docker}"
-  local ctx
-  ctx="$(claw_claude_tap_resolve_context "${root_dir}")"
-  local upstream="${UPSTREAM_OPENAI_BASE_URL:-${OPENAI_BASE_URL:-}}"
-  if [[ -z "${upstream}" ]]; then
-    local cfg
-    cfg="$(claw_claude_tap_upstream_config_path "${root_dir}")"
-    if [[ -f "${cfg}" ]]; then
-      upstream="$(python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); print((d.get("target") or "").strip())' "${cfg}" 2>/dev/null || true)"
-    fi
-  fi
-  if [[ -z "${upstream}" ]]; then
-    upstream="https://bootstrap.invalid/v1"
-    echo "note: no UPSTREAM in .env or claw-tap-upstream.json; bootstrap placeholder until Admin LLM apply (PG hot-reloads tap)" >&2
-  fi
-
-  if claw_claude_tap_is_running "${podman_dir}"; then
-    echo "claude-tap already running ($(cat "${podman_dir}/claude-tap.pid")) mode=${mode}"
-    return 0
-  fi
-
-  case "${mode}" in
-    docker | podman)
-      local rt
-      rt="$(claw_claude_tap_runtime_cli)"
-      claw_claude_tap_start_docker "${rt}" "${podman_dir}" "${ctx}" "${root_dir}" "${upstream}"
-      ;;
-    source | editable | local)
-      claw_claude_tap_start_source "${podman_dir}" "${ctx}" "${root_dir}" "${upstream}"
-      ;;
-    native | pypi)
-      claw_claude_tap_start_native "${podman_dir}" "${root_dir}" "${upstream}"
-      ;;
-    *)
-      echo "unknown CLAUDE_TAP_MODE=${mode} (use docker, source, native/pypi)" >&2
-      exit 1
-      ;;
-  esac
-  claw_claude_tap_wait_healthy 30 "${podman_dir}" || exit 1
+  echo "error: host claude-tap sidecar removed (e2b observe only)" >&2
+  exit 1
 }
 
 claw_claude_tap_proxy_published_on_host() {

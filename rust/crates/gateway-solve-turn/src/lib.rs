@@ -574,8 +574,12 @@ pub(crate) fn initialize_mcp_runtime(
     ),
     GatewaySolveTurnError,
 > {
-    let config_root = runtime::gateway_project_config_root(work_dir);
-    let runtime_cfg = ConfigLoader::default_for(&config_root)
+    // MCP SoT at solve time is the session `.claw/settings.json` (`HOME` = session).
+    // Do not load via `CLAW_PROJECT_CONFIG_ROOT` / `project_home_def`: that file keeps
+    // scope `${…}` templates, and ConfigLoader merges Project *after* User so the
+    // template would overwrite session-rendered bind-once URLs → Mind 403
+    // "tenant is not accessible" on literal `${t_code}`. Author: kejiqing
+    let runtime_cfg = ConfigLoader::default_for(work_dir)
         .load()
         .map_err(|e| err(HTTP_INTERNAL, format!("load runtime config failed: {e}")))?;
     let mut manager = McpServerManager::from_runtime_config(&runtime_cfg);

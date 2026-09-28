@@ -10,12 +10,13 @@ use crate::routes::app::{
     master_peer_observation_draft, master_peer_observation_solve, master_peer_put_draft,
     master_peer_replay_turn, master_peer_session_turns, master_peer_sessions,
     master_peer_stable_config, master_peer_sync_observation, put_master_apprentices,
-    put_master_role, put_master_schedule, run_master_schedule,
+    put_master_role, put_master_schedule, put_project_scope, run_master_schedule,
 };
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/projects/{proj_id}/role", put(put_master_role))
+        .route("/v1/projects/{proj_id}/scope", put(put_project_scope))
         .route(
             "/v1/projects/{proj_id}/apprentices",
             get(get_master_apprentices).put(put_master_apprentices),

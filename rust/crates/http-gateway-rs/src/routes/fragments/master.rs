@@ -134,13 +134,31 @@ pub(crate) async fn put_master_role(
         let _ = state.pool_clients.reconcile_project_worker(proj_id).await;
     } else if role == master_observer::PROJECT_ROLE_NORMAL
         || role == master_observer::PROJECT_ROLE_STEERABLE
+        || role == master_observer::PROJECT_ROLE_SCOPE
     {
-        // steerable: inbox capability only; no tool seed (unlike router/master). Author: kejiqing
+        // steerable: inbox only; scope: per-extraSession workers (strict only). Author: kejiqing
+        if role == master_observer::PROJECT_ROLE_SCOPE {
+            let profile = state
+                .session_db
+                .get_worker_profile_json(proj_id)
+                .await
+                .map_err(|e| session_db_err(&e))?;
+            if pool::mode_from_json(&profile) == pool::WorkerProfileMode::Relaxed {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "project_role=scope requires workerProfileJson.mode=strict (relaxed not allowed)",
+                ));
+            }
+        }
         state
             .session_db
             .set_project_role(proj_id, role)
             .await
             .map_err(|e| session_db_err(&e))?;
+        if role == master_observer::PROJECT_ROLE_SCOPE {
+            // desired pool size becomes 0 → retire singleton warm slots. Author: kejiqing
+            let _ = state.pool_clients.reconcile_project_worker(proj_id).await;
+        }
     } else if role == master_observer::PROJECT_ROLE_KNOWLEDGE_BASE {
         master_observer::seed_knowledge_base_project(&state.session_db, proj_id)
             .await
@@ -156,6 +174,72 @@ pub(crate) async fn put_master_role(
     Ok(Json(PutProjectRoleResponse {
         proj_id,
         project_role: role.to_string(),
+    }))
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PutProjectScopeRequest {
+    #[serde(rename = "scopeKeys")]
+    scope_keys: Vec<String>,
+    #[serde(rename = "idleSleepSecs", default)]
+    idle_sleep_secs: Option<u64>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PutProjectScopeResponse {
+    proj_id: i64,
+    #[serde(rename = "scopeJson")]
+    #[schema(value_type = Object)]
+    scope_json: Value,
+}
+
+#[utoipa::path(
+    put,
+    path = "/v1/projects/{proj_id}/scope",
+    tag = "Master",
+    operation_id = "put_project_scope",
+    params(("proj_id" = i64, Path, description = "Project id")),
+    request_body = PutProjectScopeRequest,
+    responses((status = 200, body = PutProjectScopeResponse), (status = 400, description = "bad scope"))
+)]
+pub(crate) async fn put_project_scope(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+    Json(req): Json<PutProjectScopeRequest>,
+) -> Result<Json<PutProjectScopeResponse>, ApiError> {
+    let mut scope_obj = serde_json::Map::new();
+    scope_obj.insert(
+        "scopeKeys".into(),
+        Value::Array(
+            req.scope_keys
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
+    if let Some(secs) = req.idle_sleep_secs {
+        scope_obj.insert("idleSleepSecs".into(), json!(secs));
+    }
+    let scope_json = Value::Object(scope_obj);
+    let fields = state
+        .session_db
+        .get_project_config(proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .map(|r| r.extra_session_fields_json)
+        .unwrap_or_else(|| json!([]));
+    crate::project_scope::validate_scope_json_against_fields(&scope_json, &fields)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    state
+        .session_db
+        .set_scope_json(proj_id, &scope_json)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    Ok(Json(PutProjectScopeResponse {
+        proj_id,
+        scope_json,
     }))
 }
 

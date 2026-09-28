@@ -91,6 +91,7 @@ pub mod project_git_sync;
 pub mod project_id;
 pub mod project_model_api_key;
 pub mod project_relation;
+pub mod project_scope;
 pub mod project_tools;
 pub mod responses_hub_stream;
 pub mod session_db;

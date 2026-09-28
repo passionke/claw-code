@@ -98,6 +98,11 @@ export interface ProjectConfig {
   languagePipelineJson?: LanguagePipelineJson;
   /** Allowed extraSession business keys for this ds. Author: kejiqing */
   extraSessionFieldsJson?: string[];
+  /** Scope role config (`scopeKeys` + `idleSleepSecs`). Author: kejiqing */
+  scopeJson?: {
+    scopeKeys?: string[];
+    idleSleepSecs?: number;
+  };
   /** Instruction truncation budgets → `.claw/settings.json`. Author: kejiqing */
   promptLimitsJson?: PromptLimitsJson;
   /** Pool worker strict/relaxed (`project_config.worker_profile_json`). Author: kejiqing */

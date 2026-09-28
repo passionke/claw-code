@@ -60,6 +60,38 @@ impl NasLayoutBackend {
             .await
     }
 
+    /// Write a file under `{cluster}/proj_N/workers/{worker_id}/{rel}`. Author: kejiqing
+    pub async fn put_worker_file(
+        &self,
+        proj_id: i64,
+        worker_id: &str,
+        rel_under_worker: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let cluster_id = self.cluster_id()?;
+        let wr = worker_rel(&cluster_id, proj_id, worker_id);
+        let rel = rel_under_worker.trim_start_matches('/');
+        let path = format!("{wr}/{rel}");
+        if let Some(parent) = path.rsplit_once('/').map(|(p, _)| p) {
+            self.mkdir_rel(parent).await?;
+        }
+        self.nas_api.put_file(&path, bytes).await
+    }
+
+    /// Read a file under worker root; `Ok(None)` when missing. Author: kejiqing
+    pub async fn get_worker_file(
+        &self,
+        proj_id: i64,
+        worker_id: &str,
+        rel_under_worker: &str,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let cluster_id = self.cluster_id()?;
+        let wr = worker_rel(&cluster_id, proj_id, worker_id);
+        let rel = rel_under_worker.trim_start_matches('/');
+        let path = format!("{wr}/{rel}");
+        self.nas_api.get_file(&path).await
+    }
+
     /// Replace `{cluster}/proj_N/home/<destRel>/` with cloned files (tar.gz → nas-api extract). Author: kejiqing
     pub async fn replace_git_import_dest(
         &self,
@@ -163,6 +195,24 @@ impl NasLayoutBackend {
             session_rel(&cluster_id, proj_id, session_segment)
         );
         self.nas_api.put_file(&rel, task_bytes).await
+    }
+
+    /// Write `{session}/.claw/{file_name}` via nas-api (e.g. scope-rendered `settings.json`). Author: kejiqing
+    pub async fn put_session_claw_file(
+        &self,
+        proj_id: i64,
+        session_segment: &str,
+        claw_file_name: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let cluster_id = self.cluster_id()?;
+        let file_name = claw_file_name
+            .trim_start_matches(".claw/")
+            .trim_start_matches('/');
+        let session_rel_path = session_rel(&cluster_id, proj_id, session_segment);
+        self.mkdir_rel(&format!("{session_rel_path}/.claw")).await?;
+        let rel = format!("{session_rel_path}/.claw/{file_name}");
+        self.nas_api.put_file(&rel, bytes).await
     }
 
     pub async fn ensure_e2b_proj_nas_roots(&self, proj_id: i64) -> Result<(), String> {

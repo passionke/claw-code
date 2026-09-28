@@ -58,17 +58,15 @@ claw_apply_deploy_profile() {
       export PLAYGROUND_PUBLIC_GATEWAY_BASE="${PLAYGROUND_PUBLIC_GATEWAY_BASE:-http://127.0.0.1:${GATEWAY_HOST_PORT}}"
       export CLAW_TIMEOUT_SECONDS="${CLAW_TIMEOUT_SECONDS:-900}"
       export CONTAINER_BASE_REGISTRY="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
-      # macOS Podman: one network for gateway + docker tap. e2b workers run on e2b. kejiqing
+      # e2b observe only — no host claude-tap sidecar. Author: kejiqing
+      export CLAUDE_TAP_MODE=off
       if [[ "$(uname -s)" == Darwin ]]; then
         export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
-        export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-docker}"
-        export CLAUDE_TAP_DOCKER_NETWORK="${CLAUDE_TAP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
         export CLAW_PODMAN_NETWORK="${CLAW_PODMAN_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
         export CLAW_WORKER_UID="$(id -u)"
         export CLAW_WORKER_GID="$(id -g)"
         export CLAW_PODMAN_BIND_MOUNT_SUFFIX=":U"
       else
-        export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-native}"
         export CLAW_PODMAN_NETWORK="${CLAW_PODMAN_NETWORK:-stack_default}"
       fi
       ;;
@@ -79,7 +77,7 @@ claw_apply_deploy_profile() {
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-8088}"
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
       export CLAW_GATEWAY_PG_IMAGE="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
-      # e2b observe singleton; never compose claude-tap on production. kejiqing
+      # e2b observe singleton; never host claude-tap. Author: kejiqing
       export CLAUDE_TAP_MODE=off
       ;;
   esac
@@ -88,15 +86,10 @@ claw_apply_deploy_profile() {
     export CLAW_CONTAINER_RUNTIME=docker
   fi
 
-  # Local docker: claude-tap sidecar only (solve/interactive on e2b). kejiqing
+  # Local docker compose network defaults (gateway/playground only; tap is e2b). Author: kejiqing
   if [[ "${profile}" == local && "${CLAW_CONTAINER_RUNTIME:-}" == docker ]]; then
-    export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-docker}"
-    export CLAUDE_TAP_IMAGE="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
     export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
-    export CLAUDE_TAP_DOCKER_NETWORK="${CLAUDE_TAP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
     export CLAW_DOCKER_NETWORK="${CLAW_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
-    export CLAUDE_TAP_PUBLISH_PROXY="${CLAUDE_TAP_PUBLISH_PROXY:-127.0.0.1:8080:8080}"
-    export CLAUDE_TAP_PUBLISH_LIVE="${CLAUDE_TAP_PUBLISH_LIVE:-0.0.0.0:3000:3000}"
   fi
 
   export CLAW_GATEWAY_DATABASE_URL="${CLAW_GATEWAY_DATABASE_URL:-$(claw_default_gateway_database_url)}"
@@ -117,9 +110,9 @@ claw_reject_removed_backend_env() {
     echo "error: ${v} is removed from .env (e2b-only); delete this line" >&2
     return 1
   done
-  # production apply sets CLAUDE_TAP_MODE=off; only reject human .env values (docker/native/…). kejiqing
-  if [[ "$(claw_deploy_profile_name)" == production && -n "${CLAUDE_TAP_MODE:-}" && "${CLAUDE_TAP_MODE}" != off ]]; then
-    echo "error: CLAUDE_TAP_MODE is removed from .env in production (observe runs in e2b); delete this line" >&2
+  # apply always sets CLAUDE_TAP_MODE=off; reject leftover human .env (e2b observe only). Author: kejiqing
+  if [[ -n "${CLAUDE_TAP_MODE:-}" && "${CLAUDE_TAP_MODE}" != off ]]; then
+    echo "error: CLAUDE_TAP_MODE is removed (e2b observe only); delete this line from .env" >&2
     return 1
   fi
   return 0

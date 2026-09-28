@@ -164,50 +164,14 @@ claw_bootstrap_project_if_missing() {
 }
 
 claw_claude_tap_up_and_register() {
-  local podman_dir="$1"
-  local root_dir="$2"
-  # shellcheck source=/dev/null
-  source "${podman_dir}/lib/claude-tap-local.sh"
-  claw_claude_tap_start "${podman_dir}" "${root_dir}"
-  claw_ensure_worker_llm_wiring "${podman_dir}"
-  if claw_claude_tap_register_in_admin; then
-    claw_wait_gateway_claw_tap_ready 30
-  else
-    echo "error: clawTap register in Admin failed" >&2
-    return 1
-  fi
+  echo "error: host claude-tap sidecar removed (e2b observe only)" >&2
+  return 1
 }
 
-# LLM (env) → pool claude-tap up + Admin clawTap register. Called from gateway.sh up (after pool-daemon). Author: kejiqing
+# LLM bootstrap may still run elsewhere; host claude-tap sidecar path is gone. Author: kejiqing
 claw_bootstrap_pool_tap_runtime() {
-  local podman_dir="$1"
-  local root_dir="$2"
-  local auto="${CLAW_AUTO_BOOTSTRAP:-0}"
-
-  if claw_gateway_bootstrap_needs_bootstrap 2>/dev/null; then
-    claw_print_cluster_bootstrap_hint
-    if ! claw_gateway_has_active_llm; then
-      echo "note: skip claude-tap — cluster bootstrap in progress (no active LLM yet)" >&2
-      return 0
-    fi
-  fi
-
-  if ! claw_gateway_has_active_llm || [[ "${CLAW_BOOTSTRAP_LLM_FORCE:-0}" == "1" ]]; then
-    if claw_bootstrap_llm_from_env; then
-      :
-    elif [[ "${auto}" == "1" ]]; then
-      echo "error: CLAW_AUTO_BOOTSTRAP=1 but no CLAW_BOOTSTRAP_LLM_API_KEY/OPENAI_API_KEY + base URL in .env" >&2
-      return 1
-    else
-      echo "note: skip claude-tap — no active LLM in PG (cluster=${CLAW_CLUSTER_ID:-unset})" >&2
-      echo "      set CLAW_BOOTSTRAP_LLM_* or OPENAI_API_KEY + UPSTREAM_OPENAI_BASE_URL in .env" >&2
-      echo "      or Admin :${GATEWAY_PLAYGROUND_HOST_PORT:-18765}/admin → 全局推理 Apply" >&2
-      return 0
-    fi
-  fi
-
-  echo "==> pool claude-tap up + Admin register (CLAUDE_TAP_MODE=${CLAUDE_TAP_MODE:-docker})" >&2
-  claw_claude_tap_up_and_register "${podman_dir}" "${root_dir}"
+  echo "note: skip host claude-tap — e2b observe only (sidecar path removed)" >&2
+  return 0
 }
 
 # Back-compat alias (stable-dev-host-up and docs).
