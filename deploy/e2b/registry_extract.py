@@ -46,6 +46,53 @@ def parse_image_ref(image_ref: str) -> tuple[str, str, str]:
     return registry, repo, tag
 
 
+_SCHEME_CACHE: dict[str, str] = {}
+
+
+def registry_scheme(registry: str) -> str:
+    """HTTP scheme for a registry host[:port].
+
+    ACR/GHCR use https. Private Nexus/Harbor pull ports (e.g. repo.550w.com:8082)
+    are commonly plain HTTP — hardcoding https yields SSL:WRONG_VERSION_NUMBER.
+    Author: kejiqing
+    """
+    host = registry.strip()
+    if not host:
+        raise ValueError("empty registry")
+    if host in _SCHEME_CACHE:
+        return _SCHEME_CACHE[host]
+    # Explicit override: CLAW_REGISTRY_HTTP=1|0, or CLAW_REGISTRY_HTTP_HOSTS=a,b
+    force = _env("CLAW_REGISTRY_HTTP")
+    if force in ("1", "true", "yes"):
+        _SCHEME_CACHE[host] = "http"
+        return "http"
+    if force in ("0", "false", "no"):
+        _SCHEME_CACHE[host] = "https"
+        return "https"
+    http_hosts = {
+        h.strip().lower()
+        for h in _env("CLAW_REGISTRY_HTTP_HOSTS").split(",")
+        if h.strip()
+    }
+    if host.lower() in http_hosts:
+        _SCHEME_CACHE[host] = "http"
+        return "http"
+    # Non-TLS registry ports → http; 443/8443 → https.
+    if ":" in host.rsplit("@", 1)[-1]:
+        port = host.rsplit(":", 1)[-1]
+        if port.isdigit() and int(port) not in (443, 8443):
+            _SCHEME_CACHE[host] = "http"
+            return "http"
+    _SCHEME_CACHE[host] = "https"
+    return "https"
+
+
+def _registry_url(registry: str, path: str) -> str:
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{registry_scheme(registry)}://{registry}{path}"
+
+
 def _docker_config_paths() -> list[Path]:
     paths: list[Path] = []
     for key in ("CLAW_DOCKER_CONFIG", "DOCKER_CONFIG"):
@@ -151,7 +198,7 @@ def _bearer_token(registry: str, repository: str, www_auth: str, basic: tuple[st
 def _auth_headers(registry: str, repository: str) -> dict[str, str]:
     basic = registry_basic_auth(registry)
     # Probe for challenge
-    url = f"https://{registry}/v2/{repository}/manifests/latest"
+    url = _registry_url(registry, f"/v2/{repository}/manifests/latest")
     req = urllib.request.Request(url)
     try:
         urllib.request.urlopen(req, timeout=30)
@@ -182,7 +229,9 @@ def _pick_platform_manifest(index: dict, platform: str) -> str:
 
 def _manifest_for_image(registry: str, repository: str, tag: str, platform: str, headers: dict[str, str]) -> dict:
     ref = tag[1:] if tag.startswith("@") else tag
-    path = f"https://{registry}/v2/{repository}/manifests/{urllib.parse.quote(ref, safe=':@')}"
+    path = _registry_url(
+        registry, f"/v2/{repository}/manifests/{urllib.parse.quote(ref, safe=':@')}"
+    )
     accept = (
         "application/vnd.oci.image.index.v1+json,"
         "application/vnd.docker.distribution.manifest.list.v2+json,"
@@ -194,7 +243,7 @@ def _manifest_for_image(registry: str, repository: str, tag: str, platform: str,
     media = str(manifest.get("mediaType") or "")
     if "manifest.list" in media or "image.index" in media or "manifests" in manifest:
         digest = _pick_platform_manifest(manifest, platform)
-        path2 = f"https://{registry}/v2/{repository}/manifests/{digest}"
+        path2 = _registry_url(registry, f"/v2/{repository}/manifests/{digest}")
         manifest, _ = _http_json(path2, hdrs)
     return manifest
 
@@ -295,7 +344,7 @@ def extract_file_from_image(
         digest = layer.get("digest")
         if not digest:
             continue
-        blob_url = f"https://{registry}/v2/{repository}/blobs/{digest}"
+        blob_url = _registry_url(registry, f"/v2/{repository}/blobs/{digest}")
         raw = _http_bytes(blob_url, headers)
         data = _ungzip_if_needed(raw)
         try:
@@ -362,7 +411,7 @@ def extract_paths_from_image(
         digest = layer.get("digest")
         if not digest:
             continue
-        blob_url = f"https://{registry}/v2/{repository}/blobs/{digest}"
+        blob_url = _registry_url(registry, f"/v2/{repository}/blobs/{digest}")
         raw = _http_bytes(blob_url, headers)
         data = _ungzip_if_needed(raw)
         try:
