@@ -4,7 +4,7 @@
 //! KEY, Gateway worker, and MCP `_meta.extra_session.trace_id`.
 
 use runtime::{non_empty_trace_id, resolve_gateway_trace_id, EXTRA_SESSION_TRACE_ID};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use uuid::Uuid;
 
 /// HTTP request/response header for distributed log correlation. Author: kejiqing
@@ -33,21 +33,18 @@ pub fn ensure_extra_session_trace_id(extra_session: &mut Option<Value>, trace_id
     if tid.is_empty() {
         return;
     }
-    match extra_session {
-        Some(Value::Object(map)) => {
-            map.insert(
-                EXTRA_SESSION_TRACE_ID.to_string(),
-                Value::String(tid.to_string()),
-            );
-        }
-        Some(_) | None => {
-            let mut map = Map::new();
-            map.insert(
-                EXTRA_SESSION_TRACE_ID.to_string(),
-                Value::String(tid.to_string()),
-            );
-            *extra_session = Some(Value::Object(map));
-        }
+    if let Some(Value::Object(map)) = extra_session {
+        map.insert(
+            EXTRA_SESSION_TRACE_ID.to_string(),
+            Value::String(tid.to_string()),
+        );
+    } else {
+        let mut map = Map::new();
+        map.insert(
+            EXTRA_SESSION_TRACE_ID.to_string(),
+            Value::String(tid.to_string()),
+        );
+        *extra_session = Some(Value::Object(map));
     }
 }
 
@@ -76,6 +73,7 @@ mod tests {
     use runtime::{
         build_mcp_call_meta, inject_mcp_call_meta, McpCallContext, EXTRA_SESSION_TRACE_ID,
     };
+    use serde_json::json;
 
     #[test]
     fn header_overrides_body() {
