@@ -2,19 +2,17 @@
 # Author: kejiqing
 #
 # Chain:
-# - Push tag refs/tags/release-v* → pick-runner → rust-compile-image (GHCR) → linux-compile-once (single Rust build) → prebuilt images
-#   claw-code, claw-gateway-worker, claw-gateway-playground (same tag).
-# - build-and-push-relaxed-worker: FROM strict worker image.
-# - mirror-to-acr: pull GHCR tags → retag → push ACR (no second Rust compile).
-#   Optional repo variable ACR_MIRROR_VPN_GW (+ ACR_MIRROR_VPN_DEV): host routes for ACR
-#   registry IPs via SG runner VPN jump (10.8 segment); see deploy/stack/docs/github-ci-variables.md.
+# - Push tag refs/tags/release-v* → github-hosted build/push GHCR → mirror-to-acr on aliyun-hk.
+# - rust-compile-image → linux-compile-once → prebuilt claw-code / claw-gateway-worker /
+#   claw-gateway-playground; build-and-push-relaxed-worker FROM strict worker.
+# - mirror-to-acr: skopeo copy GHCR → ACR (v2s2; Aliyun personal ACR rejects OCI empty layers).
+#   Runner label aliyun-hk = cn-hongkong VPS, public net to Hangzhou ACR (no VPN).
+#   See deploy/stack/docs/github-ci-variables.md.
 #
 # Runner selection (Author: kejiqing):
-# - Prefer online repo self-hosted Linux/X64; if none / probe fails, fall back to ubuntu-latest.
-# - pick-runner always uses github-hosted so selection itself cannot hang on a dead self-host.
-# - Listing runners needs Administration: Read. Default GITHUB_TOKEN cannot call that API (403);
-#   set repo secret ACTIONS_RUNNER_LIST_TOKEN (classic PAT with repo admin, or fine-grained
-#   Administration: Read) to enable real self-hosted preference. Without it, always github-hosted.
+# - Build/publish jobs: always github-hosted (ubuntu-latest). Do not schedule compile on
+#   aliyun-hk (small RAM) or legacy SG self-host.
+# - mirror-to-acr: runs-on [self-hosted, aliyun-hk] only; max-parallel 1.
 #
 # Optional repo/org Actions variable CONTAINER_BASE_REGISTRY (hostname only, no path):
 # - unset → docker.io (recommended on github-hosted runners; mirrors may serve incomplete blobs).
@@ -32,53 +30,21 @@ permissions:
 
 jobs:
   pick-runner:
-    name: pick runner (self-hosted or github)
+    # Build path is always github-hosted; ACR mirror is a separate job on aliyun-hk.
+    # Kept as a tiny job so downstream `needs` / outputs stay stable. Author: kejiqing
+    name: pick runner (github-hosted build)
     if: startsWith(github.ref, 'refs/tags/release-v')
     runs-on: ubuntu-latest
     outputs:
       runs_on: ${{ steps.pick.outputs.runs_on }}
       runner_choice: ${{ steps.pick.outputs.runner_choice }}
     steps:
-      - name: Prefer online self-hosted Linux/X64; else ubuntu-latest
+      - name: Always ubuntu-latest for compile / GHCR push
         id: pick
-        uses: actions/github-script@v7
-        with:
-          # Optional PAT: Administration Read on this repo. Author: kejiqing
-          github-token: ${{ secrets.ACTIONS_RUNNER_LIST_TOKEN || github.token }}
-          script: |
-            function useGithubHosted(reason) {
-              core.warning(`${reason}; falling back to ubuntu-latest`);
-              core.setOutput("runs_on", JSON.stringify(["ubuntu-latest"]));
-              core.setOutput("runner_choice", "github-hosted:ubuntu-latest");
-            }
-            let runners;
-            try {
-              runners = await github.paginate(
-                github.rest.actions.listSelfHostedRunnersForRepo,
-                { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
-              );
-            } catch (err) {
-              const status = err && err.status;
-              useGithubHosted(
-                `list self-hosted runners failed (status=${status || "unknown"}): ${err.message}`
-              );
-              return;
-            }
-            const match = runners.find((r) => {
-              if (r.status !== "online") return false;
-              const names = new Set((r.labels || []).map((l) => l.name));
-              return names.has("self-hosted") && names.has("Linux") && names.has("X64");
-            });
-            if (match) {
-              core.info(`Using self-hosted runner: ${match.name} (busy=${match.busy})`);
-              core.setOutput(
-                "runs_on",
-                JSON.stringify(["self-hosted", "Linux", "X64"])
-              );
-              core.setOutput("runner_choice", `self-hosted:${match.name}`);
-            } else {
-              useGithubHosted("No online self-hosted Linux/X64 runner");
-            }
+        run: |
+          set -euo pipefail
+          echo 'runs_on=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          echo "runner_choice=github-hosted:ubuntu-latest" >> "$GITHUB_OUTPUT"
 
   rust-compile-image:
     name: publish claw-rust-compile (GHCR)
@@ -519,18 +485,21 @@ jobs:
           fi
 
   mirror-to-acr:
+    # HK Aliyun (label aliyun-hk): public GHCR pull + ACR push via skopeo v2s2. Author: kejiqing
     if: startsWith(github.ref, 'refs/tags/release-v')
     needs:
-      - pick-runner
       - build-and-push
       - build-and-push-relaxed-worker
-    runs-on: ${{ fromJSON(needs.pick-runner.outputs.runs_on) }}
+    runs-on:
+      - self-hosted
+      - aliyun-hk
     environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
     permissions:
       contents: read
       packages: read
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         package:
           - claw-code
@@ -538,34 +507,12 @@ jobs:
           - claw-gateway-worker-relaxed
           - claw-gateway-playground
     steps:
-      - name: Show runner choice
+      - name: Show runner
         run: |
-          echo "runner_choice=${{ needs.pick-runner.outputs.runner_choice }}"
           echo "hostname=$(hostname)"
-
-      - name: Self-hosted workspace prep
-        run: |
-          set -euo pipefail
-          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
-            exit 0
-          fi
-          WS="${GITHUB_WORKSPACE}"
-          RUN_UID="$(id -u)"
-          RUN_GID="$(id -g)"
-          docker_root() {
-            docker run --rm -v "${WS}:/w:rw" alpine:3.20 "$@"
-          }
-          echo "chown workspace via docker (prior docker jobs leave root-owned files)"
-          docker_root chown -R "${RUN_UID}:${RUN_GID}" /w
-          ART="${WS}/deploy/stack/.linux-artifacts"
-          if [ -d "${ART}" ]; then
-            echo "remove ${ART}"
-            rm -rf "${ART}" 2>/dev/null || docker_root rm -rf /w/deploy/stack/.linux-artifacts
-          fi
-          rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
-
-      - name: Checkout (route helper)
-        uses: actions/checkout@v4
+          echo "runner=${RUNNER_NAME:-}"
+          skopeo --version
+          docker version --format '{{.Server.Version}}' >/dev/null
 
       - name: Verify ACR_REGISTRY and derive login host
         id: reg
@@ -581,22 +528,6 @@ jobs:
           echo "login_host=${LOGIN_HOST}" >> "$GITHUB_OUTPUT"
           echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
 
-      # VPN /32 routes are SG self-hosted only (Hangzhou ACR via 10.8 jump).
-      # GitHub-hosted has no that VPN and no CAP_NET_ADMIN — must skip. Author: kejiqing
-      - name: Route ACR via VPN (optional, self-hosted only)
-        env:
-          ACR_LOGIN_HOST: ${{ steps.reg.outputs.login_host }}
-          ACR_MIRROR_VPN_GW: ${{ vars.ACR_MIRROR_VPN_GW }}
-          ACR_MIRROR_VPN_DEV: ${{ vars.ACR_MIRROR_VPN_DEV }}
-        run: |
-          set -euo pipefail
-          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
-            echo "github-hosted runner: skip ACR VPN routes (ACR_MIRROR_VPN_GW is for SG self-hosted only)"
-            exit 0
-          fi
-          chmod +x ./deploy/stack/lib/ci-acr-vpn-route.sh
-          ./deploy/stack/lib/ci-acr-vpn-route.sh up
-
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -611,22 +542,23 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: Mirror ${{ matrix.package }} GHCR → ACR
+      - name: Mirror ${{ matrix.package }} GHCR → ACR (skopeo v2s2)
         env:
           PACKAGE: ${{ matrix.package }}
           PREFIX: ${{ steps.reg.outputs.image_prefix }}
           RELEASE_TAG: ${{ github.ref_name }}
+          AUTHFILE: ${{ runner.temp }}/docker-auth.json
         run: |
           set -euo pipefail
+          # docker/login-action writes ~/.docker/config.json; skopeo needs an authfile.
+          cp "${HOME}/.docker/config.json" "${AUTHFILE}"
           SHA12="${GITHUB_SHA:0:12}"
-          GHCR_IMAGE="ghcr.io/${{ github.repository_owner }}/${PACKAGE}"
-          ACR_IMAGE="${PREFIX}/${PACKAGE}"
-          docker pull "${GHCR_IMAGE}:${RELEASE_TAG}"
-          for tag in "${RELEASE_TAG}" "sha-${SHA12}" latest; do
-            docker tag "${GHCR_IMAGE}:${RELEASE_TAG}" "${ACR_IMAGE}:${tag}"
-            docker push "${ACR_IMAGE}:${tag}"
-          done
-          echo "mirrored ${GHCR_IMAGE}:${RELEASE_TAG} → ${ACR_IMAGE} (${RELEASE_TAG}, sha-${SHA12}, latest)"
+          SRC="docker://ghcr.io/${{ github.repository_owner }}/${PACKAGE}:${RELEASE_TAG}"
+          DST_BASE="docker://${PREFIX}/${PACKAGE}"
+          skopeo copy --authfile "${AUTHFILE}" --format v2s2 "${SRC}" "${DST_BASE}:${RELEASE_TAG}"
+          skopeo copy --authfile "${AUTHFILE}" --format v2s2 "${DST_BASE}:${RELEASE_TAG}" "${DST_BASE}:sha-${SHA12}"
+          skopeo copy --authfile "${AUTHFILE}" --format v2s2 "${DST_BASE}:${RELEASE_TAG}" "${DST_BASE}:latest"
+          echo "mirrored ${SRC} → ${DST_BASE} (${RELEASE_TAG}, sha-${SHA12}, latest)"
 
       - name: Verify playground admin assets in ACR image
         if: matrix.package == 'claw-gateway-playground'
@@ -636,32 +568,7 @@ jobs:
         run: |
           set -euo pipefail
           IMG="${PREFIX}/claw-gateway-playground:${RELEASE_TAG}"
+          docker pull "${IMG}"
           docker run --rm "${IMG}" sh -c 'test -f /app/admin-dist/index.html && test -n "$(ls /app/admin-dist/assets/*.js 2>/dev/null)"'
           echo "playground admin-dist ok in ${IMG}"
-
-      - name: Remove ACR VPN routes
-        if: always()
-        env:
-          ACR_LOGIN_HOST: ${{ steps.reg.outputs.login_host }}
-          ACR_MIRROR_VPN_GW: ${{ vars.ACR_MIRROR_VPN_GW }}
-          ACR_MIRROR_VPN_DEV: ${{ vars.ACR_MIRROR_VPN_DEV }}
-        run: |
-          set -euo pipefail
-          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
-            exit 0
-          fi
-          ./deploy/stack/lib/ci-acr-vpn-route.sh down
-
-      - name: Self-hosted workspace cleanup
-        if: always()
-        run: |
-          set -euo pipefail
-          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
-            exit 0
-          fi
-          WS="${GITHUB_WORKSPACE}"
-          ART="${WS}/deploy/stack/.linux-artifacts"
-          if [ -d "${ART}" ]]; then
-            echo "remove ${ART}"
-            rm -rf "${ART}" 2>/dev/null || docker run --rm -v "${WS}:/w:rw" alpine:3.20 rm -rf /w/deploy/stack/.linux-artifacts || true
-          fi
+          docker rmi "${IMG}" 2>/dev/null || true
