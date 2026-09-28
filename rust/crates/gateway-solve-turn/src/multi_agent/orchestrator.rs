@@ -103,7 +103,7 @@ pub fn run_multi_agent_solve_turn(
     }
     .with_workspace_root(work_dir);
 
-    let session_tracer = crate::gateway_session_tracer(&mcp.request_id, work_root);
+    let session_tracer = crate::gateway_session_tracer(&mcp.trace_id, work_root);
     let async_runtime = tokio::runtime::Handle::try_current().map_err(|_| {
         err(
             HTTP_INTERNAL,

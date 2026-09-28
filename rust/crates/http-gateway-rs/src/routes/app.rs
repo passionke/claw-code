@@ -43,8 +43,8 @@ use crate::{
     master_mcp, master_observer, master_scheduler, mcp_probe, pool, pool_consumer_resolve,
     preflight_plugin_api, project_config_apply, project_config_draft, project_config_version,
     project_entity_revision, project_extra_session, project_git_sync, project_id, project_tools,
-    session_db, session_execution, session_merge, session_upload, solve_pool, task_status, turn_id,
-    turn_timeline_api, turn_tools_api,
+    session_db, session_execution, session_merge, session_upload, solve_pool, task_status, trace_id,
+    turn_id, turn_timeline_api, turn_tools_api,
 };
 use axum::body::Bytes;
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
@@ -62,6 +62,7 @@ use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
 };
 use runtime::load_system_prompt;
+use runtime::trace_id_from_extra_session;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use session_execution::{
@@ -143,6 +144,40 @@ mod tests {
         let ok = json!([{"skillName": "a", "skillContent": "# x"}]);
         assert!(validate_skills_json(&ok).is_ok());
         assert!(validate_skills_json(&json!([{"skillName": "a"}])).is_err());
+    }
+
+    /// 响应头：session 与 trace 分工，X-Trace-Id 不覆盖会话头. Author: kejiqing
+    #[test]
+    fn solve_response_headers_carry_trace_and_keep_session() {
+        let headers = solve_async_response_headers(
+            "session-cccccccccccccccccccccccccccccccc",
+            Some("trace-dddddddddddddddddddddddddddddddd"),
+        )
+        .expect("headers");
+        assert_eq!(
+            headers.get("x-request-id").and_then(|v| v.to_str().ok()),
+            Some("session-cccccccccccccccccccccccccccccccc")
+        );
+        assert_eq!(
+            headers.get("claw-session-id").and_then(|v| v.to_str().ok()),
+            Some("session-cccccccccccccccccccccccccccccccc")
+        );
+        assert_eq!(
+            headers
+                .get(crate::trace_id::HEADER_TRACE_ID)
+                .and_then(|v| v.to_str().ok()),
+            Some("trace-dddddddddddddddddddddddddddddddd")
+        );
+    }
+
+    #[test]
+    fn solve_response_headers_omit_trace_when_none() {
+        let headers = solve_async_response_headers("sess-only", None).expect("headers");
+        assert!(headers.get(crate::trace_id::HEADER_TRACE_ID).is_none());
+        assert_eq!(
+            headers.get("claw-session-id").and_then(|v| v.to_str().ok()),
+            Some("sess-only")
+        );
     }
 
     #[allow(dead_code)]

@@ -280,10 +280,18 @@ async fn run_agent_completion(
     Ok((session_id, turn_id, content))
 }
 
-fn with_session_header(mut resp: Response, session_id: &str) -> Response {
+fn with_session_header(mut resp: Response, session_id: &str, trace_id: Option<&str>) -> Response {
     if let Ok(v) = HeaderValue::from_str(session_id) {
         resp.headers_mut()
             .insert(header::HeaderName::from_static("x-nerogate-session-id"), v);
+    }
+    if let Some(tid) = trace_id.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Ok(v) = HeaderValue::from_str(tid) {
+            resp.headers_mut().insert(
+                header::HeaderName::from_static(crate::trace_id::HEADER_TRACE_ID),
+                v,
+            );
+        }
     }
     resp
 }
@@ -312,10 +320,14 @@ pub(crate) async fn chat_completions(
         Ok(v) => v,
         Err(e) => return openai_err_response(StatusCode::BAD_REQUEST, e),
     };
-    let norm = match resolve_session(&state, &key, norm).await {
+    let mut norm = match resolve_session(&state, &key, norm).await {
         Ok(v) => v,
         Err(r) => return r,
     };
+    let trace_id = crate::trace_id::apply_inbound_trace_id(
+        crate::trace_id::trace_id_from_headers(&headers),
+        &mut norm.extra_session,
+    );
     let stream = norm.stream;
     let (session_id, turn_id, content) = match run_agent_completion(&state, &key, norm).await {
         Ok(v) => v,
@@ -345,7 +357,7 @@ pub(crate) async fn chat_completions(
             header::HeaderName::from_static("x-accel-buffering"),
             HeaderValue::from_static("no"),
         );
-        return with_session_header(resp, &session_id);
+        return with_session_header(resp, &session_id, Some(&trace_id));
     }
     let body = chat_completion_response(
         &model,
@@ -355,7 +367,7 @@ pub(crate) async fn chat_completions(
         now_secs(),
         &usage_rows,
     );
-    with_session_header(Json(body).into_response(), &session_id)
+    with_session_header(Json(body).into_response(), &session_id, Some(&trace_id))
 }
 
 #[utoipa::path(
@@ -382,10 +394,14 @@ pub(crate) async fn responses(
         Ok(v) => v,
         Err(e) => return openai_err_response(StatusCode::BAD_REQUEST, e),
     };
-    let norm = match resolve_session(&state, &key, norm).await {
+    let mut norm = match resolve_session(&state, &key, norm).await {
         Ok(v) => v,
         Err(r) => return r,
     };
+    let trace_id = crate::trace_id::apply_inbound_trace_id(
+        crate::trace_id::trace_id_from_headers(&headers),
+        &mut norm.extra_session,
+    );
     let stream = norm.stream;
     let conversation_key = norm.conversation_key.clone();
 
@@ -451,7 +467,7 @@ pub(crate) async fn responses(
             std::sync::Arc::clone(&state.session_db),
             display,
         );
-        return with_session_header(resp, &session_id);
+        return with_session_header(resp, &session_id, Some(&trace_id));
     }
 
     let (session_id, turn_id, content) = match run_agent_completion(&state, &key, norm).await {
@@ -471,7 +487,7 @@ pub(crate) async fn responses(
         now_ms(),
         &usage_rows,
     );
-    with_session_header(Json(body).into_response(), &session_id)
+    with_session_header(Json(body).into_response(), &session_id, Some(&trace_id))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
