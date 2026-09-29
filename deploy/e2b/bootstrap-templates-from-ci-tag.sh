@@ -69,7 +69,7 @@ SDK_REQ="${E2B_DIR}/requirements-e2b-sdk.txt"
 ensure_venv() {
   local -a pip_extra=()
   if claw_region_is_china; then
-    pip_extra=(-i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn)
+    pip_extra=(-i https://mirrors.aliyun.com/pypi/simple --trusted-host mirrors.aliyun.com)
   fi
   if [[ ! -x "${PY}" ]]; then
     echo "==> create ${VENV_DIR} (e2b SDK)" >&2
