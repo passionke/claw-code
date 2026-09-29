@@ -99,7 +99,7 @@ HITL：`Text` / `MultipleChoice` / `TextField` / `Button`。
 1. 先开 SSE，再 `solve_async` 入队（持有 `turnId`）。
 2. 订 LiveReportHub，投影：
    - `report.delta` → `response.output_text.delta`
-   - `tool.*` → function_call 相关中间事件（有则发）
+   - `tool.*` → 非 MCP 走 `function_call`；MCP 只走 `mcp_call`，不再另发 `function_call`
    - 终态 → `response.completed` + `done`/`[DONE]`
 3. **禁止**先 `await` 整轮再假 SSE。
 

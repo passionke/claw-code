@@ -233,7 +233,6 @@ fn project_responses_msg(cursor: &mut ResponsesCursor, msg: &HubMsg) -> Vec<(Str
         HubMsg::Process(pe) if pe.ev == "tool.start" => {
             close_text(cursor, &mut out);
             close_reasoning(cursor, &mut out);
-            out.push(("response.output_item.added".into(), legacy_tool_added(pe)));
             let id = tool_id(pe);
             let kind = tool_kind(pe);
             let display = cursor.display.resolve(&kind);
@@ -258,6 +257,7 @@ fn project_responses_msg(cursor: &mut ResponsesCursor, msg: &HubMsg) -> Vec<(Str
                     }),
                 ));
             } else {
+                out.push(("response.output_item.added".into(), legacy_tool_added(pe)));
                 out.push((
                     "response.function_call_arguments.delta".into(),
                     json!({
@@ -807,22 +807,20 @@ mod tests {
     }
 
     #[test]
-    fn mcp_uses_mcp_events_and_keeps_the_legacy_function_call_item() {
+    fn mcp_events_do_not_also_open_a_function_call() {
         let mut c = cursor();
         let start = project_responses_msg(&mut c, &tool_start("sqlbot", "mcp", "问销售"));
         let names: Vec<_> = start.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
             names,
             vec![
-                "response.output_item.added",
                 "response.mcp_call.in_progress",
                 "response.mcp_call_arguments.delta",
             ]
         );
-        assert!(start
-            .iter()
-            .all(|(name, body)| name != "response.output_item.added"
-                || body.get("nerogate").is_none()));
+        assert!(start.iter().all(|(name, body)| {
+            name != "response.output_item.added" && body["item"]["type"] != "function_call"
+        }));
         let end = project_responses_msg(
             &mut c,
             &HubMsg::Process(ProcessEvent {
