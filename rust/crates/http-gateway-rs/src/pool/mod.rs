@@ -37,7 +37,9 @@ pub use e2b_nas_layout::{
     worker_host_path,
 };
 pub use e2b_nas_layout_backend::NasLayoutBackend;
-pub use e2b_orchestrated_pool::{E2bOrchestratedPool, E2B_POOL_ID};
+pub use e2b_orchestrated_pool::{
+    ensure_scope_mcp_bind, ensure_session_mcp_settings_on_nas, E2bOrchestratedPool, E2B_POOL_ID,
+};
 pub use e2b_proj_worker_registry::E2bProjWorkerRegistry;
 pub use e2b_worker_llm_material::{
     prepare_e2b_worker_llm_material, PrepareE2bWorkerLlmOptions, WorkerLlmMaterial,
