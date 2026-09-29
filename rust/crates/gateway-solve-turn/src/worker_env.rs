@@ -44,6 +44,7 @@ pub const WORKER_ENV_KEYS: &[&str] = &[
     "CLAW_INSTRUCTION_FILE_MAX_CHARS",
     "CLAW_INSTRUCTION_TOTAL_MAX_CHARS",
     "CLAW_PROGRESS_MESSAGE_MAX_CHARS",
+    "CLAW_TOOL_SUMMARY_MAX_CHARS",
     "CLAW_GATEWAY_INTERNAL_BASE_URL",
     "CLAW_GATEWAY_INTERNAL_TOKEN",
     "CLAW_POOL_ID",
@@ -304,5 +305,6 @@ mod tests {
     fn worker_env_keys_include_context_window() {
         assert!(WORKER_ENV_KEYS.contains(&"CLAW_CONTEXT_WINDOW_TOKENS"));
         assert!(WORKER_ENV_KEYS.contains(&"CLAW_CONTEXT_COMPACT_RATIO_PERCENT"));
+        assert!(WORKER_ENV_KEYS.contains(&"CLAW_TOOL_SUMMARY_MAX_CHARS"));
     }
 }

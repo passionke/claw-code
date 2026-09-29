@@ -293,7 +293,7 @@ fn project_responses_msg(cursor: &mut ResponsesCursor, msg: &HubMsg) -> Vec<(Str
                     event.into(),
                     json!({
                         "type": event,
-                        "item_id": id,
+                        "item_id": id.clone(),
                         "nerogate": nerogate("mcp", &display),
                     }),
                 ));
@@ -302,12 +302,36 @@ fn project_responses_msg(cursor: &mut ResponsesCursor, msg: &HubMsg) -> Vec<(Str
                     "response.function_call_arguments.done".into(),
                     json!({
                         "type": "response.function_call_arguments.done",
-                        "item_id": id,
-                        "arguments": args,
+                        "item_id": id.clone(),
+                        "arguments": args.clone(),
                         "nerogate": nerogate(&kind, &display),
                     }),
                 ));
             }
+            let item_type = if kind == "mcp" {
+                "mcp_call"
+            } else {
+                "function_call"
+            };
+            let name = pe.payload.get("name").and_then(Value::as_str).unwrap_or("");
+            let output = pe
+                .payload
+                .get("output")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            out.push((
+                "response.output_item.done".into(),
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": item_type,
+                        "id": id,
+                        "name": name,
+                        "arguments": args,
+                        "output": output,
+                    }
+                }),
+            ));
         }
         HubMsg::Process(pe) if pe.ev == "shell.chunk" => {
             let id = tool_id(pe);
@@ -695,6 +719,91 @@ mod tests {
         assert_eq!(end[0].0, "response.function_call_arguments.done");
         assert_eq!(end[0].1["arguments"], "订单");
         assert_eq!(end[0].1["nerogate"]["kind"], "search");
+        assert!(end[0].1.get("output").is_none());
+        assert_eq!(end[1].0, "response.output_item.done");
+        assert_eq!(end[1].1["item"]["output"], "");
+        assert_ne!(end[1].1["item"]["output"], "12 hits");
+    }
+
+    #[test]
+    fn tool_end_appends_output_item_done_with_the_full_return() {
+        let long = format!("{{\"steps\":[{}]}}", "x".repeat(300));
+        let mut c = cursor();
+        let _ = project_responses_msg(&mut c, &tool_start("propose_exec", "tool", "plan"));
+        let end = project_responses_msg(
+            &mut c,
+            &HubMsg::Process(ProcessEvent {
+                ev: "tool.end".into(),
+                payload: json!({
+                    "toolCallId": "tc1",
+                    "name": "propose_exec",
+                    "kind": "tool",
+                    "status": "ok",
+                    "resultSummary": "truncated",
+                    "output": long.as_str(),
+                }),
+            }),
+        );
+        assert_eq!(end[0].0, "response.function_call_arguments.done");
+        assert!(end[0].1.get("output").is_none());
+        assert_eq!(end[0].1["arguments"], "plan");
+        assert_eq!(end[1].0, "response.output_item.done");
+        assert_eq!(
+            end[1].1,
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "id": "tc1",
+                    "name": "propose_exec",
+                    "arguments": "plan",
+                    "output": long.as_str(),
+                }
+            })
+        );
+
+        let mut mcp = cursor();
+        let _ = project_responses_msg(&mut mcp, &tool_start("sqlbot", "mcp", "问销售"));
+        let ok = project_responses_msg(
+            &mut mcp,
+            &HubMsg::Process(ProcessEvent {
+                ev: "tool.end".into(),
+                payload: json!({
+                    "toolCallId": "tc1",
+                    "name": "sqlbot",
+                    "kind": "mcp",
+                    "status": "ok",
+                    "output": long.as_str(),
+                }),
+            }),
+        );
+        assert_eq!(ok[0].0, "response.mcp_call.completed");
+        assert!(ok[0].1.get("output").is_none());
+        assert_eq!(ok[1].1["item"]["type"], "mcp_call");
+        assert_eq!(ok[1].1["item"]["output"], long.as_str());
+        assert_eq!(ok[1].1["item"]["arguments"], "问销售");
+        assert_eq!(ok[1].1["item"]["name"], "sqlbot");
+
+        let mut failed = cursor();
+        let _ = project_responses_msg(&mut failed, &tool_start("sqlbot", "mcp", "问销售"));
+        let err = project_responses_msg(
+            &mut failed,
+            &HubMsg::Process(ProcessEvent {
+                ev: "tool.end".into(),
+                payload: json!({
+                    "toolCallId": "tc1",
+                    "name": "sqlbot",
+                    "kind": "mcp",
+                    "status": "error",
+                    "output": "boom",
+                }),
+            }),
+        );
+        assert_eq!(err[0].0, "response.mcp_call.failed");
+        assert_eq!(err[0].1["item_id"], "tc1");
+        assert!(err[0].1.get("output").is_none());
+        assert_eq!(err[1].1["item"]["output"], "boom");
+        assert_eq!(err[1].1["item"]["type"], "mcp_call");
     }
 
     #[test]
