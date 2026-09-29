@@ -33,10 +33,12 @@ LiveReportHub（唯一 SSE 源）
 | `ev` | 字段 | 说明 |
 |---|---|---|
 | `tool.start` | `toolCallId`, `name`, `kind`, `title`, `argsSummary?` | 工具开始 |
-| `tool.end` | `toolCallId`, `name`, `status` (`ok`/`error`), `durationMs`, `resultSummary?` | 工具结束 |
+| `tool.end` | `toolCallId`, `name`, `status` (`ok`/`error`), `durationMs`, `resultSummary?`, `output` | 工具结束。`output` 为完整返回，不截断 |
 | `progress` | `kind`, `message`, `tsMs?` | 进度一行（可选；`report_progress` 仍可走 `report.delta`） |
 
 `kind` 建议：`search` / `read` / `edit` / `shell` / `mcp` / `delegate` / `tool`。
+
+`argsSummary` 与 `resultSummary` 默认最多 **2048** 个 Unicode 字符，超出截断并追加 `…`。环境变量 **`CLAW_TOOL_SUMMARY_MAX_CHARS`**（正整数）可覆盖；未设置、空、非数字或 `0` 时用 2048。`output` 不受此上限约束。
 
 ---
 

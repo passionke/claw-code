@@ -153,18 +153,30 @@ pub fn emit_raw_json(value: &Value) -> io::Result<()> {
     io::stdout().flush()
 }
 
-const TOOL_SUMMARY_MAX: usize = 240;
+/// Default Unicode-scalar cap for `argsSummary` and `resultSummary`. Author: kejiqing
+pub const DEFAULT_TOOL_SUMMARY_MAX_CHARS: usize = 2048;
+
+/// Max Unicode scalars for process-disclosure summaries.
+/// Env: `CLAW_TOOL_SUMMARY_MAX_CHARS`. Unset, empty, non-numeric, or `0` keeps the default.
+/// Author: kejiqing
+#[must_use]
+pub fn tool_summary_max_chars() -> usize {
+    std::env::var("CLAW_TOOL_SUMMARY_MAX_CHARS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_TOOL_SUMMARY_MAX_CHARS)
+}
 
 fn truncate_summary(s: &str) -> String {
+    let max = tool_summary_max_chars();
     let t = s.trim();
-    if t.chars().count() <= TOOL_SUMMARY_MAX {
+    if t.chars().count() <= max {
         return t.to_string();
     }
     format!(
         "{}…",
-        t.chars()
-            .take(TOOL_SUMMARY_MAX.saturating_sub(1))
-            .collect::<String>()
+        t.chars().take(max.saturating_sub(1)).collect::<String>()
     )
 }
 
@@ -331,6 +343,27 @@ pub fn emit_shell_chunk(tool_call_id: &str, text: &str) -> io::Result<()> {
     emit_raw_json(&body)
 }
 
+/// JSON body for `tool.end`. `output` is the full result; `resultSummary` is capped. Author: kejiqing
+#[must_use]
+pub fn tool_end_event(
+    tool_call_id: &str,
+    tool_name: &str,
+    ok: bool,
+    duration_ms: u64,
+    result: &str,
+) -> Value {
+    serde_json::json!({
+        "ev": "tool.end",
+        "toolCallId": tool_call_id,
+        "name": tool_name,
+        "kind": tool_process_kind(tool_name),
+        "status": if ok { "ok" } else { "error" },
+        "durationMs": duration_ms,
+        "resultSummary": truncate_summary(result),
+        "output": result,
+    })
+}
+
 /// Emit `tool.end` for AG-UI / process disclosure. Author: kejiqing
 pub fn emit_tool_end(
     tool_call_id: &str,
@@ -339,15 +372,13 @@ pub fn emit_tool_end(
     duration_ms: u64,
     result: &str,
 ) -> io::Result<()> {
-    emit_raw_json(&serde_json::json!({
-        "ev": "tool.end",
-        "toolCallId": tool_call_id,
-        "name": tool_name,
-        "kind": tool_process_kind(tool_name),
-        "status": if ok { "ok" } else { "error" },
-        "durationMs": duration_ms,
-        "resultSummary": truncate_summary(result),
-    }))
+    emit_raw_json(&tool_end_event(
+        tool_call_id,
+        tool_name,
+        ok,
+        duration_ms,
+        result,
+    ))
 }
 
 /// Parse one stdout line; returns `Some(event)` when prefixed.
@@ -424,5 +455,46 @@ mod tests {
         assert_eq!(tool_process_kind("Edit"), "edit");
         assert_ne!(tool_process_kind("Grep"), "shell");
         assert_ne!(tool_process_kind("mcp_call"), "shell");
+    }
+
+    fn summary_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn tool_end_keeps_full_output_and_caps_summary() {
+        let _guard = summary_env_lock();
+        let prev = std::env::var("CLAW_TOOL_SUMMARY_MAX_CHARS").ok();
+        std::env::remove_var("CLAW_TOOL_SUMMARY_MAX_CHARS");
+
+        let full = "x".repeat(DEFAULT_TOOL_SUMMARY_MAX_CHARS + 1);
+        let body = tool_end_event("tc1", "propose_exec", true, 12, &full);
+        let summary = body["resultSummary"].as_str().unwrap();
+        assert_eq!(summary.chars().count(), DEFAULT_TOOL_SUMMARY_MAX_CHARS);
+        assert!(summary.ends_with('…'));
+        assert_eq!(body["output"].as_str(), Some(full.as_str()));
+        let kept: String = summary
+            .chars()
+            .take(DEFAULT_TOOL_SUMMARY_MAX_CHARS - 1)
+            .collect();
+        assert_eq!(kept, "x".repeat(DEFAULT_TOOL_SUMMARY_MAX_CHARS - 1));
+
+        std::env::set_var("CLAW_TOOL_SUMMARY_MAX_CHARS", "4");
+        let short = tool_end_event("tc1", "propose_exec", true, 1, "abcdefgh");
+        assert_eq!(short["resultSummary"], "abc…");
+        assert_eq!(short["output"], "abcdefgh");
+
+        for raw in ["0", "", "nope"] {
+            std::env::set_var("CLAW_TOOL_SUMMARY_MAX_CHARS", raw);
+            assert_eq!(tool_summary_max_chars(), DEFAULT_TOOL_SUMMARY_MAX_CHARS);
+        }
+
+        match prev {
+            Some(v) => std::env::set_var("CLAW_TOOL_SUMMARY_MAX_CHARS", v),
+            None => std::env::remove_var("CLAW_TOOL_SUMMARY_MAX_CHARS"),
+        }
     }
 }
