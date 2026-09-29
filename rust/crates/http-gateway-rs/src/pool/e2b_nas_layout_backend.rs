@@ -197,7 +197,8 @@ impl NasLayoutBackend {
         self.nas_api.put_file(&rel, task_bytes).await
     }
 
-    /// Write `{session}/.claw/{file_name}` via nas-api (e.g. scope-rendered `settings.json`). Author: kejiqing
+    /// Write `{session}/.claw/{file_name}` via nas-api (MCP settings SoT for all roles on e2b).
+    /// Author: kejiqing
     pub async fn put_session_claw_file(
         &self,
         proj_id: i64,

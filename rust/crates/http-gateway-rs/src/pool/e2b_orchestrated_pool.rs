@@ -12,13 +12,16 @@ use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 use tracing::warn;
 
-use crate::master_observer::PROJECT_ROLE_SCOPE;
+use crate::master_observer::{
+    master_mcp_shared_token, merge_master_mcp_into_settings, PROJECT_ROLE_MASTER,
+    PROJECT_ROLE_SCOPE,
+};
 use crate::project_config_apply::{build_settings_json_from_row, enabled_mcp_servers};
 use crate::project_scope::{
     build_scope_key, mcp_bind_is_initialized, mcp_bind_snapshot, mcp_bind_values_match,
     parse_scope_json, render_mcp_template, scope_bind_values,
 };
-use crate::session_db::GatewaySessionDb;
+use crate::session_db::{GatewaySessionDb, ProjectConfigRow};
 
 use super::e2b_proj_worker_registry::E2bProjWorkerRegistry;
 use super::merge_stdout_hooks;
@@ -115,6 +118,61 @@ impl E2bOrchestratedPool {
     }
 }
 
+/// Session `.claw/settings.json` body for e2b guest (`HOME` = session on NAS).
+/// Role-agnostic Admin mcpServers; master injects claw-master-observer when configured.
+/// Author: kejiqing
+fn session_settings_json_for_nas(
+    proj_id: i64,
+    config_row: Option<&ProjectConfigRow>,
+    role: &str,
+    gateway_base: &str,
+    master_token: Option<&str>,
+) -> Value {
+    let mut settings = config_row
+        .map(build_settings_json_from_row)
+        .unwrap_or_else(|| {
+            json!({
+                "mcpServers": serde_json::Map::new(),
+                "auto_hidden_system_prompt": 1
+            })
+        });
+    if role == PROJECT_ROLE_MASTER {
+        if let (Some(token), true) = (master_token, !gateway_base.trim().is_empty()) {
+            merge_master_mcp_into_settings(&mut settings, proj_id, gateway_base, token);
+        }
+    }
+    settings
+}
+
+/// Non-scope roles: land the same MCP settings claw loads onto NAS session (not gateway-local WORK).
+/// Scope uses [`ensure_scope_mcp_bind`] (rendered `${…}` bind-once). Author: kejiqing
+pub async fn ensure_session_mcp_settings_on_nas(
+    db: &GatewaySessionDb,
+    nas_layout: &NasLayoutBackend,
+    proj_id: i64,
+    session_segment: &str,
+    role: &str,
+) -> Result<(), String> {
+    let config_row = db
+        .get_project_config(proj_id)
+        .await
+        .map_err(|e| format!("load project_config for session mcp settings: {e}"))?;
+    let gateway_base = std::env::var("CLAW_GATEWAY_BASE").unwrap_or_default();
+    let token = master_mcp_shared_token();
+    let settings = session_settings_json_for_nas(
+        proj_id,
+        config_row.as_ref(),
+        role,
+        &gateway_base,
+        token.as_deref(),
+    );
+    let bytes = serde_json::to_vec_pretty(&settings)
+        .map_err(|e| format!("serialize session settings.json: {e}"))?;
+    nas_layout
+        .put_session_claw_file(proj_id, session_segment, "settings.json", &bytes)
+        .await
+}
+
 /// Bind MCP once per scope worker; same rendered settings → workers + sessions (claw reads session).
 /// Project `mcp_servers_json` stays templated (`${…}`). Author: kejiqing
 pub async fn ensure_scope_mcp_bind(
@@ -179,17 +237,10 @@ async fn write_scope_settings_mcp(
     proj_id: i64,
     worker_id: &str,
     session_segment: &str,
-    config_row: Option<&crate::session_db::ProjectConfigRow>,
+    config_row: Option<&ProjectConfigRow>,
     mcp_servers: &Value,
 ) -> Result<(), String> {
-    let mut settings = config_row
-        .map(build_settings_json_from_row)
-        .unwrap_or_else(|| {
-            json!({
-                "mcpServers": serde_json::Map::new(),
-                "auto_hidden_system_prompt": 1
-            })
-        });
+    let mut settings = session_settings_json_for_nas(proj_id, config_row, PROJECT_ROLE_SCOPE, "", None);
     if let Some(obj) = settings.as_object_mut() {
         obj.insert("mcpServers".to_string(), mcp_servers.clone());
     }
@@ -270,6 +321,16 @@ impl PoolOps for E2bOrchestratedPool {
             self.nas_layout
                 .ensure_session_context(proj_id, &session_segment, &worker_id)
                 .await?;
+            // Guest MCP SoT is NAS session settings; local WORK write is not visible on e2b.
+            // Author: kejiqing
+            ensure_session_mcp_settings_on_nas(
+                db.as_ref(),
+                &self.nas_layout,
+                proj_id,
+                &session_segment,
+                &role,
+            )
+            .await?;
             (handle, worker_id, slot, String::new())
         };
 
@@ -498,5 +559,85 @@ impl PoolOps for E2bOrchestratedPool {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::master_observer::PROJECT_ROLE_NORMAL;
+
+    fn sample_row(mcp: Value) -> ProjectConfigRow {
+        ProjectConfigRow {
+            proj_id: 3025,
+            content_rev: "rev".into(),
+            stable_content_rev: Some("rev".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([]),
+            mcp_servers_json: mcp,
+            skills_sources_json: json!([]),
+            skills_json: json!([]),
+            allowed_tools_json: json!([]),
+            claude_md: None,
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
+            extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
+            worker_profile_json: json!({"mode": "strict"}),
+            worker_env_json: json!({}),
+            kb_sources_json: json!([]),
+            project_code: String::new(),
+            project_description: String::new(),
+            max_iterations: None,
+        }
+    }
+
+    #[test]
+    fn session_settings_for_nas_keeps_classic_fixed_url_mcp() {
+        let row = sample_row(json!({
+            "twin-steward": {
+                "url": "https://alfred.maxiot-inc.com/twin/mcp",
+                "type": "streamable-http",
+                "enabled": true,
+                "headers": {"Authorization": "Bearer t"}
+            }
+        }));
+        let settings = session_settings_json_for_nas(
+            3025,
+            Some(&row),
+            PROJECT_ROLE_NORMAL,
+            "",
+            None,
+        );
+        let twin = settings
+            .pointer("/mcpServers/twin-steward/url")
+            .and_then(|v| v.as_str());
+        assert_eq!(twin, Some("https://alfred.maxiot-inc.com/twin/mcp"));
+        assert_eq!(
+            settings.get("auto_hidden_system_prompt"),
+            Some(&json!(1))
+        );
+    }
+
+    #[test]
+    fn session_settings_for_nas_injects_master_mcp() {
+        let row = sample_row(json!({}));
+        let settings = session_settings_json_for_nas(
+            9,
+            Some(&row),
+            PROJECT_ROLE_MASTER,
+            "http://gw.example:18088",
+            Some("tok"),
+        );
+        let url = settings
+            .pointer("/mcpServers/claw-master-observer/url")
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            url,
+            Some("http://gw.example:18088/v1/master/9/mcp")
+        );
     }
 }
