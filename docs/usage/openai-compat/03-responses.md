@@ -124,8 +124,8 @@ curl -sS -X POST "$GATEWAY/v1/responses" \
 - `response.in_progress`
 - `response.output_text.done` — 一段正文结束
 - `response.reasoning_text.delta` / `response.reasoning_text.done` — thinking，不进 `report.delta`
-- `response.function_call_arguments.delta` / `done` — 非 MCP 工具；`nerogate.kind` 与 `nerogate.display` 只在这些新事件上
-- `response.mcp_call.in_progress` / `response.mcp_call_arguments.delta` / `response.mcp_call.completed` 或 `failed`
+- `response.function_call_arguments.delta` / `done` — 非 MCP 工具；`nerogate.kind` 与 `nerogate.display` 只在这些新事件上。MCP 不发 `function_call`（含 `output_item.added`）
+- `response.mcp_call.in_progress` / `response.mcp_call_arguments.delta` / `response.mcp_call.completed` 或 `failed` — MCP 只走这套
 - `response.output_item.done` — 工具结束时在上面那一帧之后再追加一帧。`item.output` 是完整返回，不截断。MCP 的 `item.type` 为 `mcp_call`，其余为 `function_call`。`item` 里还有 `id`、`name`、`arguments`。已有的 `mcp_call.completed` / `failed` 与 `function_call_arguments.done` JSON 不变
 - `response.nerogate.shell_output.delta` — 本地 shell 标准输出，`item_id` 指向已打开的 `function_call`，正文继续往后追加
 - `response.nerogate.ask` — HITL，不写入正文
