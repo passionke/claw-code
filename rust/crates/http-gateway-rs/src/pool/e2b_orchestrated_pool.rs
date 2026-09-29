@@ -240,7 +240,8 @@ async fn write_scope_settings_mcp(
     config_row: Option<&ProjectConfigRow>,
     mcp_servers: &Value,
 ) -> Result<(), String> {
-    let mut settings = session_settings_json_for_nas(proj_id, config_row, PROJECT_ROLE_SCOPE, "", None);
+    let mut settings =
+        session_settings_json_for_nas(proj_id, config_row, PROJECT_ROLE_SCOPE, "", None);
     if let Some(obj) = settings.as_object_mut() {
         obj.insert("mcpServers".to_string(), mcp_servers.clone());
     }
@@ -605,21 +606,13 @@ mod tests {
                 "headers": {"Authorization": "Bearer t"}
             }
         }));
-        let settings = session_settings_json_for_nas(
-            3025,
-            Some(&row),
-            PROJECT_ROLE_NORMAL,
-            "",
-            None,
-        );
+        let settings =
+            session_settings_json_for_nas(3025, Some(&row), PROJECT_ROLE_NORMAL, "", None);
         let twin = settings
             .pointer("/mcpServers/twin-steward/url")
             .and_then(|v| v.as_str());
         assert_eq!(twin, Some("https://alfred.maxiot-inc.com/twin/mcp"));
-        assert_eq!(
-            settings.get("auto_hidden_system_prompt"),
-            Some(&json!(1))
-        );
+        assert_eq!(settings.get("auto_hidden_system_prompt"), Some(&json!(1)));
     }
 
     #[test]
@@ -635,9 +628,6 @@ mod tests {
         let url = settings
             .pointer("/mcpServers/claw-master-observer/url")
             .and_then(|v| v.as_str());
-        assert_eq!(
-            url,
-            Some("http://gw.example:18088/v1/master/9/mcp")
-        );
+        assert_eq!(url, Some("http://gw.example:18088/v1/master/9/mcp"));
     }
 }
