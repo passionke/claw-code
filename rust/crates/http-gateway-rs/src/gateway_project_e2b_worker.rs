@@ -190,7 +190,12 @@ pub async fn reset_project_e2b_worker(
 ) -> Result<ProjectE2bWorkerResetResponse, String> {
     registry.force_rotate_proj(proj_id, slot_index).await?;
     let status = get_project_e2b_worker_status(registry, db, client, proj_id).await?;
-    if status.workers.is_empty() {
+    let role = db
+        .get_project_role(proj_id)
+        .await
+        .map_err(|e| format!("get_project_role: {e}"))?;
+    // Scope has no warm pool: reset retires rows; next solve recreates. Author: kejiqing
+    if status.workers.is_empty() && role != crate::master_observer::PROJECT_ROLE_SCOPE {
         return Err(format!(
             "proj worker missing after force reset proj_{proj_id}"
         ));
