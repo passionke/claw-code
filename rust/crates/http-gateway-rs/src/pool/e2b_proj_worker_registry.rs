@@ -1453,11 +1453,23 @@ impl E2bProjWorkerRegistry {
     }
 
     /// Admin force reset: always kill + create (manual recreate window). Author: kejiqing
+    ///
+    /// Scope role: retire every scope worker row (no warm recreate; next solve creates).
+    /// Singleton role: kill + recreate pool slots as before.
     pub async fn force_rotate_proj(
         &self,
         proj_id: i64,
         slot_index: Option<u32>,
     ) -> Result<(), String> {
+        let db = self.session_db().await?;
+        let role = db
+            .get_project_role(proj_id)
+            .await
+            .map_err(|e| format!("get_project_role: {e}"))?;
+        if role == crate::master_observer::PROJECT_ROLE_SCOPE {
+            // slot_index ignored — scope workers are keyed by scope_key, not pool slots.
+            return self.force_retire_scope_workers(proj_id).await;
+        }
         let pool_size = self.desired_pool_size(proj_id).await?;
         let slots: Vec<u32> = match slot_index {
             Some(s) => vec![s],
@@ -1465,6 +1477,70 @@ impl E2bProjWorkerRegistry {
         };
         for slot in slots {
             self.force_rotate_slot(proj_id, slot).await?;
+        }
+        Ok(())
+    }
+
+    /// Kill + delete all scope workers for a project (Admin reset). Author: kejiqing
+    async fn force_retire_scope_workers(&self, proj_id: i64) -> Result<(), String> {
+        let db = self.session_db().await?;
+        let rows = db
+            .list_project_e2b_workers(proj_id)
+            .await
+            .map_err(|e| format!("list project_e2b_workers: {e}"))?;
+        for existing in rows {
+            if existing.scope_key.is_empty() {
+                continue;
+            }
+            let slot_u = e2b_worker_slot_u32(existing.slot_index);
+            let key = scope_slot_key(proj_id, &existing.scope_key, slot_u);
+            let pg_busy = db
+                .project_e2b_worker_is_busy_scoped(
+                    proj_id,
+                    &existing.scope_key,
+                    existing.slot_index,
+                )
+                .await
+                .map_err(|e| format!("project_e2b_worker_is_busy_scoped: {e}"))?;
+            if self.active_leases(key.clone()).await > 0 || pg_busy {
+                return Err(format!(
+                    "proj_{proj_id} scope worker busy (scope_key present); wait for turns to finish"
+                ));
+            }
+            info!(
+                target: "claw_e2b_proj_worker",
+                proj_id,
+                scope_key = %existing.scope_key,
+                sandbox_id = %existing.sandbox_id,
+                "admin force retire scope worker"
+            );
+            self.retire_worker_sandbox(proj_id, &existing.sandbox_id)
+                .await;
+            audit_rotation(
+                db.as_ref(),
+                WorkerRotationEvent {
+                    proj_id,
+                    event: "rotated_out".to_string(),
+                    sandbox_id: Some(existing.sandbox_id.clone()),
+                    worker_id: Some(existing.worker_id.clone()),
+                    template_id: Some(existing.template_id.clone()),
+                    reason: Some(format!(
+                        "admin_force_reset;scope_key={}",
+                        existing.scope_key
+                    )),
+                    at_ms: chrono::Utc::now().timestamp_millis(),
+                },
+            )
+            .await;
+            db.delete_project_e2b_worker_slot_scoped(
+                proj_id,
+                &existing.scope_key,
+                existing.slot_index,
+            )
+            .await
+            .map_err(|e| format!("delete project_e2b_worker scoped: {e}"))?;
+            self.workers.lock().await.remove(&key);
+            self.leases.lock().await.remove(&key);
         }
         Ok(())
     }
