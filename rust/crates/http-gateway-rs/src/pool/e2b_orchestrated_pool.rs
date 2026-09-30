@@ -19,7 +19,7 @@ use crate::master_observer::{
 use crate::project_config_apply::{build_settings_json_from_row, enabled_mcp_servers};
 use crate::project_scope::{
     build_scope_key, mcp_bind_is_initialized, mcp_bind_snapshot, mcp_bind_values_match,
-    parse_scope_json, render_mcp_template, scope_bind_values,
+    parse_scope_json, render_mcp_servers_from_extra_session, scope_bind_values,
 };
 use crate::session_db::{GatewaySessionDb, ProjectConfigRow};
 
@@ -145,7 +145,8 @@ fn session_settings_json_for_nas(
 }
 
 /// Non-scope roles: land the same MCP settings claw loads onto NAS session (not gateway-local WORK).
-/// Scope uses [`ensure_scope_mcp_bind`] (rendered `${…}` bind-once). Author: kejiqing
+/// Scope uses [`ensure_scope_mcp_bind`] (identity bind-once; `${…}` from extraSession each turn).
+/// Author: kejiqing
 pub async fn ensure_session_mcp_settings_on_nas(
     db: &GatewaySessionDb,
     nas_layout: &NasLayoutBackend,
@@ -173,7 +174,10 @@ pub async fn ensure_session_mcp_settings_on_nas(
         .await
 }
 
-/// Bind MCP once per scope worker; same rendered settings → workers + sessions (claw reads session).
+/// Bind scope worker identity once; render MCP `${…}` from full `extraSession` each call.
+///
+/// `scopeKeys` identify the worker (`mcp_bind_json.values`). Template placeholders such as
+/// `userToken` resolve from `extraSession` every turn so credentials stay current.
 /// Project `mcp_servers_json` stays templated (`${…}`). Author: kejiqing
 pub async fn ensure_scope_mcp_bind(
     db: &GatewaySessionDb,
@@ -191,7 +195,7 @@ pub async fn ensure_scope_mcp_bind(
         .await
         .map_err(|e| format!("get_scope_json: {e}"))?;
     let cfg = parse_scope_json(&scope_json)?;
-    let values = scope_bind_values(&cfg.scope_keys, extra_session)?;
+    let scope_values = scope_bind_values(&cfg.scope_keys, extra_session)?;
 
     let row = db
         .get_project_e2b_worker_scoped(proj_id, scope_key, slot)
@@ -204,21 +208,20 @@ pub async fn ensure_scope_mcp_bind(
         .await
         .map_err(|e| format!("load project_config for scope settings: {e}"))?;
 
-    let mcp_servers = if mcp_bind_is_initialized(&row.mcp_bind_json) {
-        mcp_bind_values_match(&row.mcp_bind_json, &values)?;
-        row.mcp_bind_json
-            .get("mcpServers")
-            .cloned()
-            .unwrap_or_else(|| json!({}))
-    } else {
-        let rendered = render_mcp_template(mcp_servers_template, &values);
-        let mcp_servers = Value::Object(enabled_mcp_servers(&rendered));
-        let snapshot = mcp_bind_snapshot(&values, &mcp_servers);
+    if mcp_bind_is_initialized(&row.mcp_bind_json) {
+        mcp_bind_values_match(&row.mcp_bind_json, &scope_values)?;
+    }
+
+    let rendered = render_mcp_servers_from_extra_session(mcp_servers_template, extra_session)
+        .map_err(|e| format!("render scope MCP template: {e}"))?;
+    let mcp_servers = Value::Object(enabled_mcp_servers(&rendered));
+
+    if !mcp_bind_is_initialized(&row.mcp_bind_json) {
+        let snapshot = mcp_bind_snapshot(&scope_values, &mcp_servers);
         db.update_project_e2b_worker_mcp_bind(proj_id, scope_key, slot, &snapshot)
             .await
             .map_err(|e| format!("save mcp_bind_json: {e}"))?;
-        mcp_servers
-    };
+    }
 
     write_scope_settings_mcp(
         nas_layout,

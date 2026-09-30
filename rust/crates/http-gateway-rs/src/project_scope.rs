@@ -127,7 +127,7 @@ fn escape_scope_value(s: &str) -> String {
         .replace('=', "\\=")
 }
 
-/// Extract ordered scope key → value map used for MCP bind snapshot.
+/// Extract ordered scope key → value map used for worker identity / MCP bind snapshot.
 pub fn scope_bind_values(
     scope_keys: &[String],
     extra_session: Option<&Value>,
@@ -148,7 +148,47 @@ pub fn scope_bind_values(
     Ok(out)
 }
 
-/// Compare request values to stored MCP bind snapshot (`mcp_bind_json.values`).
+/// Values for MCP `${key}` substitution from `extraSession`.
+///
+/// Every placeholder in `template` must be a non-empty string field. Distinct from
+/// [`scope_bind_values`]: scope keys identify the worker; template keys (e.g. `userToken`)
+/// may be a strict superset and must still resolve. Author: kejiqing
+pub fn mcp_template_render_values(
+    template: &Value,
+    extra_session: Option<&Value>,
+) -> Result<BTreeMap<String, String>, String> {
+    let obj = extra_session
+        .and_then(Value::as_object)
+        .ok_or_else(|| "extraSession must be a JSON object for scope workers".to_string())?;
+    let mut out = BTreeMap::new();
+    for key in collect_mcp_template_keys(template) {
+        let raw = obj
+            .get(&key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                format!("extraSession.{key} required for MCP template placeholder ${{{key}}}")
+            })?;
+        out.insert(key, raw.to_string());
+    }
+    Ok(out)
+}
+
+/// Render MCP servers JSON: substitute every `${…}` from `extraSession`. Author: kejiqing
+pub fn render_mcp_servers_from_extra_session(
+    template: &Value,
+    extra_session: Option<&Value>,
+) -> Result<Value, String> {
+    let values = mcp_template_render_values(template, extra_session)?;
+    Ok(render_mcp_template(template, &values))
+}
+
+/// Compare request scope identity to stored MCP bind snapshot (`mcp_bind_json.values`).
+///
+/// Only keys in `current` (scope identity) are enforced. Extra keys left in a legacy
+/// snapshot are ignored so token-like fields never participate in worker identity.
+/// Author: kejiqing
 pub fn mcp_bind_values_match(
     stored: &Value,
     current: &BTreeMap<String, String>,
@@ -165,11 +205,6 @@ pub fn mcp_bind_values_match(
             Some(have) if have == want => {}
             Some(have) => mismatches.push(format!("{key}: bound={have:?} request={want:?}")),
             None => mismatches.push(format!("{key}: missing in bind snapshot")),
-        }
-    }
-    for key in prev.keys() {
-        if !current.contains_key(key) {
-            mismatches.push(format!("{key}: present in bind but not in request"));
         }
     }
     if mismatches.is_empty() {
@@ -331,5 +366,87 @@ mod tests {
         cur.insert("uid".into(), "1".into());
         let err = mcp_bind_values_match(&stored, &cur).unwrap_err();
         assert!(err.contains("tenant"));
+    }
+
+    #[test]
+    fn template_render_values_include_non_scope_placeholders() {
+        // Author: kejiqing — userToken is not a scopeKey but must still resolve.
+        let template = json!({
+            "mind-mcp": {
+                "url": "https://mind.example/tenants/${tenantId}/mcp",
+                "headers": {"Authorization": "Bearer ${userToken}"}
+            }
+        });
+        let extra = json!({
+            "tenantId": "t-1",
+            "uid": "u-1",
+            "userToken": "ut_secret"
+        });
+        let vals = mcp_template_render_values(&template, Some(&extra)).unwrap();
+        assert_eq!(vals.get("tenantId").map(String::as_str), Some("t-1"));
+        assert_eq!(vals.get("userToken").map(String::as_str), Some("ut_secret"));
+        assert!(!vals.contains_key("uid"));
+
+        let scope_keys = vec!["tenantId".into(), "uid".into()];
+        let scope_vals = scope_bind_values(&scope_keys, Some(&extra)).unwrap();
+        assert!(scope_vals.contains_key("uid"));
+        assert!(!scope_vals.contains_key("userToken"));
+    }
+
+    #[test]
+    fn render_from_extra_session_substitutes_user_token() {
+        // Author: kejiqing — repro of proj_3024 mind-mcp 401 (literal Bearer ${userToken}).
+        let template = json!({
+            "mind-mcp": {
+                "type": "streamable-http",
+                "url": "https://mind.maxiot-inc.com/api/mind/tenants/${tenantId}/mcp",
+                "headers": {"Authorization": "Bearer ${userToken}"}
+            }
+        });
+        let extra = json!({
+            "tenantId": "455785b1-1358-45ce-89c0-5a66e56d7826",
+            "uid": "f60afc97-e1c7-4c1f-b600-51eea62db1d5",
+            "userToken": "ut_mrMJZdwWU5Hgqy2J_test"
+        });
+        let out = render_mcp_servers_from_extra_session(&template, Some(&extra)).unwrap();
+        assert_eq!(
+            out["mind-mcp"]["url"],
+            "https://mind.maxiot-inc.com/api/mind/tenants/455785b1-1358-45ce-89c0-5a66e56d7826/mcp"
+        );
+        assert_eq!(
+            out["mind-mcp"]["headers"]["Authorization"],
+            "Bearer ut_mrMJZdwWU5Hgqy2J_test"
+        );
+        assert!(
+            !out["mind-mcp"]["headers"]["Authorization"]
+                .as_str()
+                .unwrap_or("")
+                .contains("${"),
+            "Authorization must not keep unresolved placeholders"
+        );
+    }
+
+    #[test]
+    fn template_render_values_require_placeholder_fields() {
+        let template = json!({"headers": {"Authorization": "Bearer ${userToken}"}});
+        let extra = json!({"tenantId": "t-1", "uid": "u-1"});
+        let err = mcp_template_render_values(&template, Some(&extra)).unwrap_err();
+        assert!(err.contains("userToken"));
+    }
+
+    #[test]
+    fn bind_match_ignores_legacy_extra_snapshot_keys() {
+        // Snapshot may carry leftover non-scope fields; identity check only uses current keys.
+        let stored = json!({
+            "values": {
+                "tenantId": "t-1",
+                "uid": "u-1",
+                "userToken": "ut_old"
+            }
+        });
+        let mut cur = BTreeMap::new();
+        cur.insert("tenantId".into(), "t-1".into());
+        cur.insert("uid".into(), "u-1".into());
+        mcp_bind_values_match(&stored, &cur).unwrap();
     }
 }
