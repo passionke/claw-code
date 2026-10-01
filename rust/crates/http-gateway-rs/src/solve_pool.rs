@@ -15,6 +15,7 @@ use crate::api_error::ApiError;
 use crate::app_state::{AppState, GatewayConfig, RunSolveContext, SolveRequest, SolveResponse};
 use crate::claw_tap_cluster_state::resolve_solve_llm_route;
 use crate::gateway_strict_landlock_settings::load_system_landlock_default;
+use crate::pool::harness_engine;
 use crate::pool::{
     parse_gateway_solve_exec_stdout, prepare_e2b_worker_llm_material, PoolOps,
     PrepareE2bWorkerLlmOptions, SlotLease, E2B_POOL_ID,
@@ -120,6 +121,21 @@ pub(crate) async fn run_solve_request_docker(
     let timeout_seconds = req
         .timeout_seconds
         .unwrap_or(state.cfg.default_timeout_seconds);
+
+    let engine = harness_engine::load_project_harness_engine(&state.session_db, req.proj_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    harness_engine::gate_solve_request(
+        engine,
+        pool_id == E2B_POOL_ID,
+        req.interaction_mode.as_deref(),
+        req.sealed_plan_id.as_deref(),
+        req.sealed_plan_markdown.as_deref(),
+    )
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    harness_engine::check_project_llm_upstream(&state.session_db, engine, req.proj_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
 
     let (llm_route, worker_llm_env) = if pool_id == E2B_POOL_ID {
         state
@@ -287,7 +303,7 @@ pub(crate) async fn run_solve_request_docker(
         let tid = crate::trace_id::mint_request_trace_id();
         crate::trace_id::ensure_extra_session_trace_id(&mut extra_session, &tid);
     }
-    let task = GatewaySolveTaskFile {
+    let mut task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),
         model: req.model.clone(),
@@ -313,6 +329,7 @@ pub(crate) async fn run_solve_request_docker(
         responses_stream: req.responses_stream,
         thinking_enabled,
     };
+    harness_engine::trim_task(engine, &mut task);
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -474,7 +491,7 @@ pub(crate) async fn run_solve_request_docker(
     let exec_fut = pool.exec_solve(
         lease_cleanup.lease.as_ref().expect("lease set for exec"),
         GATEWAY_SOLVE_TASK_FILE,
-        claw_bin_for_pool_exec(&state.cfg),
+        harness_engine::exec_bin(engine, claw_bin_for_pool_exec(&state.cfg)),
         Some(request_id.as_str()),
         &turn_id,
         timeout_seconds,

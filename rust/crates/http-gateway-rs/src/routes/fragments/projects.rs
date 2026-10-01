@@ -20,6 +20,9 @@ pub(crate) struct CreateProjectRequest {
     project_code: String,
     #[serde(rename = "projectDescription", alias = "project_description", default)]
     project_description: Option<String>,
+    /// `claw` (default) | `opencode` | `appserver`; immutable after create. Author: kejiqing
+    #[serde(rename = "harnessEngine", alias = "harness_engine", default)]
+    harness_engine: Option<String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -93,6 +96,9 @@ pub(crate) struct ProjectListEntry {
     project_code: String,
     #[serde(rename = "projectDescription")]
     project_description: String,
+    /// `null` when the column could not be read.
+    #[serde(rename = "harnessEngine")]
+    harness_engine: Option<pool::harness_engine::HarnessEngine>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -992,6 +998,11 @@ pub(crate) async fn build_project_list_entry(
         .filter(|r| !project_config_draft::is_draft_content_rev(r))
         .unwrap_or(summary.content_rev.as_str());
     let db_synced_to_disk = applied_rev.as_deref() == Some(stable_rev);
+    let harness_engine =
+        pool::harness_engine::load_project_harness_engine(&state.session_db, proj_id)
+            .await
+            .map_err(|e| tracing::warn!(proj_id, error = %e, "load harness_engine for project list"))
+            .ok();
     ProjectListEntry {
         proj_id: summary.proj_id,
         project_role: summary.project_role.clone(),
@@ -1011,6 +1022,7 @@ pub(crate) async fn build_project_list_entry(
         git_sync: git_sync_list_summary(&summary.git_sync_json),
         project_code: summary.project_code.clone(),
         project_description: summary.project_description.clone(),
+        harness_engine,
     }
 }
 
@@ -1258,6 +1270,9 @@ pub(crate) async fn create_project(
     let _ = crate::admin_auth::require_create_project_or_open(&state.session_db, &headers).await?;
     let project_code = normalize_project_code(&req.project_code)?;
     let project_description = normalize_project_description(req.project_description.as_deref())?;
+    let harness_engine =
+        pool::harness_engine::HarnessEngine::parse(req.harness_engine.as_deref())
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     ensure_project_code_available(&state, &project_code, None).await?;
     let proj_id = resolve_create_proj_id(&state, req.proj_id).await?;
     if project_config_exists(&state, proj_id).await? {
@@ -1266,6 +1281,9 @@ pub(crate) async fn create_project(
             format!("ds {proj_id} already registered in project_config"),
         ));
     }
+    pool::harness_engine::check_project_llm_upstream(&state.session_db, harness_engine, proj_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     let lock = get_proj_lock(&state, proj_id).await;
     let _guard = lock.lock().await;
@@ -1316,6 +1334,9 @@ pub(crate) async fn create_project(
         })
         .await
         .map_err(|e| session_db_err(&e))?;
+    pool::harness_engine::set_harness_engine_on_create(&state.session_db, proj_id, harness_engine)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     if let Ok(Some(row)) = state.session_db.get_project_config(proj_id).await {
         archive_project_config_revision(&state, revision_row_from_active(&row)).await?;
     }

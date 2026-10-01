@@ -71,6 +71,12 @@ fn normalize_url_path(raw: &str) -> String {
     out
 }
 
+/// Upstream speaks the Responses API (same path normalization as the tap client). Author: kejiqing
+#[must_use]
+pub fn base_model_url_is_responses(raw: &str) -> bool {
+    path_ends_with(&normalize_url_path(raw), "/responses")
+}
+
 fn path_ends_with(path: &str, suffix: &str) -> bool {
     path == suffix || path.ends_with(suffix)
 }

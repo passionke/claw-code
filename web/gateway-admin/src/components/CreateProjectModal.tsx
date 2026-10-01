@@ -1,10 +1,17 @@
-/** New project dialog (code + description + optional id). Author: kejiqing */
+/** New project dialog (code + description + optional id + harness engine). Author: kejiqing */
 
-import { Form, Input, InputNumber, Modal, Typography, message } from "antd";
+import { Form, Input, InputNumber, Modal, Select, Typography, message } from "antd";
 import { useState } from "react";
 import { proxyHttp } from "../api/client";
+import type { HarnessEngine } from "../types/project";
 
 const CODE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
+
+const ENGINE_OPTIONS: { value: HarnessEngine; label: string }[] = [
+  { value: "claw", label: "claw（默认）" },
+  { value: "opencode", label: "opencode（实验）" },
+  { value: "appserver", label: "appserver / Codex（实验）" },
+];
 
 interface CreateProjectModalProps {
   open: boolean;
@@ -17,6 +24,7 @@ interface CreateProjectForm {
   projectCode: string;
   projectDescription?: string;
   projId?: number;
+  harnessEngine: HarnessEngine;
 }
 
 export default function CreateProjectModal({
@@ -27,6 +35,7 @@ export default function CreateProjectModal({
 }: CreateProjectModalProps) {
   const [form] = Form.useForm<CreateProjectForm>();
   const [submitting, setSubmitting] = useState(false);
+  const engine = Form.useWatch("harnessEngine", form);
 
   const handleOk = async () => {
     const values = await form.validateFields();
@@ -34,9 +43,11 @@ export default function CreateProjectModal({
       projectCode: string;
       projectDescription?: string;
       projId?: number;
+      harnessEngine: HarnessEngine;
     } = {
       projectCode: values.projectCode.trim(),
       projectDescription: values.projectDescription?.trim() || undefined,
+      harnessEngine: values.harnessEngine,
     };
     if (values.projId != null && values.projId >= 1) {
       body.projId = values.projId;
@@ -77,7 +88,12 @@ export default function CreateProjectModal({
       <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
         填写项目标识与说明；数字 ID 可留空由系统自动分配。
       </Typography.Paragraph>
-      <Form form={form} layout="vertical" requiredMark="optional">
+      <Form
+        form={form}
+        layout="vertical"
+        requiredMark="optional"
+        initialValues={{ harnessEngine: "claw" }}
+      >
         <Form.Item
           name="projectCode"
           label="项目 Code"
@@ -112,6 +128,20 @@ export default function CreateProjectModal({
           ]}
         >
           <InputNumber style={{ width: "100%" }} placeholder="自动分配" min={1} precision={0} />
+        </Form.Item>
+        <Form.Item
+          name="harnessEngine"
+          label="Harness 引擎"
+          tooltip="创建后不可修改"
+          rules={[{ required: true }]}
+          extra={
+            engine && engine !== "claw"
+              ? `${engine} 项目仅支持 strict worker、normal 角色与 agent 模式（无 plan / ask-user）。` +
+                (engine === "appserver" ? "生效 LLM 的 baseModelUrl 须以 /responses 结尾。" : "")
+              : undefined
+          }
+        >
+          <Select options={ENGINE_OPTIONS} />
         </Form.Item>
       </Form>
     </Modal>

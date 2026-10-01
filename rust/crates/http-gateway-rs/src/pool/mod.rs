@@ -8,6 +8,7 @@ mod e2b_nas_layout_backend;
 mod e2b_orchestrated_pool;
 mod e2b_proj_worker_registry;
 mod e2b_worker_llm_material;
+pub mod harness_engine;
 pub mod interactive_backend;
 mod live_ag_ui_sse;
 mod live_report_hub;

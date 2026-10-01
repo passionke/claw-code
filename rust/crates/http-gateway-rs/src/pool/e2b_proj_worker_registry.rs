@@ -39,6 +39,7 @@ use serde_json::json;
 
 use super::config::relaxed_worker_allowed_from_env;
 use super::e2b_nas_layout::allocate_worker_id;
+use super::harness_engine;
 use super::worker_profile::{
     default_worker_profile_json, effective_mode, load_desired_worker_pool_size, profile_mode_label,
     WorkerProfileMode,
@@ -228,6 +229,8 @@ struct WorkerSpec {
     build_id: Option<String>,
     mode: WorkerProfileMode,
     profile_label: String,
+    /// Template alias used as create target (buildId pinned separately).
+    create_alias: String,
 }
 
 impl WorkerSpec {
@@ -314,6 +317,16 @@ impl E2bProjWorkerRegistry {
             .unwrap_or_else(|_| default_worker_profile_json());
         let mode = effective_mode(relaxed_worker_allowed_from_env(), &json);
         let profile_label = profile_mode_label(&json).to_string();
+        let engine = harness_engine::load_project_harness_engine(db.as_ref(), proj_id).await?;
+        if let Some(t) = harness_engine::engine_worker_template(db.as_ref(), engine).await? {
+            return Ok(WorkerSpec {
+                e2b_template_id: t.template_id,
+                build_id: t.build_id,
+                mode: WorkerProfileMode::Strict,
+                profile_label: harness_engine::contract_profile_label(engine),
+                create_alias: t.alias,
+            });
+        }
         match mode {
             WorkerProfileMode::Relaxed => {
                 let e2b_template_id = load_e2b_worker_relaxed_template_id(db.as_ref())
@@ -327,6 +340,7 @@ impl E2bProjWorkerRegistry {
                     build_id,
                     mode: WorkerProfileMode::Relaxed,
                     profile_label,
+                    create_alias: e2b_worker_relaxed_template_from_env(),
                 })
             }
             WorkerProfileMode::Strict => {
@@ -341,6 +355,7 @@ impl E2bProjWorkerRegistry {
                     build_id,
                     mode: WorkerProfileMode::Strict,
                     profile_label,
+                    create_alias: e2b_worker_template_from_env(),
                 })
             }
         }
@@ -779,12 +794,8 @@ impl E2bProjWorkerRegistry {
             .map_err(|e| format!("invalid worker_env_json for proj {proj_id}: {e}"))?;
         // Prefer alias for create target; pin buildId only when PG has one (after publish on
         // *this* e2b). Endpoint change clears pins so stale UUIDs cannot 503. Author: kejiqing
-        let create_alias = match spec.mode {
-            WorkerProfileMode::Relaxed => e2b_worker_relaxed_template_from_env(),
-            WorkerProfileMode::Strict => e2b_worker_template_from_env(),
-        };
         let template_ref = claw_e2b_sandbox_client::e2b_sandbox_template_ref(
-            &create_alias,
+            &spec.create_alias,
             spec.build_id.as_deref(),
         );
         let handle = self

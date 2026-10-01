@@ -152,7 +152,11 @@ pub async fn get_project_e2b_worker_status(
         .await
         .unwrap_or_else(|_| default_worker_profile_json());
     let worker_profile = profile_mode_label(&profile_json).to_string();
-    let desired_template = if relaxed {
+    let engine = crate::pool::harness_engine::load_project_harness_engine(db, proj_id).await?;
+    let engine_template = crate::pool::harness_engine::engine_worker_template(db, engine).await?;
+    let desired_template = if let Some(t) = engine_template {
+        t.template_id
+    } else if relaxed {
         load_e2b_worker_relaxed_template_id(db)
             .await
             .map_err(|e| format!("load e2bWorkerRelaxed template: {e}"))?

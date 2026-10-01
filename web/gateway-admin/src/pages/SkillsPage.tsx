@@ -11,7 +11,7 @@ import EntityVersionPanel from "../components/EntityVersionPanel";
 import { useApp } from "../context/AppContext";
 import { useProjectConfigEditor } from "../hooks/useProjectConfigEditor";
 import { proxyHttp } from "../api/client";
-import type { SkillRow } from "../types/project";
+import { OPENCODE_SKILL_NAME_PATTERN, type SkillRow } from "../types/project";
 import { entityEnabled, entitySelectLabel } from "../utils/entityEnabled";
 import { skillContentFromRevisionBody } from "../utils/entityRevision";
 import { skillRowsFromConfig } from "../utils/projectConfigEditor";
@@ -36,8 +36,16 @@ function bytesToBase64(buf: ArrayBuffer): string {
 }
 
 export default function SkillsPage() {
-  const { gatewayBase, projId } = useApp();
+  const { gatewayBase, projId, projectConfig: activeProjectConfig } = useApp();
   const { projectConfig, reloadEditingConfig, saveDraftPatch } = useProjectConfigEditor();
+  const opencodeProject = activeProjectConfig?.harnessEngine === "opencode";
+  const opencodeNameInvalid = (name: string) =>
+    opencodeProject && !OPENCODE_SKILL_NAME_PATTERN.test(name);
+  const rejectOpencodeName = (name: string) => {
+    if (!opencodeNameInvalid(name)) return false;
+    message.error(`opencode 项目的 Skill 名称须匹配 ${OPENCODE_SKILL_NAME_PATTERN.source}`);
+    return true;
+  };
   const [skills, setSkills] = useState<SkillRow[]>([]);
   const [pick, setPick] = useState("");
   const [creating, setCreating] = useState(false);
@@ -193,6 +201,7 @@ export default function SkillsPage() {
       message.warning(creating ? "请填写新 Skill 名称" : "请从列表选择一个 Skill");
       return;
     }
+    if (creating && rejectOpencodeName(skillName)) return;
     commitFileEdit(filePick, fileText);
     const files = fileMapFromTree(
       treeFiles.map((f) => (f.path === filePick ? { ...f, text: fileText } : f))
@@ -259,6 +268,7 @@ export default function SkillsPage() {
       message.warning("请先填写或选择 Skill 名称");
       return false;
     }
+    if (creating && rejectOpencodeName(skillName)) return false;
     const buf = await file.arrayBuffer();
     const archiveBase64 = bytesToBase64(buf);
     const lower = file.name.toLowerCase();
@@ -354,8 +364,14 @@ export default function SkillsPage() {
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             placeholder="例如 sql-safety（字母数字 . _ -）"
+            status={newName.trim() && opencodeNameInvalid(newName.trim()) ? "error" : undefined}
             style={{ maxWidth: 420, display: "block", marginTop: 4 }}
           />
+          {opencodeProject ? (
+            <Typography.Text type="secondary">
+              opencode 项目：仅小写字母、数字与单个连字符（如 sql-safety）
+            </Typography.Text>
+          ) : null}
         </div>
       )}
 
@@ -368,6 +384,11 @@ export default function SkillsPage() {
             </Tag>
           ) : (
             <Tag style={{ marginLeft: 8 }}>兼容单文件</Tag>
+          )}
+          {opencodeNameInvalid(pick) && (
+            <Tag color="warning" style={{ marginLeft: 8 }}>
+              名称不合 opencode 规则，solve 时会被跳过
+            </Tag>
           )}
           {!entityEnabled(enabled) && (
             <Tag color="default" style={{ marginLeft: 8 }}>

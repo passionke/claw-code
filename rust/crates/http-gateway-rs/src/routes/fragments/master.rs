@@ -120,6 +120,12 @@ pub(crate) async fn put_master_role(
 ) -> Result<Json<PutProjectRoleResponse>, ApiError> {
     let role = master_observer::validate_project_role(&req.project_role)
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let harness_engine =
+        pool::harness_engine::load_project_harness_engine(&state.session_db, proj_id)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    pool::harness_engine::validate_role(harness_engine, role)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     if role == master_observer::PROJECT_ROLE_MASTER {
         master_observer::seed_master_project(&state.session_db, proj_id)
             .await

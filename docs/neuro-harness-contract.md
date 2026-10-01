@@ -190,8 +190,24 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 3. codex 经 tap 访问真实上游 `/responses`（含 SSE 和 namespace 工具）。
 4. usage 的口径。
 
-## 10. 实验分支须知
+## 10. gateway 接入（`http-gateway-rs/src/pool/harness_engine.rs`）
 
-- migration `6_project_harness_engine.sql` 只部署到独立的测试 PG，不进入 pre 和 prod，也不加入 `db_migrate.rs` 的已发布 checksum 锁定列表。合入主干时按当时的最新编号重新编号，再加入锁定列表。
+引擎相关的知识只放在这一个模块里，热点文件只加一行调用：
+
+| 位置 | 行为 |
+|---|---|
+| `POST /v1/projects` | 新增 `harnessEngine` 字段，缺省为 `claw`，非法值返回 400。appserver 项目要求生效中的 LLM `baseModelUrl` 以 `/responses` 结尾，否则返回 400。插入项目之后用一次 UPDATE 写入引擎列；之后所有 upsert 和发布路径都不会碰这一列。 |
+| `PUT /v1/projects/{id}/role` | 非 claw 项目只能设为 `normal`，其他角色返回 400 `unsupported_by_engine`。 |
+| `PUT /v1/projects/{id}/config` | 非 claw 项目写入 `workerProfileJson.mode=relaxed` 时返回 400。 |
+| solve（`run_solve_request_docker`） | 非 claw 项目只能走 e2b 后端。`interactionMode=plan` 或带 sealedPlan 时返回 400。appserver 每次 solve 都重新校验 `/responses`。task 固定为 `interactionMode=agent`、`askUserQuestionEnabled=false`、`forceSingleTurn=true`。exec 的 bin 换成 `/usr/local/bin/neuro-{opencode,appserver}`。 |
+| `desired_worker_spec` | 模板取自 PG 的 `e2bWorkerOpencode` / `e2bWorkerAppserver`（`templateId` 为空时用 alias `claw-worker-{opencode,appserver}`，`buildId` 为可选 pin），固定使用 strict。contract key 的 profile 段写成 `strict+<engine>`，claw 项目的 key 不变。 |
+| 列表接口、config 接口 | 返回字段 `harnessEngine`。读取失败时返回 `null`，不回落成 claw。 |
+
+`/responses` 的判定新增在 `gateway_tap_client::base_model_url_is_responses`，路径归一化规则与 tap client 相同。注意 `tap_client_from_base_model_url` 不能直接用来判定：它对 chat/completions 和无后缀的 URL 也返回缺省值 `codex`。
+
+## 11. 实验分支须知
+
+- migration `6_project_harness_engine.sql` 只部署到独立的测试 PG，不进入 pre 和 prod。合入主干时按当时的最新编号重新编号。
+  - 与计划的偏差：`db_migrate.rs` 的单测 `published_migration_checksums_are_pinned` 要求每个 migration 都必须锁定 checksum，否则 `cargo test` 失败。因此分支上已经把 version 6 的 SHA-384 加入了 `PINNED_MIGRATION_CHECKSUMS`。重新编号时要同步改这一条。
 - 在分支合入之前，独立测试 PG 不能直接切回主干版本：要么重建，要么手工删除这条 migration 记录（`_sqlx_migrations` 中 version=6 的行）并删除 `harness_engine` 列。
 - 每次 rebase 主干后，执行 claw 引擎的现有 e2e 回归，确认 claw 的行为没有变化。

@@ -300,6 +300,12 @@ pub struct GatewayGlobalSettingsStore {
     pub(crate) e2b_worker: E2bWorkerSettings,
     #[serde(rename = "e2bWorkerRelaxed", default)]
     pub(crate) e2b_worker_relaxed: E2bWorkerSettings,
+    /// `claw-worker-opencode` template (neuro-harness, strict only). Author: kejiqing
+    #[serde(rename = "e2bWorkerOpencode", default)]
+    pub(crate) e2b_worker_opencode: E2bWorkerSettings,
+    /// `claw-worker-appserver` template (neuro-harness, strict only). Author: kejiqing
+    #[serde(rename = "e2bWorkerAppserver", default)]
+    pub(crate) e2b_worker_appserver: E2bWorkerSettings,
     #[serde(rename = "clusterBootstrap", default)]
     pub(crate) cluster_bootstrap: crate::gateway_cluster_bootstrap::ClusterBootstrapSettings,
     #[serde(
@@ -946,6 +952,8 @@ fn salvage_settings_store(v: &serde_json::Value) -> GatewayGlobalSettingsStore {
     let mut store = GatewayGlobalSettingsStore {
         e2b_worker: from_section(v, "e2bWorker"),
         e2b_worker_relaxed: from_section(v, "e2bWorkerRelaxed"),
+        e2b_worker_opencode: from_section(v, "e2bWorkerOpencode"),
+        e2b_worker_appserver: from_section(v, "e2bWorkerAppserver"),
         e2b_nas_api: from_section(v, "e2bNasApi"),
         e2b_observe: from_section(v, "e2bObserve"),
         claw_tap: from_section(v, "clawTap"),
