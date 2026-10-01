@@ -375,3 +375,10 @@ jobs:
       - name: Drop local artifact stash
         if: always()
         run: rm -rf "${HOME}/claw-ci-artifacts/${{ github.run_id }}" 2>/dev/null || true
+
+      - name: home-ubt disk cleanup (keep .ci-cache)
+        if: always()
+        run: |
+          set -euo pipefail
+          chmod +x ./deploy/stack/lib/ci-home-ubt-post-image-cleanup.sh
+          ./deploy/stack/lib/ci-home-ubt-post-image-cleanup.sh

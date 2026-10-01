@@ -74,6 +74,10 @@ sudo ./svc.sh install passionke && sudo ./svc.sh start
 
 验收：`systemctl status actions.runner.passionke-claw-code.passionkeosxubt` active；GitHub Runners 页 **passionkeosxubt** Idle。
 
+镜像 job 结束后会跑 `ci-home-ubt-post-image-cleanup.sh`：清 docker 本地 tag / dangling / build cache、linux-artifacts、`rust/target`、claw-ci-artifacts；**保留** `.ci-cache`（sccache + crates，下次编译加速）。
+
+CI 编译把 `CARGO_TARGET_DIR` 指到 `.linux-artifacts`（不是默认 `rust/target`）；`linux-compile.sh` 在编完后立刻只留 `claw` / `http-gateway-rs` 两个二进制，删掉 deps/build 等 target 残骸，避免 GB 级残留。
+
 ## 6. 手工触发 branch worker / deploy
 
 1. **Actions → claw-code-branch-worker → Run workflow**（分支 worker → ACR）
