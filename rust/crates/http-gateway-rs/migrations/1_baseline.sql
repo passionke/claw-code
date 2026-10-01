@@ -208,7 +208,6 @@ CREATE TABLE project_config (
     project_code TEXT NOT NULL DEFAULT '',
     project_description TEXT NOT NULL DEFAULT '',
     max_iterations INT,
-    thinking_enabled BOOLEAN NOT NULL DEFAULT false,
     project_role TEXT NOT NULL DEFAULT 'normal',
     kb_sources_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     PRIMARY KEY (cluster_id, proj_id),
