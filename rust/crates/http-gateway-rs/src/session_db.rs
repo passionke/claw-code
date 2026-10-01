@@ -1757,9 +1757,7 @@ impl GatewaySessionDb {
             .flatten()
             .and_then(|n| usize::try_from(n).ok())
             .filter(|&n| n > 0);
-        let thinking_enabled: bool = row
-            .try_get::<bool, _>("thinking_enabled")
-            .unwrap_or(false);
+        let thinking_enabled: bool = row.try_get::<bool, _>("thinking_enabled").unwrap_or(false);
 
         let stable_content_rev: Option<String> = row.try_get("stable_content_rev")?;
         let draft_open: bool = row.try_get("draft_open")?;
