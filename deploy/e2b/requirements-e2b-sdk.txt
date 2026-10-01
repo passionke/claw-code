@@ -1,4 +1,9 @@
 # Pinned for self-hosted e2b. Do not float: newer SDKs change connect routing headers.
-# e2b-code-interpreter 2.9.0 still accepts e2b>=2.26.0,<3. Author: kejiqing
+# e2b-code-interpreter 2.9.0 still accepts e2b>=2.26.0,<3.
+# python-dotenv + psycopg: Admin publish-templates / bootstrap PG persist.
+# Bake into gateway image (Containerfile.gateway-rs.prebuilt) so the button
+# does not pip-at-runtime against flaky public PyPI. Author: kejiqing
 e2b==2.26.0
 e2b-code-interpreter==2.9.0
+python-dotenv==1.2.3
+psycopg[binary]==3.2.9
