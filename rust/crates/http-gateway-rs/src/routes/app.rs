@@ -242,6 +242,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         };
         std::fs::create_dir_all(tmp.join(".claw")).unwrap();
         std::fs::write(

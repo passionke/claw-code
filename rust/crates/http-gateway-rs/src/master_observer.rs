@@ -285,6 +285,7 @@ pub async fn seed_router_project(db: &GatewaySessionDb, proj_id: i64) -> Result<
         project_code: &row.project_code,
         project_description: &row.project_description,
         max_iterations: row.max_iterations,
+        thinking_enabled: row.thinking_enabled,
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -349,6 +350,7 @@ pub async fn enable_ops_delegate_tool(db: &GatewaySessionDb, proj_id: i64) -> Re
         project_code: &row.project_code,
         project_description: &row.project_description,
         max_iterations: row.max_iterations,
+        thinking_enabled: row.thinking_enabled,
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -1118,6 +1120,7 @@ pub async fn clone_stable_config_onto_project(
         project_code,
         project_description,
         max_iterations: source.max_iterations,
+        thinking_enabled: source.thinking_enabled,
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -1185,6 +1188,7 @@ pub async fn seed_master_project(db: &GatewaySessionDb, proj_id: i64) -> Result<
         project_code: &row.project_code,
         project_description: &row.project_description,
         max_iterations: row.max_iterations,
+        thinking_enabled: row.thinking_enabled,
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -1246,6 +1250,7 @@ pub async fn seed_knowledge_base_project(
         project_code: &row.project_code,
         project_description: &row.project_description,
         max_iterations: row.max_iterations,
+        thinking_enabled: row.thinking_enabled,
     })
     .await
     .map_err(|e| e.to_string())?;

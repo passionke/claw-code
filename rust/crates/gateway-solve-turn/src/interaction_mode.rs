@@ -37,6 +37,7 @@ impl InteractionMode {
 /// Optional turn options carried on the gateway task file. Author: kejiqing
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SolveTurnOptions {
     #[serde(default)]
     pub interaction_mode: InteractionMode,
@@ -53,6 +54,10 @@ pub struct SolveTurnOptions {
     /// Emit thinking deltas and live shell chunks. Default off. Author: kejiqing
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub responses_stream: bool,
+    /// Enable upstream LLM thinking for this turn. Default off; project config can enable.
+    /// Author: kejiqing
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub thinking_enabled: bool,
 }
 
 /// Extract a short title from plan markdown (`#` heading or first non-empty line). Author: kejiqing
@@ -137,6 +142,27 @@ mod tests {
                 "接导出 API".to_string(),
                 "单测".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn solve_turn_options_default_keeps_thinking_off() {
+        let opts = SolveTurnOptions::default();
+        assert!(!opts.thinking_enabled);
+        assert!(!opts.responses_stream);
+    }
+
+    #[test]
+    fn solve_turn_options_default_thinking_stays_off_when_responses_stream_on() {
+        // Default config: thinking off. Enabling Responses SSE alone must not flip the switch.
+        let opts = SolveTurnOptions {
+            responses_stream: true,
+            ..Default::default()
+        };
+        assert!(opts.responses_stream);
+        assert!(
+            !opts.thinking_enabled,
+            "default thinkingEnabled remains false under Responses SSE"
         );
     }
 }

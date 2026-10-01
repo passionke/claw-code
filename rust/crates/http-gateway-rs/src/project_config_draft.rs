@@ -40,6 +40,8 @@ pub struct ProjectConfigSidecars {
     pub project_code: String,
     pub project_description: String,
     pub max_iterations: Option<usize>,
+    /// When true, agent LLM requests enable thinking; default false. Author: kejiqing
+    pub thinking_enabled: bool,
 }
 
 impl ProjectConfigSidecars {
@@ -58,6 +60,7 @@ impl ProjectConfigSidecars {
             project_code: row.project_code.clone(),
             project_description: row.project_description.clone(),
             max_iterations: row.max_iterations,
+            thinking_enabled: row.thinking_enabled,
         }
     }
 }
@@ -240,6 +243,7 @@ pub fn config_row_from_revision(
         project_code: sidecars.project_code,
         project_description: sidecars.project_description,
         max_iterations: sidecars.max_iterations,
+        thinking_enabled: sidecars.thinking_enabled,
     }
 }
 
@@ -275,6 +279,7 @@ pub fn upsert_from_row<'a>(
         project_code: &row.project_code,
         project_description: &row.project_description,
         max_iterations: row.max_iterations,
+        thinking_enabled: row.thinking_enabled,
     }
 }
 
@@ -377,6 +382,7 @@ pub async fn ensure_draft(
         project_code: &row.project_code,
         project_description: &row.project_description,
         max_iterations: row.max_iterations,
+        thinking_enabled: row.thinking_enabled,
     };
     db.upsert_project_config(upsert).await?;
     db.get_project_config(proj_id).await?.ok_or_else(|| {

@@ -128,6 +128,7 @@ pub fn dto_to_config_row(dto: &ApprenticeStableConfigDto) -> ProjectConfigRow {
         project_code: dto.project_code.clone(),
         project_description: dto.project_description.clone(),
         max_iterations: dto.max_iterations,
+        thinking_enabled: false,
     }
 }
 
@@ -652,6 +653,7 @@ pub async fn apply_draft_patch_local(
         project_code: &draft.project_code,
         project_description: &draft.project_description,
         max_iterations: draft.max_iterations,
+        thinking_enabled: draft.thinking_enabled,
     })
     .await
     .map_err(|e| e.to_string())?;

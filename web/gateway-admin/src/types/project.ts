@@ -113,6 +113,8 @@ export interface ProjectConfig {
   kbSourcesJson?: KbSourceItem[];
   /** Project default agent loop max iterations; null/omit = cluster CLAW_MAX_ITERATIONS. Author: kejiqing */
   maxIterations?: number | null;
+  /** When true, agent LLM requests enable thinking; default false. Author: kejiqing */
+  thinkingEnabled?: boolean;
 }
 
 export interface KbSourceItem {

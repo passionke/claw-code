@@ -215,6 +215,16 @@ pub(crate) async fn run_solve_request_docker(
         state.cfg.default_max_iterations,
     )
     .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let thinking_enabled = state
+        .session_db
+        .get_project_thinking_enabled(req.proj_id)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("load project thinking_enabled failed: {e}"),
+            )
+        })?;
     let mut attachment_list = req.attachments.clone().unwrap_or_default();
     if !req.compat_images.is_empty() {
         for src in &req.compat_images {
@@ -301,6 +311,7 @@ pub(crate) async fn run_solve_request_docker(
         sealed_plan_markdown: req.sealed_plan_markdown.clone(),
         ask_user_question_enabled: Some(ask_user_question_enabled),
         responses_stream: req.responses_stream,
+        thinking_enabled,
     };
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(

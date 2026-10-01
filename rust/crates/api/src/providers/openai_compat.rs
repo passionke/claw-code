@@ -2396,6 +2396,35 @@ mod tests {
     }
 
     #[test]
+    fn qwen_agent_path_disables_thinking_when_explicitly_false() {
+        // Gateway DirectApiClient always sends Some(thinking_enabled); default off.
+        let request = MessageRequest {
+            model: "qwen3.7-max".to_string(),
+            max_tokens: 64,
+            messages: vec![],
+            stream: true,
+            thinking_enabled: Some(false),
+            ..Default::default()
+        };
+        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        assert_eq!(payload["enable_thinking"], json!(false));
+    }
+
+    #[test]
+    fn deepseek_agent_path_disables_thinking_when_explicitly_false() {
+        let request = MessageRequest {
+            model: "deepseek-chat".to_string(),
+            max_tokens: 64,
+            messages: vec![],
+            stream: true,
+            thinking_enabled: Some(false),
+            ..Default::default()
+        };
+        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        assert_eq!(payload["thinking"]["type"], json!("disabled"));
+    }
+
+    #[test]
     fn qwen_non_reasoning_models_disable_enable_thinking_by_default() {
         let request = MessageRequest {
             model: "qwen3.7-max".to_string(),
