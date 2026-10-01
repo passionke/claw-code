@@ -2523,9 +2523,7 @@ mod gateway_solve_task_file_tests {
 
 #[cfg(test)]
 mod llm_thinking_regression_tests {
-    use super::{
-        message_request_thinking_enabled, DirectApiClient, SolveTurnOptions,
-    };
+    use super::{message_request_thinking_enabled, DirectApiClient, SolveTurnOptions};
     use api::{OpenAiCompatClient, OpenAiCompatConfig, ProviderClient};
 
     fn client_for_test(responses_stream: bool, thinking_enabled: bool) -> DirectApiClient {
