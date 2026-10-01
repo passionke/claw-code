@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Post image-build on home-ubt: free disk without wiping compile cache (.ci-cache / actions/cache).
+# Post image-build on home-ubt: free disk without wiping compile cache.
 # Author: kejiqing
 #
-# Keeps: .ci-cache (cargo registry + sccache) — needed for next warm compile
+# Keeps: $HOME/claw-ci-cache/claw-code (cargo registry + sccache + swagger zip)
 # Drops: linux-artifacts, claw-ci-artifacts for this run, dangling docker images,
 #        buildx cache, local package tags already pushed to ACR
 set -euo pipefail
@@ -15,7 +15,7 @@ fi
 WS="${GITHUB_WORKSPACE:-}"
 RUN_ID="${GITHUB_RUN_ID:-}"
 
-echo "==> home-ubt post-image cleanup (keep .ci-cache)"
+echo "==> home-ubt post-image cleanup (keep \$HOME/claw-ci-cache)"
 
 if [[ -n "${WS}" ]]; then
   for path in \
