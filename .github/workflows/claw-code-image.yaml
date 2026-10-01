@@ -153,6 +153,7 @@ jobs:
             .ci-cache/cargo-registry
             .ci-cache/cargo-git
             .ci-cache/sccache
+            .ci-cache/swagger-ui
           key: linux-compile-home-ubt-${{ hashFiles('rust/Cargo.lock', 'deploy/stack/Containerfile.rust-compile') }}
           restore-keys: |
             linux-compile-home-ubt-
