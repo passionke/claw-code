@@ -1,22 +1,15 @@
-# Publishes gateway + pool worker images to GHCR, then mirrors the same layers to ACR.
-# Author: kejiqing
+# home-ubt (10.8.0.21 / passionkeosxubt): compile + docker build + skopeo → ACR.
+# No GHCR hop, no aliyun-hk / contabo-sg mirror. Author: kejiqing
 #
-# Chain:
-# - Push tag refs/tags/release-v* → github-hosted build/push GHCR → mirror-to-acr on aliyun-hk.
-# - rust-compile-image → linux-compile-once → prebuilt claw-code / claw-gateway-worker /
-#   claw-gateway-playground; build-and-push-relaxed-worker FROM strict worker.
-# - mirror-to-acr: skopeo copy GHCR → ACR (v2s2; Aliyun personal ACR rejects OCI empty layers).
-#   Runner label aliyun-hk = cn-hongkong VPS, public net to Hangzhou ACR (no VPN).
-#   See deploy/stack/docs/github-ci-variables.md.
+# Chain (push tag refs/tags/release-v*):
+#   rust-compile-image → linux-compile-once → build-and-push →
+#   build-and-push-relaxed-worker
+# ACR personal edition needs skopeo --format v2s2 (see deploy/stack/lib/ci-push-acr-skopeo.sh).
+# Runner: [self-hosted, home-ubt] only.
 #
-# Runner selection (Author: kejiqing):
-# - Build/publish jobs: always github-hosted (ubuntu-latest). Do not schedule compile on
-#   aliyun-hk (small RAM) or legacy SG self-host.
-# - mirror-to-acr: runs-on [self-hosted, aliyun-hk] only; max-parallel 1.
-#
-# Optional repo/org Actions variable CONTAINER_BASE_REGISTRY (hostname only, no path):
-# - unset → docker.io (recommended on github-hosted runners; mirrors may serve incomplete blobs).
-# - example → docker.1ms.run → pulls library/rust + library/debian from that mirror.
+# Optional repo Variables:
+#   ACR_REGISTRY, ACR_GITHUB_ENVIRONMENT (default claw-acr / dockerhub)
+#   CONTAINER_BASE_REGISTRY (hostname; home CN default docker.1ms.run when unset in job)
 name: claw-code-image
 
 on:
@@ -26,49 +19,50 @@ on:
 
 permissions:
   contents: read
-  packages: write
+
+env:
+  CLAW_CONTAINER_RUNTIME: docker
+  CLAW_USE_CN_CRATES_MIRROR: "1"
+  CLAW_USE_CN_RUST_MIRROR: "1"
+  CLAW_USE_CN_APT_MIRROR: "1"
 
 jobs:
-  pick-runner:
-    # Build path is always github-hosted; ACR mirror is a separate job on aliyun-hk.
-    # Kept as a tiny job so downstream `needs` / outputs stay stable. Author: kejiqing
-    name: pick runner (github-hosted build)
-    if: startsWith(github.ref, 'refs/tags/release-v')
-    runs-on: ubuntu-latest
-    outputs:
-      runs_on: ${{ steps.pick.outputs.runs_on }}
-      runner_choice: ${{ steps.pick.outputs.runner_choice }}
-    steps:
-      - name: Always ubuntu-latest for compile / GHCR push
-        id: pick
-        run: |
-          set -euo pipefail
-          echo 'runs_on=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
-          echo "runner_choice=github-hosted:ubuntu-latest" >> "$GITHUB_OUTPUT"
-
   rust-compile-image:
-    name: publish claw-rust-compile (GHCR)
+    name: publish claw-rust-compile (ACR)
     if: startsWith(github.ref, 'refs/tags/release-v')
-    needs: pick-runner
-    runs-on: ${{ fromJSON(needs.pick-runner.outputs.runs_on) }}
+    runs-on: [self-hosted, home-ubt]
+    environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
     steps:
-      - name: Show runner choice
+      - name: Show runner
         run: |
-          echo "runner_choice=${{ needs.pick-runner.outputs.runner_choice }}"
           echo "hostname=$(hostname)"
+          echo "runner=${RUNNER_NAME:-}"
 
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Self-hosted workspace prep
+        run: bash deploy/stack/lib/ci-self-hosted-workspace-prep.sh
 
-      - name: Login to GHCR
+      - name: Verify ACR_REGISTRY
+        id: reg
+        env:
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ACR_REGISTRY}" ]; then
+            echo "::error::ACR_REGISTRY is empty" >&2
+            exit 1
+          fi
+          echo "login_host=${ACR_REGISTRY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to ACR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ steps.reg.outputs.login_host }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
 
       - name: Resolve build base images
         id: base_images
@@ -76,78 +70,72 @@ jobs:
           CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
         run: |
           set -euo pipefail
-          REG="${CONTAINER_BASE_REGISTRY:-}"
-          if [ -z "${REG}" ]; then
-            REG="docker.io"
-          fi
+          REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
           # shellcheck source=/dev/null
           source deploy/stack/rust-version.env
           echo "container_base_registry=${REG}" >> "$GITHUB_OUTPUT"
           echo "rust_image=${REG}/library/rust:${CLAW_RUST_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           echo "rust_image_tag=${CLAW_RUST_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Image tags (GHCR)
-        id: meta
+      - name: Build claw-rust-compile (local)
+        id: build
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/${{ github.repository_owner }}/claw-rust-compile"
-          CF_HASH="$(sha256sum deploy/stack/Containerfile.rust-compile | awk '{print $1}' | head -c 12)"
           TAG="${{ steps.base_images.outputs.rust_image_tag }}"
-          {
-            echo "image=${IMAGE}"
-            echo "tags<<EOF"
-            echo "${IMAGE}:${TAG}"
-            echo "${IMAGE}:sha-${CF_HASH}"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          LOCAL="claw-rust-compile:${TAG}"
+          docker build \
+            -f ./deploy/stack/Containerfile.rust-compile \
+            --build-arg "RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}" \
+            --build-arg "CLAW_USE_CN_APT_MIRROR=1" \
+            -t "${LOCAL}" .
+          echo "local=${LOCAL}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push claw-rust-compile
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./deploy/stack/Containerfile.rust-compile
-          push: true
-          build-args: |
-            RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
-            CLAW_USE_CN_APT_MIRROR=0
-          tags: ${{ steps.meta.outputs.tags }}
+      - name: Push claw-rust-compile → ACR (skopeo v2s2)
+        env:
+          PREFIX: ${{ steps.reg.outputs.image_prefix }}
+          TAG: ${{ steps.base_images.outputs.rust_image_tag }}
+        run: |
+          set -euo pipefail
+          chmod +x ./deploy/stack/lib/ci-push-acr-skopeo.sh
+          CF_HASH="$(sha256sum deploy/stack/Containerfile.rust-compile | awk '{print $1}' | head -c 12)"
+          ./deploy/stack/lib/ci-push-acr-skopeo.sh \
+            "claw-rust-compile:${TAG}" \
+            "${PREFIX}/claw-rust-compile:${TAG}" \
+            "${PREFIX}/claw-rust-compile:sha-${CF_HASH}"
 
   linux-compile-once:
     if: startsWith(github.ref, 'refs/tags/release-v')
-    needs:
-      - pick-runner
-      - rust-compile-image
-    runs-on: ${{ fromJSON(needs.pick-runner.outputs.runs_on) }}
+    needs: rust-compile-image
+    runs-on: [self-hosted, home-ubt]
+    environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
     steps:
-      - name: Show runner choice
-        run: |
-          echo "runner_choice=${{ needs.pick-runner.outputs.runner_choice }}"
-          echo "runs_on=${{ needs.pick-runner.outputs.runs_on }}"
-          echo "hostname=$(hostname)"
-
       - name: Self-hosted workspace prep
         run: |
           set -euo pipefail
-          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
-            exit 0
-          fi
           WS="${GITHUB_WORKSPACE}"
           RUN_UID="$(id -u)"
           RUN_GID="$(id -g)"
-          docker_root() {
-            docker run --rm -v "${WS}:/w:rw" alpine:3.20 "$@"
-          }
-          echo "chown workspace via docker (prior docker jobs leave root-owned files)"
-          docker_root chown -R "${RUN_UID}:${RUN_GID}" /w
-          ART="${WS}/deploy/stack/.linux-artifacts"
-          if [ -d "${ART}" ]; then
-            echo "remove ${ART}"
-            rm -rf "${ART}" 2>/dev/null || docker_root rm -rf /w/deploy/stack/.linux-artifacts
-          fi
-          rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
+          docker run --rm -v "${WS}:/w:rw" alpine:3.20 chown -R "${RUN_UID}:${RUN_GID}" /w
+          rm -rf "${WS}/deploy/stack/.linux-artifacts" 2>/dev/null || true
 
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Verify ACR_REGISTRY
+        id: reg
+        env:
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+        run: |
+          set -euo pipefail
+          echo "login_host=${ACR_REGISTRY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.reg.outputs.login_host }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
 
       - name: Resolve build base images
         id: base_images
@@ -155,17 +143,8 @@ jobs:
           CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
         run: |
           set -euo pipefail
-          REG="${CONTAINER_BASE_REGISTRY:-}"
-          if [ -z "${REG}" ]; then
-            REG="docker.io"
-          fi
-          RUST_IMAGE="${REG}/library/rust:1.88-bookworm"
-          DEBIAN_IMAGE="${REG}/library/debian:bookworm-slim"
-          NODE_IMAGE="${REG}/library/node:20-alpine"
+          REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
           echo "container_base_registry=${REG}" >> "$GITHUB_OUTPUT"
-          echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "debian_image=${DEBIAN_IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "node_image=${NODE_IMAGE}" >> "$GITHUB_OUTPUT"
 
       - name: Restore linux-compile cache
         uses: actions/cache@v4
@@ -174,80 +153,57 @@ jobs:
             .ci-cache/cargo-registry
             .ci-cache/cargo-git
             .ci-cache/sccache
-          key: linux-compile-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock', 'deploy/stack/Containerfile.rust-compile') }}
+          key: linux-compile-home-ubt-${{ hashFiles('rust/Cargo.lock', 'deploy/stack/Containerfile.rust-compile') }}
           restore-keys: |
-            linux-compile-${{ runner.os }}-
+            linux-compile-home-ubt-
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Resolve rust compile image ref
+      - name: Resolve rust compile image ref (ACR)
         id: compile_image
+        env:
+          PREFIX: ${{ steps.reg.outputs.image_prefix }}
         run: |
           set -euo pipefail
           # shellcheck source=/dev/null
           source deploy/stack/rust-version.env
-          echo "ref=ghcr.io/${{ github.repository_owner }}/claw-rust-compile:${CLAW_RUST_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "ref=${PREFIX}/claw-rust-compile:${CLAW_RUST_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Linux compile (once)
         env:
-          CLAW_CONTAINER_RUNTIME: docker
           CLAW_LINUX_COMPILE_CI: "1"
-          CLAW_USE_CN_CRATES_MIRROR: "0"
-          CLAW_USE_CN_RUST_MIRROR: "0"
           CONTAINER_BASE_REGISTRY: ${{ steps.base_images.outputs.container_base_registry }}
           CLAW_RUST_COMPILE_IMAGE: ${{ steps.compile_image.outputs.ref }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: bash deploy/stack/lib/linux-compile.sh
 
-      - name: Verify ci-cache ownership (actions/cache save)
+      - name: Verify ci-cache ownership
         run: |
           set -euo pipefail
-          if [ ! -d .ci-cache ]; then
-            echo "no .ci-cache (first run or empty compile cache)"
-            exit 0
-          fi
+          if [ ! -d .ci-cache ]; then exit 0; fi
           RUN_UID="$(id -u)"
           BAD="$(find .ci-cache -not -user "${RUN_UID}" 2>/dev/null | head -5 || true)"
           if [ -n "${BAD}" ]; then
-            echo "::error::.ci-cache still has non-runner-owned files; actions/cache save will fail:" >&2
-            echo "${BAD}" >&2
+            echo "::error::.ci-cache non-runner-owned files" >&2
             exit 1
           fi
-          echo "ci-cache ownership ok for uid=${RUN_UID}"
 
-      - name: Upload linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-artifacts
-          path: deploy/stack/.linux-artifacts/release/
-          if-no-files-found: error
-          retention-days: 1
+      - name: Stash linux artifacts locally (skip GitHub upload-artifact)
+        run: |
+          set -euo pipefail
+          DEST="${HOME}/claw-ci-artifacts/${{ github.run_id }}"
+          mkdir -p "${DEST}"
+          cp -a deploy/stack/.linux-artifacts/release "${DEST}/"
+          ls -lh "${DEST}/release" | head
 
       - name: Self-hosted workspace cleanup
         if: always()
-        run: |
-          set -euo pipefail
-          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
-            exit 0
-          fi
-          WS="${GITHUB_WORKSPACE}"
-          ART="${WS}/deploy/stack/.linux-artifacts"
-          if [ -d "${ART}" ]; then
-            echo "remove ${ART}"
-            rm -rf "${ART}" 2>/dev/null || docker run --rm -v "${WS}:/w:rw" alpine:3.20 rm -rf /w/deploy/stack/.linux-artifacts || true
-          fi
+        run: bash deploy/stack/lib/ci-self-hosted-workspace-cleanup.sh
+        continue-on-error: true
 
   build-and-push:
     if: startsWith(github.ref, 'refs/tags/release-v')
-    needs:
-      - pick-runner
-      - linux-compile-once
-    runs-on: ${{ fromJSON(needs.pick-runner.outputs.runs_on) }}
+    needs: linux-compile-once
+    runs-on: [self-hosted, home-ubt]
+    environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
     strategy:
       fail-fast: false
       matrix:
@@ -259,281 +215,34 @@ jobs:
           - package: claw-gateway-playground
             dockerfile: deploy/stack/Containerfile.gateway-playground
     steps:
-      - name: Show runner choice
-        run: |
-          echo "runner_choice=${{ needs.pick-runner.outputs.runner_choice }}"
-          echo "hostname=$(hostname)"
-
       - name: Self-hosted workspace prep
         run: |
           set -euo pipefail
-          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
-            exit 0
-          fi
           WS="${GITHUB_WORKSPACE}"
           RUN_UID="$(id -u)"
-          RUN_GID="$(id -g)"
-          docker_root() {
-            docker run --rm -v "${WS}:/w:rw" alpine:3.20 "$@"
-          }
-          echo "chown workspace via docker (prior docker jobs leave root-owned files)"
-          docker_root chown -R "${RUN_UID}:${RUN_GID}" /w
-          ART="${WS}/deploy/stack/.linux-artifacts"
-          if [ -d "${ART}" ]; then
-            echo "remove ${ART}"
-            rm -rf "${ART}" 2>/dev/null || docker_root rm -rf /w/deploy/stack/.linux-artifacts
-          fi
-          rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
+          docker run --rm -v "${WS}:/w:rw" alpine:3.20 chown -R "${RUN_UID}:$(id -g)" /w
+          rm -rf "${WS}/deploy/stack/.linux-artifacts" 2>/dev/null || true
 
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
 
-      - name: Download linux artifacts
+      - name: Restore linux artifacts from local stash
         if: matrix.package != 'claw-gateway-playground'
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-artifacts
-          path: deploy/stack/.linux-artifacts/release
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/release-')
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Resolve build base images
-        id: base_images
-        env:
-          CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
         run: |
           set -euo pipefail
-          REG="${CONTAINER_BASE_REGISTRY:-}"
-          if [ -z "${REG}" ]; then
-            REG="docker.io"
-          fi
-          RUST_IMAGE="${REG}/library/rust:1.88-bookworm"
-          DEBIAN_IMAGE="${REG}/library/debian:bookworm-slim"
-          NODE_IMAGE="${REG}/library/node:20-alpine"
-          echo "container_base_registry=${REG}" >> "$GITHUB_OUTPUT"
-          echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "debian_image=${DEBIAN_IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "node_image=${NODE_IMAGE}" >> "$GITHUB_OUTPUT"
+          SRC="${HOME}/claw-ci-artifacts/${{ github.run_id }}/release"
+          test -d "${SRC}"
+          mkdir -p deploy/stack/.linux-artifacts
+          cp -a "${SRC}" deploy/stack/.linux-artifacts/release
 
-      - name: Image tags (GHCR)
-        id: meta
-        run: |
-          set -euo pipefail
-          IMAGE="ghcr.io/${{ github.repository_owner }}/${{ matrix.package }}"
-          SHA12="${GITHUB_SHA:0:12}"
-          RELEASE_TAG="${GITHUB_REF_NAME}"
-          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "sha12=${SHA12}" >> "$GITHUB_OUTPUT"
-          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-          {
-            echo "tags<<EOF"
-            echo "${IMAGE}:${RELEASE_TAG}"
-            echo "${IMAGE}:sha-${SHA12}"
-            echo "${IMAGE}:latest"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Build and push ${{ matrix.package }}
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./${{ matrix.dockerfile }}
-          push: ${{ startsWith(github.ref, 'refs/tags/release-v') }}
-          build-args: |
-            DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}
-            NODE_BASE_IMAGE=${{ steps.base_images.outputs.node_image }}
-          tags: ${{ steps.meta.outputs.tags }}
-
-      - name: Verify playground admin assets in image
-        if: matrix.package == 'claw-gateway-playground'
-        run: |
-          set -euo pipefail
-          IMG="${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.release_tag }}"
-          docker run --rm "${IMG}" sh -c 'test -f /app/admin-dist/index.html && test -n "$(ls /app/admin-dist/assets/*.js 2>/dev/null)"'
-          echo "playground admin-dist ok in ${IMG}"
-
-      - name: Self-hosted workspace cleanup
-        if: always()
-        run: |
-          set -euo pipefail
-          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
-            exit 0
-          fi
-          WS="${GITHUB_WORKSPACE}"
-          ART="${WS}/deploy/stack/.linux-artifacts"
-          if [ -d "${ART}" ]; then
-            echo "remove ${ART}"
-            rm -rf "${ART}" 2>/dev/null || docker run --rm -v "${WS}:/w:rw" alpine:3.20 rm -rf /w/deploy/stack/.linux-artifacts || true
-          fi
-
-  build-and-push-relaxed-worker:
-    if: startsWith(github.ref, 'refs/tags/release-v')
-    needs:
-      - pick-runner
-      - build-and-push
-    runs-on: ${{ fromJSON(needs.pick-runner.outputs.runs_on) }}
-    steps:
-      - name: Show runner choice
-        run: |
-          echo "runner_choice=${{ needs.pick-runner.outputs.runner_choice }}"
-          echo "hostname=$(hostname)"
-
-      - name: Self-hosted workspace prep
-        run: |
-          set -euo pipefail
-          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
-            exit 0
-          fi
-          WS="${GITHUB_WORKSPACE}"
-          RUN_UID="$(id -u)"
-          RUN_GID="$(id -g)"
-          docker_root() {
-            docker run --rm -v "${WS}:/w:rw" alpine:3.20 "$@"
-          }
-          echo "chown workspace via docker (prior docker jobs leave root-owned files)"
-          docker_root chown -R "${RUN_UID}:${RUN_GID}" /w
-          ART="${WS}/deploy/stack/.linux-artifacts"
-          if [ -d "${ART}" ]; then
-            echo "remove ${ART}"
-            rm -rf "${ART}" 2>/dev/null || docker_root rm -rf /w/deploy/stack/.linux-artifacts
-          fi
-          rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Image tags (GHCR)
-        id: meta
-        run: |
-          set -euo pipefail
-          STRICT_IMAGE="ghcr.io/${{ github.repository_owner }}/claw-gateway-worker"
-          RELAXED_IMAGE="ghcr.io/${{ github.repository_owner }}/claw-gateway-worker-relaxed"
-          SHA12="${GITHUB_SHA:0:12}"
-          RELEASE_TAG="${GITHUB_REF_NAME}"
-          echo "strict_image=${STRICT_IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "relaxed_image=${RELAXED_IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-          {
-            echo "tags<<EOF"
-            echo "${RELAXED_IMAGE}:${RELEASE_TAG}"
-            echo "${RELAXED_IMAGE}:sha-${SHA12}"
-            echo "${RELAXED_IMAGE}:latest"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Pull strict worker base
-        run: |
-          set -euo pipefail
-          docker pull "${{ steps.meta.outputs.strict_image }}:${{ steps.meta.outputs.release_tag }}"
-
-      - name: Build and push claw-gateway-worker-relaxed
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./deploy/stack/Containerfile.gateway-worker-relaxed
-          push: true
-          build-args: |
-            WORKER_BASE_IMAGE=${{ steps.meta.outputs.strict_image }}:${{ steps.meta.outputs.release_tag }}
-          tags: ${{ steps.meta.outputs.tags }}
-
-      - name: Verify relaxed worker tools in image
-        run: |
-          set -euo pipefail
-          IMG="${{ steps.meta.outputs.relaxed_image }}:${{ steps.meta.outputs.release_tag }}"
-          docker run --rm --entrypoint sh "${IMG}" -c 'command -v curl && command -v git && command -v python3'
-          echo "relaxed worker curl/git/python3 ok in ${IMG}"
-
-      - name: Self-hosted workspace cleanup
-        if: always()
-        run: |
-          set -euo pipefail
-          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
-            exit 0
-          fi
-          WS="${GITHUB_WORKSPACE}"
-          ART="${WS}/deploy/stack/.linux-artifacts"
-          if [ -d "${ART}" ]; then
-            echo "remove ${ART}"
-            rm -rf "${ART}" 2>/dev/null || docker run --rm -v "${WS}:/w:rw" alpine:3.20 rm -rf /w/deploy/stack/.linux-artifacts || true
-          fi
-
-  mirror-to-acr:
-    # HK Aliyun (label aliyun-hk): public GHCR pull + ACR push via skopeo v2s2. Author: kejiqing
-    if: startsWith(github.ref, 'refs/tags/release-v')
-    needs:
-      - build-and-push
-      - build-and-push-relaxed-worker
-    runs-on:
-      - self-hosted
-      - aliyun-hk
-    environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
-    permissions:
-      contents: read
-      packages: read
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        package:
-          - claw-code
-          - claw-gateway-worker
-          - claw-gateway-worker-relaxed
-          - claw-gateway-playground
-    steps:
-      - name: Show runner
-        run: |
-          echo "hostname=$(hostname)"
-          echo "runner=${RUNNER_NAME:-}"
-          skopeo --version
-          docker version --format '{{.Server.Version}}' >/dev/null
-
-      - name: Verify ACR_REGISTRY and derive login host
+      - name: Verify ACR_REGISTRY
         id: reg
         env:
           ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
         run: |
           set -euo pipefail
-          if [ -z "${ACR_REGISTRY}" ]; then
-            echo "::error::ACR_REGISTRY is empty. Set on GitHub Environment (default claw-acr) or repo variable ACR_GITHUB_ENVIRONMENT." >&2
-            exit 1
-          fi
-          LOGIN_HOST="${ACR_REGISTRY%%/*}"
-          echo "login_host=${LOGIN_HOST}" >> "$GITHUB_OUTPUT"
+          echo "login_host=${ACR_REGISTRY%%/*}" >> "$GITHUB_OUTPUT"
           echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to ACR
         uses: docker/login-action@v3
@@ -542,25 +251,47 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: Mirror ${{ matrix.package }} GHCR → ACR (skopeo v2s2)
+      - name: Resolve build base images
+        id: base_images
+        env:
+          CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
+        run: |
+          set -euo pipefail
+          REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
+          echo "debian_image=${REG}/library/debian:bookworm-slim" >> "$GITHUB_OUTPUT"
+          echo "node_image=${REG}/library/node:20-alpine" >> "$GITHUB_OUTPUT"
+
+      - name: Build ${{ matrix.package }} (local)
+        id: build
+        env:
+          PACKAGE: ${{ matrix.package }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          LOCAL="${PACKAGE}:${RELEASE_TAG}"
+          docker build \
+            -f "./${{ matrix.dockerfile }}" \
+            --build-arg "DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}" \
+            --build-arg "NODE_BASE_IMAGE=${{ steps.base_images.outputs.node_image }}" \
+            -t "${LOCAL}" .
+          echo "local=${LOCAL}" >> "$GITHUB_OUTPUT"
+
+      - name: Push ${{ matrix.package }} → ACR (skopeo v2s2)
         env:
           PACKAGE: ${{ matrix.package }}
           PREFIX: ${{ steps.reg.outputs.image_prefix }}
           RELEASE_TAG: ${{ github.ref_name }}
-          AUTHFILE: ${{ runner.temp }}/docker-auth.json
         run: |
           set -euo pipefail
-          # docker/login-action writes ~/.docker/config.json; skopeo needs an authfile.
-          cp "${HOME}/.docker/config.json" "${AUTHFILE}"
+          chmod +x ./deploy/stack/lib/ci-push-acr-skopeo.sh
           SHA12="${GITHUB_SHA:0:12}"
-          SRC="docker://ghcr.io/${{ github.repository_owner }}/${PACKAGE}:${RELEASE_TAG}"
-          DST_BASE="docker://${PREFIX}/${PACKAGE}"
-          skopeo copy --authfile "${AUTHFILE}" --format v2s2 "${SRC}" "${DST_BASE}:${RELEASE_TAG}"
-          skopeo copy --authfile "${AUTHFILE}" --format v2s2 "${DST_BASE}:${RELEASE_TAG}" "${DST_BASE}:sha-${SHA12}"
-          skopeo copy --authfile "${AUTHFILE}" --format v2s2 "${DST_BASE}:${RELEASE_TAG}" "${DST_BASE}:latest"
-          echo "mirrored ${SRC} → ${DST_BASE} (${RELEASE_TAG}, sha-${SHA12}, latest)"
+          ./deploy/stack/lib/ci-push-acr-skopeo.sh \
+            "${PACKAGE}:${RELEASE_TAG}" \
+            "${PREFIX}/${PACKAGE}:${RELEASE_TAG}" \
+            "${PREFIX}/${PACKAGE}:sha-${SHA12}" \
+            "${PREFIX}/${PACKAGE}:latest"
 
-      - name: Verify playground admin assets in ACR image
+      - name: Verify playground admin assets
         if: matrix.package == 'claw-gateway-playground'
         env:
           PREFIX: ${{ steps.reg.outputs.image_prefix }}
@@ -570,5 +301,77 @@ jobs:
           IMG="${PREFIX}/claw-gateway-playground:${RELEASE_TAG}"
           docker pull "${IMG}"
           docker run --rm "${IMG}" sh -c 'test -f /app/admin-dist/index.html && test -n "$(ls /app/admin-dist/assets/*.js 2>/dev/null)"'
-          echo "playground admin-dist ok in ${IMG}"
           docker rmi "${IMG}" 2>/dev/null || true
+
+      - name: Self-hosted workspace cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -rf "${GITHUB_WORKSPACE}/deploy/stack/.linux-artifacts" 2>/dev/null || true
+
+  build-and-push-relaxed-worker:
+    if: startsWith(github.ref, 'refs/tags/release-v')
+    needs: build-and-push
+    runs-on: [self-hosted, home-ubt]
+    environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify ACR_REGISTRY
+        id: reg
+        env:
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+        run: |
+          set -euo pipefail
+          echo "login_host=${ACR_REGISTRY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.reg.outputs.login_host }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build claw-gateway-worker-relaxed (local FROM ACR strict)
+        env:
+          PREFIX: ${{ steps.reg.outputs.image_prefix }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          STRICT="${PREFIX}/claw-gateway-worker:${RELEASE_TAG}"
+          LOCAL="claw-gateway-worker-relaxed:${RELEASE_TAG}"
+          docker pull "${STRICT}"
+          docker build \
+            -f ./deploy/stack/Containerfile.gateway-worker-relaxed \
+            --build-arg "WORKER_BASE_IMAGE=${STRICT}" \
+            -t "${LOCAL}" .
+
+      - name: Push relaxed worker → ACR (skopeo v2s2)
+        env:
+          PREFIX: ${{ steps.reg.outputs.image_prefix }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          chmod +x ./deploy/stack/lib/ci-push-acr-skopeo.sh
+          SHA12="${GITHUB_SHA:0:12}"
+          ./deploy/stack/lib/ci-push-acr-skopeo.sh \
+            "claw-gateway-worker-relaxed:${RELEASE_TAG}" \
+            "${PREFIX}/claw-gateway-worker-relaxed:${RELEASE_TAG}" \
+            "${PREFIX}/claw-gateway-worker-relaxed:sha-${SHA12}" \
+            "${PREFIX}/claw-gateway-worker-relaxed:latest"
+
+      - name: Verify relaxed worker tools
+        env:
+          PREFIX: ${{ steps.reg.outputs.image_prefix }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          IMG="${PREFIX}/claw-gateway-worker-relaxed:${RELEASE_TAG}"
+          docker pull "${IMG}"
+          docker run --rm --entrypoint sh "${IMG}" -c 'command -v curl && command -v git && command -v python3'
+
+      - name: Drop local artifact stash
+        if: always()
+        run: rm -rf "${HOME}/claw-ci-artifacts/${{ github.run_id }}" 2>/dev/null || true

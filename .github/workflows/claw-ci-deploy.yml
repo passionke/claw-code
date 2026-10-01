@@ -1,5 +1,6 @@
-# GitHub self-hosted CI (manual): checkout → build → deploy → e2e on runner 62.72.45.75.
-# Code lives in GitHub only; this workflow drives the contabo-sg runner — no hand-rsync to host.
+# GitHub self-hosted CI (manual): checkout → build → deploy → e2e.
+# Label contabo-sg runner has been removed; re-home this workflow before relying on it.
+# Image builds: claw-code-image / claw-code-branch-worker on home-ubt → ACR.
 # Env: Settings → Secrets and variables → Actions → deploy/stack/docs/github-ci-variables.md
 # Author: kejiqing
 name: claw-ci-deploy
