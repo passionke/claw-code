@@ -350,6 +350,13 @@ pub struct GatewaySolveTaskFile {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub responses_stream: bool,
+    /// Project config: enable upstream LLM thinking. Default off. Author: kejiqing
+    #[serde(
+        default,
+        rename = "thinkingEnabled",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub thinking_enabled: bool,
 }
 
 pub use interaction_mode::{
@@ -645,8 +652,10 @@ pub(crate) struct DirectApiClient {
     clawcode_session_id: String,
     /// When true, LLM text chunks are mirrored to live report SSE. Author: kejiqing
     stream_report_deltas: bool,
-    /// Responses `stream=true`: emit thinking deltas. Default false. Author: kejiqing
+    /// Responses `stream=true`: emit thinking deltas to hub. Default false. Author: kejiqing
     responses_stream: bool,
+    /// Upstream LLM thinking switch. Default false (project config can enable). Author: kejiqing
+    thinking_enabled: bool,
 }
 
 impl DirectApiClient {
@@ -698,6 +707,7 @@ impl DirectApiClient {
             clawcode_session_id,
             stream_report_deltas: true,
             responses_stream: false,
+            thinking_enabled: false,
         })
     }
 
@@ -712,6 +722,20 @@ impl DirectApiClient {
         self.responses_stream = enabled;
         self
     }
+
+    #[must_use]
+    pub(crate) fn with_thinking_enabled(mut self, enabled: bool) -> Self {
+        self.thinking_enabled = enabled;
+        self
+    }
+}
+
+/// Upstream `MessageRequest.thinking_enabled` for DirectApiClient.
+/// Sourced from project config (`thinking_enabled`), not from `responses_stream`.
+/// Default config leaves this false even when Responses SSE is on. Author: kejiqing
+#[must_use]
+pub(crate) fn message_request_thinking_enabled(thinking_enabled: bool) -> Option<bool> {
+    Some(thinking_enabled)
 }
 
 /// Keep the first tool per name; upstream APIs reject duplicate tool names. Author: kejiqing
@@ -747,9 +771,9 @@ impl RuntimeApiClient for DirectApiClient {
             tool_choice: Some(ToolChoice::Auto),
             stream: true,
             extra_headers: api::llm_trace_headers_for_session(&self.clawcode_session_id),
-            // Boss report needs visible `content` text. Thinking stays off unless this
-            // turn is a Responses stream. Author: kejiqing
-            thinking_enabled: Some(self.responses_stream),
+            // Boss report needs visible `content` text. Default off; project config can enable.
+            // Author: kejiqing
+            thinking_enabled: message_request_thinking_enabled(self.thinking_enabled),
             ..Default::default()
         };
         let stream_report_deltas = self.stream_report_deltas;
@@ -1859,7 +1883,8 @@ pub fn run_gateway_solve_turn(
         clawcode_session_id.clone(),
         turn_opts.ask_user_question_enabled,
     )?
-    .with_responses_stream(turn_opts.responses_stream);
+    .with_responses_stream(turn_opts.responses_stream)
+    .with_thinking_enabled(turn_opts.thinking_enabled);
     reset_task_progress(work_dir, &clawcode_session_id)
         .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;
     let _ = truncate_progress_history(work_dir);
@@ -2348,9 +2373,11 @@ mod gateway_solve_task_file_tests {
             sealed_plan_markdown: None,
             ask_user_question_enabled: None,
             responses_stream: false,
+            thinking_enabled: false,
         };
         let v = serde_json::to_value(&t).unwrap();
         assert!(v.get("responsesStream").is_none());
+        assert!(v.get("thinkingEnabled").is_none());
         let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();
         assert_eq!(t.request_id, back.request_id);
         assert_eq!(t.user_prompt, back.user_prompt);
@@ -2372,6 +2399,7 @@ mod gateway_solve_task_file_tests {
         assert_eq!(t.max_iterations, Some(2));
         assert_eq!(t.max_iterations_source, None);
         assert!(!t.responses_stream);
+        assert!(!t.thinking_enabled);
     }
 
     #[test]
@@ -2400,12 +2428,196 @@ mod gateway_solve_task_file_tests {
             sealed_plan_markdown: None,
             ask_user_question_enabled: None,
             responses_stream: true,
+            thinking_enabled: false,
         };
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["responsesStream"], true);
+        assert!(v.get("thinkingEnabled").is_none());
         t.responses_stream = false;
         let v = serde_json::to_value(&t).unwrap();
         assert!(v.get("responsesStream").is_none());
+    }
+
+    #[test]
+    fn thinking_enabled_true_is_written_onto_the_task_file() {
+        let mut t = GatewaySolveTaskFile {
+            request_id: "r1".into(),
+            user_prompt: "hello".into(),
+            model: None,
+            timeout_seconds: None,
+            extra_session: None,
+            allowed_tools: None,
+            max_iterations: None,
+            max_iterations_source: None,
+            turn_id: "T_a1b2c3d4e5f6478990abcdef12345678".into(),
+            session_id: None,
+            pool_id: None,
+            worker_name: None,
+            attachments: None,
+            llm_route: None,
+            otel_traceparent: None,
+            landlock_dsl: None,
+            landlock_dsl_source: None,
+            interaction_mode: None,
+            force_single_turn: None,
+            sealed_plan_id: None,
+            sealed_plan_markdown: None,
+            ask_user_question_enabled: None,
+            responses_stream: true,
+            thinking_enabled: true,
+        };
+        let v = serde_json::to_value(&t).unwrap();
+        assert_eq!(v["thinkingEnabled"], true);
+        assert_eq!(v["responsesStream"], true);
+        t.thinking_enabled = false;
+        let v = serde_json::to_value(&t).unwrap();
+        assert!(v.get("thinkingEnabled").is_none());
+        assert_eq!(v["responsesStream"], true);
+    }
+
+    #[test]
+    fn regression_default_config_responses_stream_keeps_thinking_off_on_task_file() {
+        // Historical bug (42077dee): Responses SSE path set thinking_enabled = responses_stream,
+        // so default Chat `/v1/responses` stream=true opened upstream LLM thinking.
+        // Contract: default project config keeps thinking off; Responses SSE alone is not the switch.
+        let t = GatewaySolveTaskFile {
+            request_id: "r1".into(),
+            user_prompt: "hello".into(),
+            model: None,
+            timeout_seconds: None,
+            extra_session: None,
+            allowed_tools: None,
+            max_iterations: None,
+            max_iterations_source: None,
+            turn_id: "T_a1b2c3d4e5f6478990abcdef12345678".into(),
+            session_id: None,
+            pool_id: None,
+            worker_name: None,
+            attachments: None,
+            llm_route: None,
+            otel_traceparent: None,
+            landlock_dsl: None,
+            landlock_dsl_source: None,
+            interaction_mode: None,
+            force_single_turn: None,
+            sealed_plan_id: None,
+            sealed_plan_markdown: None,
+            ask_user_question_enabled: None,
+            responses_stream: true,
+            thinking_enabled: false,
+        };
+        let v = serde_json::to_value(&t).unwrap();
+        assert_eq!(v["responsesStream"], true);
+        assert!(
+            v.get("thinkingEnabled").is_none(),
+            "default thinking off: thinkingEnabled omitted from task file"
+        );
+        let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();
+        assert!(back.responses_stream);
+        assert!(
+            !back.thinking_enabled,
+            "absent thinkingEnabled deserializes to default off"
+        );
+    }
+}
+
+#[cfg(test)]
+mod llm_thinking_regression_tests {
+    use super::{
+        message_request_thinking_enabled, DirectApiClient, SolveTurnOptions,
+    };
+    use api::{OpenAiCompatClient, OpenAiCompatConfig, ProviderClient};
+
+    fn client_for_test(responses_stream: bool, thinking_enabled: bool) -> DirectApiClient {
+        DirectApiClient {
+            model: "qwen-plus".into(),
+            provider: ProviderClient::OpenAi(OpenAiCompatClient::new(
+                "test-key",
+                OpenAiCompatConfig::dashscope(),
+            )),
+            tools: vec![],
+            clawcode_session_id: "sess-test".into(),
+            stream_report_deltas: false,
+            responses_stream,
+            thinking_enabled,
+        }
+    }
+
+    #[test]
+    fn message_request_thinking_enabled_is_explicit_bool() {
+        assert_eq!(message_request_thinking_enabled(false), Some(false));
+        assert_eq!(message_request_thinking_enabled(true), Some(true));
+    }
+
+    #[test]
+    fn regression_default_config_keeps_upstream_thinking_off_with_responses_stream() {
+        // Default project config: thinking_enabled=false. Responses SSE can still be on
+        // for timeline display; that must not open upstream LLM thinking by itself.
+        let opts = SolveTurnOptions {
+            responses_stream: true,
+            thinking_enabled: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            message_request_thinking_enabled(opts.thinking_enabled),
+            Some(false),
+            "default config: Responses SSE on still sends thinking_enabled=false upstream"
+        );
+    }
+
+    #[test]
+    fn project_config_can_enable_thinking_with_or_without_responses_stream() {
+        // Project config switch is the thinking gate; Responses SSE is orthogonal.
+        assert_eq!(
+            message_request_thinking_enabled(
+                SolveTurnOptions {
+                    responses_stream: false,
+                    thinking_enabled: true,
+                    ..Default::default()
+                }
+                .thinking_enabled
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            message_request_thinking_enabled(
+                SolveTurnOptions {
+                    responses_stream: true,
+                    thinking_enabled: true,
+                    ..Default::default()
+                }
+                .thinking_enabled
+            ),
+            Some(true),
+            "project thinking on + Responses SSE on is allowed"
+        );
+    }
+
+    #[test]
+    fn direct_api_client_default_thinking_stays_off_when_responses_stream_enabled() {
+        let client = client_for_test(false, false).with_responses_stream(true);
+        assert!(client.responses_stream);
+        assert!(
+            !client.thinking_enabled,
+            "with_responses_stream alone must leave default thinking off"
+        );
+        assert_eq!(
+            message_request_thinking_enabled(client.thinking_enabled),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn direct_api_client_project_thinking_can_enable_alongside_responses_stream() {
+        let client = client_for_test(false, false)
+            .with_thinking_enabled(true)
+            .with_responses_stream(true);
+        assert!(client.thinking_enabled);
+        assert!(client.responses_stream);
+        assert_eq!(
+            message_request_thinking_enabled(client.thinking_enabled),
+            Some(true)
+        );
     }
 }
 

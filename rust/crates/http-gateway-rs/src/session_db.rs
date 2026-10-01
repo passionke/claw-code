@@ -166,6 +166,8 @@ pub struct ProjectConfigRow {
     pub project_description: String,
     /// Per-project default agent loop max iterations (`NULL` = cluster default). Author: kejiqing
     pub max_iterations: Option<usize>,
+    /// When true, agent LLM requests enable thinking; default false. Author: kejiqing
+    pub thinking_enabled: bool,
 }
 
 /// Gateway-managed e2b worker sandbox bound to one project (`project_e2b_worker`). Author: kejiqing
@@ -476,6 +478,7 @@ pub struct ProjectConfigUpsert<'a> {
     pub project_code: &'a str,
     pub project_description: &'a str,
     pub max_iterations: Option<usize>,
+    pub thinking_enabled: bool,
 }
 
 /// Running specialist target for router turn live SSE / progress fan-in. Author: kejiqing
@@ -1706,7 +1709,7 @@ impl GatewaySessionDb {
                       allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
                       solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
                       prompt_limits_json, worker_profile_json, worker_env_json, kb_sources_json, project_code,
-                      project_description, max_iterations
+                      project_description, max_iterations, thinking_enabled
                FROM project_config WHERE cluster_id = $1 AND proj_id = $2",
         )
         .bind(self.cluster_id())
@@ -1754,6 +1757,9 @@ impl GatewaySessionDb {
             .flatten()
             .and_then(|n| usize::try_from(n).ok())
             .filter(|&n| n > 0);
+        let thinking_enabled: bool = row
+            .try_get::<bool, _>("thinking_enabled")
+            .unwrap_or(false);
 
         let stable_content_rev: Option<String> = row.try_get("stable_content_rev")?;
         let draft_open: bool = row.try_get("draft_open")?;
@@ -1782,6 +1788,7 @@ impl GatewaySessionDb {
             project_code,
             project_description,
             max_iterations,
+            thinking_enabled,
         }))
     }
 
@@ -1877,6 +1884,18 @@ impl GatewaySessionDb {
             .flatten()
             .and_then(|n| usize::try_from(n).ok())
             .filter(|&n| n > 0))
+    }
+
+    /// Project LLM thinking switch (`false` when unset / missing row). Author: kejiqing
+    pub async fn get_project_thinking_enabled(&self, proj_id: i64) -> Result<bool, SqlxError> {
+        let row: Option<bool> = sqlx::query_scalar(
+            "SELECT thinking_enabled FROM project_config WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.unwrap_or(false))
     }
 
     /// Persisted e2b worker sandbox for a project slot (gateway-managed lifecycle). Author: kejiqing
@@ -2514,8 +2533,8 @@ impl GatewaySessionDb {
                 allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
                 solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
                 prompt_limits_json, worker_profile_json, worker_env_json, kb_sources_json, project_code,
-                project_description, max_iterations
-            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+                project_description, max_iterations, thinking_enabled
+            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
             ON CONFLICT (cluster_id, proj_id) DO UPDATE SET
                 ds_id = EXCLUDED.ds_id,
                 content_rev = EXCLUDED.content_rev,
@@ -2539,7 +2558,8 @@ impl GatewaySessionDb {
                 kb_sources_json = EXCLUDED.kb_sources_json,
                 project_code = EXCLUDED.project_code,
                 project_description = EXCLUDED.project_description,
-                max_iterations = EXCLUDED.max_iterations",
+                max_iterations = EXCLUDED.max_iterations,
+                thinking_enabled = EXCLUDED.thinking_enabled",
         )
         .bind(row.proj_id)
         .bind(self.cluster_id())
@@ -2565,6 +2585,7 @@ impl GatewaySessionDb {
         .bind(row.project_code)
         .bind(row.project_description)
         .bind(row.max_iterations.and_then(|n| i32::try_from(n).ok()))
+        .bind(row.thinking_enabled)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -5532,6 +5553,7 @@ mod tests {
                     project_code: "",
                     project_description: "",
                     max_iterations: None,
+                    thinking_enabled: false,
                 })
                 .await
                 .unwrap();
@@ -5568,6 +5590,7 @@ mod tests {
                     project_code: "",
                     project_description: "",
                     max_iterations: None,
+                    thinking_enabled: false,
                 })
                 .await
                 .unwrap();

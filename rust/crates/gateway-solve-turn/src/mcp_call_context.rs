@@ -105,6 +105,7 @@ mod tests {
             sealed_plan_markdown: None,
             ask_user_question_enabled: None,
             responses_stream: false,
+            thinking_enabled: false,
         };
         let ctx = gateway_mcp_call_context_from_task(&task);
         assert_eq!(ctx.session_id, "sess-stable");
@@ -138,6 +139,7 @@ mod tests {
             sealed_plan_markdown: None,
             ask_user_question_enabled: None,
             responses_stream: false,
+            thinking_enabled: false,
         };
         let from_task = gateway_mcp_call_context_from_task(&task);
         let resolved = resolve_gateway_mcp_call_context(
@@ -187,6 +189,7 @@ mod tests {
             sealed_plan_markdown: None,
             ask_user_question_enabled: None,
             responses_stream: false,
+            thinking_enabled: false,
         };
         let ctx = gateway_mcp_call_context_from_task(&task);
         assert_eq!(ctx.trace_id, "deadbeefdeadbeefdeadbeefdeadbeef");
@@ -230,6 +233,7 @@ mod tests {
             sealed_plan_markdown: None,
             ask_user_question_enabled: None,
             responses_stream: false,
+            thinking_enabled: false,
         };
         let bytes = serde_json::to_vec(&task).expect("serialize task");
         let back: GatewaySolveTaskFile = serde_json::from_slice(&bytes).expect("deserialize task");
@@ -280,6 +284,7 @@ mod tests {
             sealed_plan_markdown: None,
             ask_user_question_enabled: None,
             responses_stream: false,
+            thinking_enabled: false,
         };
         let ctx = gateway_mcp_call_context_from_task(&task);
         assert!(!ctx.trace_id.is_empty());

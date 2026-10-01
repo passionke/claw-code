@@ -596,6 +596,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         }
     }
 

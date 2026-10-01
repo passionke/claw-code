@@ -604,6 +604,7 @@ mod tests {
             project_code: "",
             project_description: "",
             max_iterations: None,
+            thinking_enabled: false,
         })
         .await
         .unwrap();

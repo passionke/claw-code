@@ -437,6 +437,7 @@ async fn upsert_project_draft(
         project_code: &existing.project_code,
         project_description: &existing.project_description,
         max_iterations,
+        thinking_enabled: existing.thinking_enabled,
     };
     db.upsert_project_config(upsert)
         .await

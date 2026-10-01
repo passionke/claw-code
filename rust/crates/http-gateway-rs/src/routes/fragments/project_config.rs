@@ -52,6 +52,9 @@ pub(crate) struct UpsertProjectConfigRequest {
     #[serde(default, rename = "maxIterations")]
     #[allow(clippy::option_option)]
     max_iterations: Option<Option<usize>>,
+    /// Omit to keep existing. Author: kejiqing
+    #[serde(default, rename = "thinkingEnabled")]
+    thinking_enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -131,6 +134,9 @@ pub(crate) struct ProjectConfigResponse {
     /// Project default agent loop max iterations; omit/null = cluster default. Author: kejiqing
     #[serde(rename = "maxIterations")]
     max_iterations: Option<usize>,
+    /// When true, agent LLM requests enable thinking; default false. Author: kejiqing
+    #[serde(rename = "thinkingEnabled", default)]
+    thinking_enabled: bool,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -348,6 +354,7 @@ pub(crate) fn default_project_config_row(proj_id: i64) -> session_db::ProjectCon
         project_code: String::new(),
         project_description: String::new(),
         max_iterations: None,
+        thinking_enabled: false,
     }
 }
 
@@ -512,6 +519,7 @@ pub(crate) async fn activate_project_config_revision_row(
             project_code: &sidecars.project_code,
             project_description: &sidecars.project_description,
             max_iterations: sidecars.max_iterations,
+            thinking_enabled: sidecars.thinking_enabled,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -667,6 +675,7 @@ pub(crate) async fn project_config_row_to_response(
         project_code: row.project_code,
         project_description: row.project_description,
         max_iterations: row.max_iterations,
+        thinking_enabled: row.thinking_enabled,
     }
 }
 
@@ -1151,6 +1160,7 @@ pub(crate) async fn put_project_config(
         existing.max_iterations,
     )
     .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let thinking_enabled = req.thinking_enabled.unwrap_or(existing.thinking_enabled);
     let req_for_validate = UpsertProjectConfigRequest {
         content_rev: String::new(),
         rules_json: req.rules_json.clone(),
@@ -1169,6 +1179,7 @@ pub(crate) async fn put_project_config(
         worker_env_json: Some(worker_env_json.clone()),
         kb_sources_json: Some(kb_sources_json.clone()),
         max_iterations: Some(max_iterations),
+        thinking_enabled: Some(thinking_enabled),
     };
     validate_project_config_payload(&req_for_validate)?;
     preflight_plugin_api::validate_solve_preflight_plugin_refs(
@@ -1211,6 +1222,7 @@ pub(crate) async fn put_project_config(
         project_code: &existing.project_code,
         project_description: &existing.project_description,
         max_iterations,
+        thinking_enabled,
     };
     state
         .session_db
@@ -1331,6 +1343,7 @@ pub(crate) async fn commit_project_config_draft(
             project_code: row.project_code.clone(),
             project_description: row.project_description.clone(),
             max_iterations: row.max_iterations,
+            thinking_enabled: row.thinking_enabled,
         },
     )
     .await
@@ -1528,9 +1541,11 @@ mod max_iterations_project_response_tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: Some(5),
+            thinking_enabled: false,
         };
         let value = serde_json::to_value(response).unwrap();
         assert_eq!(value["maxIterations"], 5);
+        assert_eq!(value["thinkingEnabled"], false);
     }
 }
 

@@ -928,6 +928,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         }
     }
 
@@ -960,6 +961,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         };
         let ex = git_excluded_home_relpaths(&row);
         assert!(ex.contains(&PathBuf::from("CLAUDE.md")));
@@ -1038,6 +1040,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         };
         apply_interactive_ds_layout_under_home(&root, &row, "scaffold")
             .await
@@ -1123,6 +1126,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes.iter().map(|w| w.rel_path.clone()).collect();
@@ -1159,6 +1163,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes.iter().map(|w| w.rel_path.clone()).collect();
@@ -1215,6 +1220,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let preflight = writes
@@ -1388,6 +1394,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes
@@ -1446,6 +1453,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes
@@ -1516,6 +1524,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         };
         apply_full(&root, &row, "pg scaffold body")
             .await
@@ -1585,6 +1594,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         };
         apply_full(&root, &row, "pg scaffold")
             .await
@@ -1627,6 +1637,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         };
         let v = build_settings_json_from_row(&row);
         assert_eq!(v.get("auto_hidden_system_prompt"), Some(&json!(1)));
@@ -1662,6 +1673,7 @@ mod tests {
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,
+            thinking_enabled: false,
         };
         let v = build_settings_json_from_row(&row);
         assert_eq!(v.get("instructionFileMaxChars"), Some(&json!(12000)));

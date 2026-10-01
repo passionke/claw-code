@@ -54,10 +54,12 @@ export default function ProjectPage() {
   const [metaForm] = Form.useForm<{ projectCode: string; projectDescription: string }>();
   const [orchestrationForm] = Form.useForm();
   const [maxIterForm] = Form.useForm<{ maxIterations?: number | null }>();
+  const [thinkingForm] = Form.useForm<{ thinkingEnabled?: boolean }>();
   /** NAS 物化较慢，切换生效时展示 loading。Author: kejiqing */
   const [activatingRev, setActivatingRev] = useState<string | null>(null);
   const [savingMeta, setSavingMeta] = useState(false);
   const [savingMaxIter, setSavingMaxIter] = useState(false);
+  const [savingThinking, setSavingThinking] = useState(false);
   const [projectRole, setProjectRole] = useState<string>("normal");
   const [savingRole, setSavingRole] = useState(false);
   const [scopeKeys, setScopeKeys] = useState<string[]>([]);
@@ -346,6 +348,9 @@ export default function ProjectPage() {
     maxIterForm.setFieldsValue({
       maxIterations: projectConfig.maxIterations ?? null,
     });
+    thinkingForm.setFieldsValue({
+      thinkingEnabled: projectConfig.thinkingEnabled === true,
+    });
     setKbSources(
       ((projectConfig.kbSourcesJson || []) as KbSourceItem[]).map((item, idx) => ({
         key: `kb-${idx}-${item.folderId || item.sourceUrl || idx}`,
@@ -354,7 +359,7 @@ export default function ProjectPage() {
         enabled: item.enabled !== false,
       }))
     );
-  }, [projectConfig, projId, row, orchestrationForm, metaForm, maxIterForm]);
+  }, [projectConfig, projId, row, orchestrationForm, metaForm, maxIterForm, thinkingForm]);
 
   const saveProjectMeta = async () => {
     const values = await metaForm.validateFields();
@@ -1741,6 +1746,44 @@ export default function ProjectPage() {
               }}
             >
               保存迭代上限
+            </Button>
+          </Form.Item>
+        </Form>
+      </Card>
+
+      <Card title="LLM Thinking" size="small" style={{ marginBottom: 16 }}>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          存于 <Typography.Text code>project_config.thinking_enabled</Typography.Text>
+          。默认关闭：agent solve（含 Responses SSE）不向上游开启 thinking。打开后，该项目
+          solve 会把 <Typography.Text code>thinkingEnabled</Typography.Text> 写入 task，并向上游
+          （DeepSeek / Qwen 等）启用 thinking。
+        </Typography.Paragraph>
+        <Form form={thinkingForm} layout="inline">
+          <Form.Item name="thinkingEnabled" label="启用 LLM Thinking" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item>
+            <Button
+              type="primary"
+              loading={savingThinking}
+              onClick={async () => {
+                if (!projectConfig) return;
+                const v = await thinkingForm.validateFields();
+                setSavingThinking(true);
+                try {
+                  await putProjectConfigDraft(gatewayBase, projId, projectConfig, {
+                    thinkingEnabled: v.thinkingEnabled === true,
+                  });
+                  message.success("Thinking 开关已保存到临时版；设为生效后对 solve 生效");
+                  await refreshProjectConfig();
+                } catch (e) {
+                  message.error(e instanceof Error ? e.message : "保存失败");
+                } finally {
+                  setSavingThinking(false);
+                }
+              }}
+            >
+              保存 Thinking 开关
             </Button>
           </Form.Item>
         </Form>

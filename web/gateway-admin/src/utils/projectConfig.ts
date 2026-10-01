@@ -19,6 +19,7 @@ export function emptyProjectConfig(projId: number): ProjectConfig {
     workerEnvJson: {},
     kbSourcesJson: [],
     maxIterations: null,
+    thinkingEnabled: false,
   };
 }
 
@@ -85,6 +86,10 @@ export async function putProjectConfigDraft(
       patch.kbSourcesJson !== undefined ? patch.kbSourcesJson : cfg.kbSourcesJson ?? [],
     maxIterations:
       patch.maxIterations !== undefined ? patch.maxIterations : cfg.maxIterations ?? null,
+    thinkingEnabled:
+      patch.thinkingEnabled !== undefined
+        ? patch.thinkingEnabled
+        : cfg.thinkingEnabled ?? false,
   };
   const r = await proxyHttp<{ activeConfig?: ProjectConfig } & ProjectConfig>(
     gatewayBase,

@@ -1312,6 +1312,7 @@ pub(crate) async fn create_project(
             project_code: &project_code,
             project_description: &project_description,
             max_iterations: None,
+            thinking_enabled: false,
         })
         .await
         .map_err(|e| session_db_err(&e))?;

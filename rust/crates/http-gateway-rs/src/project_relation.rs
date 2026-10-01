@@ -258,6 +258,7 @@ mod tests {
             project_code: &project_code,
             project_description: "test",
             max_iterations: None,
+            thinking_enabled: false,
         })
         .await
         .expect("upsert project_config");
