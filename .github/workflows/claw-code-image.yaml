@@ -153,17 +153,8 @@ jobs:
           REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
           echo "container_base_registry=${REG}" >> "$GITHUB_OUTPUT"
 
-      - name: Restore linux-compile cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            .ci-cache/cargo-registry
-            .ci-cache/cargo-git
-            .ci-cache/sccache
-            .ci-cache/swagger-ui
-          key: linux-compile-home-ubt-${{ hashFiles('rust/Cargo.lock', 'deploy/stack/Containerfile.rust-compile') }}
-          restore-keys: |
-            linux-compile-home-ubt-
+      # No actions/cache: durable cache lives under $HOME/claw-ci-cache (survives checkout).
+      # Uploading hundreds of MB to GitHub cache via proxy often sticks at 0 B/s. Author: kejiqing
 
       - name: Resolve rust compile image ref (ACR)
         id: compile_image
@@ -186,13 +177,16 @@ jobs:
       - name: Verify ci-cache ownership
         run: |
           set -euo pipefail
-          if [ ! -d .ci-cache ]; then exit 0; fi
+          CACHE="${CLAW_CI_CACHE_DIR:-${HOME}/claw-ci-cache/claw-code}"
+          if [ ! -d "${CACHE}" ]; then exit 0; fi
           RUN_UID="$(id -u)"
-          BAD="$(find .ci-cache -not -user "${RUN_UID}" 2>/dev/null | head -5 || true)"
+          BAD="$(find "${CACHE}" -not -user "${RUN_UID}" 2>/dev/null | head -5 || true)"
           if [ -n "${BAD}" ]; then
-            echo "::error::.ci-cache non-runner-owned files" >&2
+            echo "::error::ci-cache non-runner-owned files under ${CACHE}" >&2
+            printf '%s\n' "${BAD}" >&2
             exit 1
           fi
+          echo "ci-cache ownership ok (${CACHE})"
 
       - name: Stash linux artifacts locally (skip GitHub upload-artifact)
         run: |
@@ -392,7 +386,7 @@ jobs:
         if: always()
         run: rm -rf "${HOME}/claw-ci-artifacts/${{ github.run_id }}" 2>/dev/null || true
 
-      - name: home-ubt disk cleanup (keep .ci-cache)
+      - name: home-ubt disk cleanup (keep local claw-ci-cache)
         if: always()
         run: |
           set -euo pipefail

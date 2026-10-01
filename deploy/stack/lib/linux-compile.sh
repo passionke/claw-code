@@ -96,8 +96,11 @@ claw_linux_compile_release() {
   local ci_cache=""
   local -a vol_args=()
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
-    ci_cache="${root_dir}/.ci-cache"
-    mkdir -p "${ci_cache}/cargo-registry" "${ci_cache}/cargo-git" "${ci_cache}/sccache"
+    # Outside GITHUB_WORKSPACE: checkout clean wipes workspace; do not use actions/cache
+    # upload to GitHub (CN self-hosted often sticks at 0 B/s). Author: kejiqing
+    ci_cache="${CLAW_CI_CACHE_DIR:-${HOME}/claw-ci-cache/claw-code}"
+    mkdir -p "${ci_cache}/cargo-registry" "${ci_cache}/cargo-git" "${ci_cache}/sccache" \
+      "${ci_cache}/swagger-ui"
     vol_args=(
       -v "${ci_cache}/cargo-registry:/usr/local/cargo/registry:Z"
       -v "${ci_cache}/cargo-git:/usr/local/cargo/git:Z"
@@ -123,8 +126,8 @@ claw_linux_compile_release() {
     cargo_env_args+=(-e "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS}")
 
   # utoipa-swagger-ui build.rs curls a zip at compile time (not our shell). Prefetch on the
-  # host into .ci-cache (survives actions/cache) and pass file:// so the container never
-  # hits the network for this. Author: kejiqing
+  # host into the durable ci-cache and pass file:// so the container never hits the network.
+  # Author: kejiqing
   local swagger_ver="v5.17.14"
   local swagger_zip_name="swagger-ui-${swagger_ver}.zip"
   local swagger_src="${SWAGGER_UI_DOWNLOAD_URL:-}"
@@ -223,14 +226,14 @@ claw_linux_compile_release() {
       fi
     ' || compile_rc=$?
 
-  # cargo failure skips in-container chown — always reclaim .ci-cache for checkout/cache. Author: kejiqing
+  # cargo failure skips in-container chown — always reclaim ci-cache for the runner user. Author: kejiqing
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" && -n "${ci_cache}" && -d "${ci_cache}" ]]; then
     local host_uid host_gid
     host_uid="$(id -u)"
     host_gid="$(id -g)"
     if ! chown -R "${host_uid}:${host_gid}" "${ci_cache}" 2>/dev/null; then
-      docker run --rm -v "${root_dir}:/w:rw" alpine:3.20 \
-        chown -R "${host_uid}:${host_gid}" /w/.ci-cache || true
+      docker run --rm -v "${ci_cache}:/c:rw" alpine:3.20 \
+        chown -R "${host_uid}:${host_gid}" /c || true
     fi
     echo "linux compile: reclaim ci-cache ownership → ${host_uid}:${host_gid} (compile_rc=${compile_rc})"
   fi
@@ -269,16 +272,16 @@ claw_linux_compile_release() {
         || docker run --rm -v "${root_dir}:/w:rw" alpine:3.20 rm -rf /w/rust/target \
         || true
     fi
-    # Docker writes registry/sccache as root; actions/cache must tar as runner user. Author: kejiqing
+    # Docker writes registry/sccache as root; reclaim for runner user. Author: kejiqing
     if [[ -n "${ci_cache}" ]] && [[ -d "${ci_cache}" ]]; then
       if chown -R "${host_uid}:${host_gid}" "${ci_cache}" 2>/dev/null; then
         echo "linux compile: chown ci cache → ${host_uid}:${host_gid}"
       elif command -v docker >/dev/null 2>&1; then
-        docker run --rm -v "${root_dir}:/w:rw" alpine:3.20 \
-          chown -R "${host_uid}:${host_gid}" /w/.ci-cache
+        docker run --rm -v "${ci_cache}:/c:rw" alpine:3.20 \
+          chown -R "${host_uid}:${host_gid}" /c
         echo "linux compile: chown ci cache via docker → ${host_uid}:${host_gid}"
       else
-        echo "linux compile: warning: could not chown ${ci_cache} (actions/cache save may fail)" >&2
+        echo "linux compile: warning: could not chown ${ci_cache}" >&2
       fi
     fi
   fi
