@@ -175,6 +175,7 @@ claw_linux_compile_release() {
   fi
 
   # shellcheck disable=SC2086
+  local compile_rc=0
   "${container_cli}" run --rm --pull=never --platform "linux/${linux_arch}" \
     -e "CLAW_RUST_VERSION=${CLAW_RUST_VERSION}" \
     -e "RUSTUP_DIST_SERVER=${rustup_dist}" \
@@ -220,7 +221,22 @@ claw_linux_compile_release() {
         chown -R "${CLAW_HOST_UID}:${CLAW_HOST_GID}" \
           /usr/local/cargo/registry /usr/local/cargo/git /root/.cache/sccache
       fi
-    '
+    ' || compile_rc=$?
+
+  # cargo failure skips in-container chown — always reclaim .ci-cache for checkout/cache. Author: kejiqing
+  if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" && -n "${ci_cache}" && -d "${ci_cache}" ]]; then
+    local host_uid host_gid
+    host_uid="$(id -u)"
+    host_gid="$(id -g)"
+    if ! chown -R "${host_uid}:${host_gid}" "${ci_cache}" 2>/dev/null; then
+      docker run --rm -v "${root_dir}:/w:rw" alpine:3.20 \
+        chown -R "${host_uid}:${host_gid}" /w/.ci-cache || true
+    fi
+    echo "linux compile: reclaim ci-cache ownership → ${host_uid}:${host_gid} (compile_rc=${compile_rc})"
+  fi
+  if [[ "${compile_rc}" -ne 0 ]]; then
+    return "${compile_rc}"
+  fi
 
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
     claw_linux_compile_prune_ci_bins "${out_dir}"
