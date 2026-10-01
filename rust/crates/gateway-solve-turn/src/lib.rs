@@ -99,7 +99,8 @@ pub use extra_session_bizdate::{
 pub use gateway_stdout::{
     emit_raw_json, emit_report_delta, emit_shell_chunk, emit_solve_done, emit_solve_error,
     emit_thinking_delta, emit_tool_end, emit_tool_start, parse_stdout_line,
-    reset_delegate_stdout_state, tool_process_kind, GATEWAY_STDOUT_LINE_PREFIX,
+    reset_delegate_stdout_state, tool_end_event_with_kind, tool_process_kind,
+    tool_start_event_with_kind, GATEWAY_STDOUT_LINE_PREFIX,
 };
 pub use inbox_address::{parse_mailbox_address, MailboxAddress};
 pub use inbox_reply::{
