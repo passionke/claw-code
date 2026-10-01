@@ -43,6 +43,10 @@ import {
   type ResponsesStreamBlock,
 } from "../utils/responsesSseParse";
 import {
+  deriveResponsesCardStatus,
+  nextResponsesFinishedAtMs,
+} from "../utils/responsesTurnCardState";
+import {
   clearPlaygroundNgmk,
   ensurePlaygroundNgmk,
 } from "../utils/playgroundNgmk";
@@ -479,6 +483,10 @@ export default function ChatPage() {
             sessionIdRef.current = state.sessionId;
             setActiveSessionId(state.sessionId);
           }
+          // Status follows this responses stream, not GET /v1/tasks/{sessionId}
+          // (that lookup can still be the previous turn). Author: kejiqing
+          const nextStatus = deriveResponsesCardStatus(state);
+          const nowMs = Date.now();
           patchCard((item) => ({
             ...item,
             sessionId: state.sessionId || item.sessionId,
@@ -487,6 +495,12 @@ export default function ChatPage() {
             streamBlocks: state.blocks,
             streamLive: !state.completed,
             streamError: state.error || undefined,
+            initialStatus: nextStatus,
+            finishedAtMs: nextResponsesFinishedAtMs(
+              nextStatus,
+              item.finishedAtMs,
+              nowMs
+            ),
           }));
           scrollLog(false);
         },
@@ -495,11 +509,13 @@ export default function ChatPage() {
       setHistoryRefreshKey((k) => k + 1);
     } catch (e) {
       const text = String((e as Error).message || e);
+      const nowMs = Date.now();
       patchCard((item) => ({
         ...item,
         streamLive: false,
         streamError: text,
         initialStatus: "failed",
+        finishedAtMs: nextResponsesFinishedAtMs("failed", item.finishedAtMs, nowMs),
       }));
       appendSys({
         tag: "responses 失败",

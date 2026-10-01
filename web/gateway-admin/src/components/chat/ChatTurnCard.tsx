@@ -35,6 +35,12 @@ import {
   mergeStreamedIntoHistory,
   shouldConnectLiveReportSse,
 } from "../../utils/turnCardReportView";
+import {
+  resolveResponsesCardTimestamps,
+  resolveTurnCardWallMs,
+  shouldAdoptSessionTaskForResponsesCard,
+  shouldDropStaleResponsesTaskTimes,
+} from "../../utils/responsesTurnCardState";
 import styles from "./chat.module.css";
 
 export interface ChatTurnCardProps {
@@ -197,14 +203,21 @@ export default function ChatTurnCard({
   const historyMode = responsesLive
     ? false
     : isEffectiveHistoryTurnView(viewMode, turnStatus);
-  const effectiveCreatedAtMs = task.createdAtMs ?? createdAtMs;
-  const effectiveFinishedAtMs = task.finishedAtMs ?? finishedAtMs;
-  const wallMs =
-    effectiveCreatedAtMs != null &&
-    effectiveFinishedAtMs != null &&
-    effectiveFinishedAtMs >= effectiveCreatedAtMs
-      ? effectiveFinishedAtMs - effectiveCreatedAtMs
-      : null;
+  const { createdAtMs: effectiveCreatedAtMs, finishedAtMs: effectiveFinishedAtMs } =
+    resolveResponsesCardTimestamps({
+      responsesLive,
+      cardTurnId: turnId,
+      taskTurnId: task.turnId,
+      taskCreatedAtMs: task.createdAtMs,
+      taskFinishedAtMs: task.finishedAtMs,
+      propCreatedAtMs: createdAtMs,
+      propFinishedAtMs: finishedAtMs,
+    });
+  const wallMs = resolveTurnCardWallMs({
+    status: turnStatus,
+    createdAtMs: effectiveCreatedAtMs,
+    finishedAtMs: effectiveFinishedAtMs,
+  });
   const [visibleProgressCount, setVisibleProgressCount] = useState(0);
   const [errorText, setErrorText] = useState(prefilledFailure);
   const [fallbackOutput, setFallbackOutput] = useState("");
@@ -245,10 +258,25 @@ export default function ChatTurnCard({
 
   useEffect(() => {
     if (responsesLive) {
-      setTask((prev) => ({
-        ...prev,
-        status: initialStatus || prev.status,
-      }));
+      // Parent SSE owns status for responses cards. Drop wall times from a
+      // previous session poll when turnId/status resets for this card. Author: kejiqing
+      setTask((prev) => {
+        const status = initialStatus || prev.status;
+        const dropTimes = shouldDropStaleResponsesTaskTimes({
+          status,
+          cardTurnId: turnId,
+          taskTurnId: prev.turnId,
+          finishedAtMs: prev.finishedAtMs,
+        });
+        return {
+          ...prev,
+          status,
+          turnId: turnId || prev.turnId,
+          ...(dropTimes
+            ? { createdAtMs: undefined, finishedAtMs: undefined }
+            : {}),
+        };
+      });
       return;
     }
     const prefilled = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
@@ -372,6 +400,15 @@ export default function ChatTurnCard({
           `/v1/tasks/${encodeURIComponent(taskId)}`
         );
         if (cancelled) return null;
+        // responses: taskId is sessionId; until our turnId exists / matches, do not
+        // adopt previous-turn terminal state (would stop poll + paint stale duration).
+        // Author: kejiqing
+        if (
+          responsesLive &&
+          !shouldAdoptSessionTaskForResponsesCard(turnId, t.turnId)
+        ) {
+          return t;
+        }
         setTask(t);
         return t;
       } catch (e) {
@@ -385,7 +422,25 @@ export default function ChatTurnCard({
     (async () => {
       while (!cancelled) {
         const t = await pollOnce();
-        if (!t) break;
+        if (!t) {
+          // Keep trying while this responses stream is still open; stop once SSE
+          // already finalized the card. Author: kejiqing
+          if (responsesLive && !isTerminalTurnStatus(initialStatus)) {
+            await new Promise((r) => setTimeout(r, 800));
+            continue;
+          }
+          break;
+        }
+        if (
+          responsesLive &&
+          !shouldAdoptSessionTaskForResponsesCard(turnId, t.turnId)
+        ) {
+          if (isTerminalTurnStatus(initialStatus)) {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 800));
+          continue;
+        }
         const terminal = isTerminalTurnStatus(t.status);
         if (terminal) {
           // Responses cards do not wait for biz.report.done. Author: kejiqing
@@ -424,7 +479,17 @@ export default function ChatTurnCard({
     return () => {
       cancelled = true;
     };
-  }, [gatewayBase, taskId, historyMode, responsesLive, waitForSettled, reconcileReport, closeReportStream]);
+  }, [
+    gatewayBase,
+    taskId,
+    turnId,
+    initialStatus,
+    historyMode,
+    responsesLive,
+    waitForSettled,
+    reconcileReport,
+    closeReportStream,
+  ]);
 
   // Preserve streamed text when poll flips status to terminal before DB fetch completes.
   useEffect(() => {
