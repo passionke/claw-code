@@ -122,13 +122,56 @@ claw_linux_compile_release() {
   [[ -n "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-}" ]] && \
     cargo_env_args+=(-e "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS}")
 
-  # utoipa-swagger-ui build.rs downloads GitHub zip; CN hosts often fail direct curl. Author: kejiqing
-  if [[ "${use_cn_cargo}" == "1" && -z "${SWAGGER_UI_DOWNLOAD_URL:-}" ]]; then
-    cargo_env_args+=(
-      -e "SWAGGER_UI_DOWNLOAD_URL=https://ghfast.top/https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.17.14.zip"
-    )
-  elif [[ -n "${SWAGGER_UI_DOWNLOAD_URL:-}" ]]; then
-    cargo_env_args+=(-e "SWAGGER_UI_DOWNLOAD_URL=${SWAGGER_UI_DOWNLOAD_URL}")
+  # utoipa-swagger-ui build.rs curls a zip at compile time (not our shell). Prefetch on the
+  # host into .ci-cache (survives actions/cache) and pass file:// so the container never
+  # hits the network for this. Author: kejiqing
+  local swagger_ver="v5.17.14"
+  local swagger_zip_name="swagger-ui-${swagger_ver}.zip"
+  local swagger_src="${SWAGGER_UI_DOWNLOAD_URL:-}"
+  local swagger_dir swagger_zip attempt
+  if [[ -z "${swagger_src}" ]]; then
+    if [[ "${use_cn_cargo}" == "1" \
+      || "${CLAW_USE_CN_CRATES_MIRROR:-0}" == "1" \
+      || "${CLAW_USE_CN_APT_MIRROR:-0}" == "1" ]]; then
+      # ghfast: 21 probed 3×200 ~5s; raw github.com via TUN still TLS-EOF. Author: kejiqing
+      swagger_src="https://ghfast.top/https://github.com/swagger-api/swagger-ui/archive/refs/tags/${swagger_ver}.zip"
+    else
+      swagger_src="https://github.com/swagger-api/swagger-ui/archive/refs/tags/${swagger_ver}.zip"
+    fi
+  fi
+  if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" && -n "${ci_cache}" ]]; then
+    swagger_dir="${ci_cache}/swagger-ui"
+  else
+    swagger_dir="${out_root}/.swagger-ui-cache"
+  fi
+  mkdir -p "${swagger_dir}"
+  swagger_zip="${swagger_dir}/${swagger_zip_name}"
+  if [[ "${swagger_src}" == file://* ]]; then
+    cargo_env_args+=(-e "SWAGGER_UI_DOWNLOAD_URL=${swagger_src}")
+  else
+    if [[ ! -s "${swagger_zip}" ]]; then
+      echo "linux compile: fetch swagger-ui ${swagger_ver} → ${swagger_zip}"
+      echo "  url: ${swagger_src}"
+      for attempt in 1 2 3 4 5; do
+        if curl --http1.1 -fL --connect-timeout 20 --max-time 180 \
+          --retry 2 --retry-delay 2 --retry-all-errors \
+          -o "${swagger_zip}.partial" "${swagger_src}"; then
+          mv -f "${swagger_zip}.partial" "${swagger_zip}"
+          break
+        fi
+        echo "linux compile: swagger download attempt ${attempt}/5 failed" >&2
+        rm -f "${swagger_zip}.partial"
+        sleep $((attempt * 2))
+      done
+      if [[ ! -s "${swagger_zip}" ]]; then
+        echo "error: swagger-ui download failed after retries: ${swagger_src}" >&2
+        exit 1
+      fi
+    else
+      echo "linux compile: reuse cached swagger-ui ${swagger_zip}"
+    fi
+    cargo_env_args+=(-e "SWAGGER_UI_DOWNLOAD_URL=file:///swagger-ui/${swagger_zip_name}")
+    vol_args+=(-v "${swagger_dir}:/swagger-ui:ro")
   fi
 
   # shellcheck disable=SC2086
