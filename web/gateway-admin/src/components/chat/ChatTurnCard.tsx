@@ -261,7 +261,7 @@ export default function ChatTurnCard({
       // Parent SSE owns status for responses cards. Drop wall times from a
       // previous session poll when turnId/status resets for this card. Author: kejiqing
       setTask((prev) => {
-        const status = initialStatus || prev.status;
+        const status = initialStatus || prev.status || "queued";
         const dropTimes = shouldDropStaleResponsesTaskTimes({
           status,
           cardTurnId: turnId,
