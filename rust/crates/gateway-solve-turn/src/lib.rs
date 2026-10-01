@@ -732,8 +732,10 @@ impl DirectApiClient {
 
 /// Upstream `MessageRequest.thinking_enabled` for DirectApiClient.
 /// Sourced from project config (`thinking_enabled`), not from `responses_stream`.
-/// Default config leaves this false even when Responses SSE is on. Author: kejiqing
+/// Default config leaves this false even when Responses SSE is on.
+/// Returns `Option<bool>` to match `MessageRequest.thinking_enabled`. Author: kejiqing
 #[must_use]
+#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn message_request_thinking_enabled(thinking_enabled: bool) -> Option<bool> {
     Some(thinking_enabled)
 }

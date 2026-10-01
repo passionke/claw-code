@@ -37,6 +37,7 @@ impl InteractionMode {
 /// Optional turn options carried on the gateway task file. Author: kejiqing
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SolveTurnOptions {
     #[serde(default)]
     pub interaction_mode: InteractionMode,
