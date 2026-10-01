@@ -38,11 +38,18 @@ jobs:
           echo "hostname=$(hostname)"
           echo "runner=${RUNNER_NAME:-}"
 
+      # Before checkout: docker-written .ci-cache is root-owned; clean must chown first. Author: kejiqing
+      - name: Self-hosted workspace prep
+        run: |
+          set -euo pipefail
+          WS="${GITHUB_WORKSPACE}"
+          RUN_UID="$(id -u)"
+          RUN_GID="$(id -g)"
+          docker run --rm -v "${WS}:/w:rw" alpine:3.20 chown -R "${RUN_UID}:${RUN_GID}" /w
+          rm -rf "${WS}/deploy/stack/.linux-artifacts" 2>/dev/null || true
+
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Self-hosted workspace prep
-        run: bash deploy/stack/lib/ci-self-hosted-workspace-prep.sh
 
       - name: Verify ACR_REGISTRY
         id: reg
@@ -316,6 +323,14 @@ jobs:
     runs-on: [self-hosted, home-ubt]
     environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
     steps:
+      - name: Self-hosted workspace prep
+        run: |
+          set -euo pipefail
+          WS="${GITHUB_WORKSPACE}"
+          RUN_UID="$(id -u)"
+          RUN_GID="$(id -g)"
+          docker run --rm -v "${WS}:/w:rw" alpine:3.20 chown -R "${RUN_UID}:${RUN_GID}" /w
+
       - name: Checkout
         uses: actions/checkout@v4
 
