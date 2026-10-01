@@ -181,11 +181,37 @@ claw_linux_compile_release() {
 
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
     claw_linux_compile_prune_ci_bins "${out_dir}"
+    # CI uses CARGO_TARGET_DIR=.linux-artifacts — intermediate deps/build can be tens of GB.
+    # Keep only the two release bins; wipe the rest of the target tree immediately. Author: kejiqing
+    local bin_tmp host_uid host_gid
+    bin_tmp="$(mktemp -d "${TMPDIR:-/tmp}/claw-linux-bins.XXXXXX")"
+    host_uid="$(id -u)"
+    host_gid="$(id -g)"
+    for bin in http-gateway-rs claw; do
+      if [[ ! -f "${out_dir}/${bin}" ]]; then
+        echo "error: missing ${out_dir}/${bin} after linux compile" >&2
+        rm -rf "${bin_tmp}"
+        exit 1
+      fi
+      cp -a "${out_dir}/${bin}" "${bin_tmp}/"
+    done
+    echo "linux compile: drop CARGO_TARGET_DIR debris under ${out_root} (keep bins only)"
+    rm -rf "${out_root}" 2>/dev/null || true
+    if [[ -d "${out_root}" ]] && command -v docker >/dev/null 2>&1; then
+      docker run --rm -v "${root_dir}:/w:rw" alpine:3.20 rm -rf /w/deploy/stack/.linux-artifacts
+    fi
+    mkdir -p "${out_dir}"
+    cp -a "${bin_tmp}/." "${out_dir}/"
+    rm -rf "${bin_tmp}"
+    # Accidental host rust/target (if someone built outside CARGO_TARGET_DIR). Author: kejiqing
+    if [[ -d "${rust_dir}/target" ]]; then
+      echo "linux compile: remove stray ${rust_dir}/target"
+      rm -rf "${rust_dir}/target" 2>/dev/null \
+        || docker run --rm -v "${root_dir}:/w:rw" alpine:3.20 rm -rf /w/rust/target \
+        || true
+    fi
     # Docker writes registry/sccache as root; actions/cache must tar as runner user. Author: kejiqing
     if [[ -n "${ci_cache}" ]] && [[ -d "${ci_cache}" ]]; then
-      local host_uid host_gid
-      host_uid="$(id -u)"
-      host_gid="$(id -g)"
       if chown -R "${host_uid}:${host_gid}" "${ci_cache}" 2>/dev/null; then
         echo "linux compile: chown ci cache → ${host_uid}:${host_gid}"
       elif command -v docker >/dev/null 2>&1; then

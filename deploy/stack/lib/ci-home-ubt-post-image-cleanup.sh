@@ -17,11 +17,18 @@ RUN_ID="${GITHUB_RUN_ID:-}"
 
 echo "==> home-ubt post-image cleanup (keep .ci-cache)"
 
-if [[ -n "${WS}" && -d "${WS}/deploy/stack/.linux-artifacts" ]]; then
-  echo "remove ${WS}/deploy/stack/.linux-artifacts"
-  rm -rf "${WS}/deploy/stack/.linux-artifacts" 2>/dev/null \
-    || docker run --rm -v "${WS}:/w:rw" alpine:3.20 rm -rf /w/deploy/stack/.linux-artifacts \
-    || true
+if [[ -n "${WS}" ]]; then
+  for path in \
+    "${WS}/deploy/stack/.linux-artifacts" \
+    "${WS}/rust/target"; do
+    if [[ -d "${path}" ]]; then
+      echo "remove ${path}"
+      rm -rf "${path}" 2>/dev/null \
+        || docker run --rm -v "${WS}:/w:rw" alpine:3.20 \
+          rm -rf "/w/${path#"${WS}"/}" \
+        || true
+    fi
+  done
 fi
 
 if [[ -n "${RUN_ID}" && -d "${HOME}/claw-ci-artifacts/${RUN_ID}" ]]; then
