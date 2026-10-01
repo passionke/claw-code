@@ -108,6 +108,38 @@ async fn ensure_sqlx_migrations_table(pool: &PgPool) -> Result<(), MigrateError>
 mod tests {
     use super::*;
 
+    /// sqlx stores SHA-384(sql bytes) in `_sqlx_migrations.checksum`.
+    /// Once a version is released / applied, its `migrations/N_*.sql` is immutable:
+    /// editing it fails upgrades with "migration N was previously applied but has been modified".
+    /// Add schema changes only as a new `N+1_*.sql`, then append that checksum here.
+    /// Author: kejiqing
+    const PINNED_MIGRATION_CHECKSUMS: &[(i64, &str)] = &[
+        (
+            1,
+            "b3ac2736f281ddec6a1dc41050637d1db5db5975d4f4fdcc9b3f9aa80d42d8e843b07bcc5ce54b3cc147a091ea6b4254",
+        ),
+        (
+            2,
+            "1e569a9b928a6d2193db51ce1b0e594083e7c55d8e31fd7eda45e3db73e9517695dd4ec74995ae90d72fce5b06df5cab",
+        ),
+        (
+            3,
+            "be3406c2f930160f78684fda685c0e53fee2c07db0d5a7a2c7f73aa782f0ee523ad944b189355ccb97fe91d337280d38",
+        ),
+        (
+            4,
+            "e236a6bb8ae80e7c2a9de18d8e8f49c872772beaa41efd9dd37ba4fad79c70baea75a8f9062f404db13e102b1c47b035",
+        ),
+        (
+            5,
+            "c0bc061983d68738f76ac31b4d745cc420ecd1e82b27513de17d924059e7d8de08c2250a11bbc4d997d7502ae2529a56",
+        ),
+    ];
+
+    fn checksum_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
     #[test]
     fn migrator_has_baseline_version_one() {
         let baseline = MIGRATOR
@@ -131,5 +163,45 @@ mod tests {
                 m.version
             );
         }
+    }
+
+    #[test]
+    fn published_migration_checksums_are_pinned() {
+        let mut by_version = std::collections::BTreeMap::new();
+        for m in MIGRATOR.iter() {
+            assert!(
+                by_version.insert(m.version, m).is_none(),
+                "duplicate migration version {}",
+                m.version
+            );
+        }
+
+        assert_eq!(
+            by_version.len(),
+            PINNED_MIGRATION_CHECKSUMS.len(),
+            "migrator has {} versions but PINNED_MIGRATION_CHECKSUMS has {}; \
+             add new migrations as N+1 and append their SHA-384 checksum (do not edit older files)",
+            by_version.len(),
+            PINNED_MIGRATION_CHECKSUMS.len()
+        );
+
+        for &(version, expected_hex) in PINNED_MIGRATION_CHECKSUMS {
+            let m = by_version
+                .get(&version)
+                .unwrap_or_else(|| panic!("pinned version {version} missing from migrator"));
+            let actual = checksum_hex(&m.checksum);
+            assert_eq!(
+                actual, expected_hex,
+                "migration {version} SQL was modified after release; \
+                 revert the file and ship schema changes as a new versioned migration instead"
+            );
+        }
+
+        let versions: Vec<i64> = by_version.keys().copied().collect();
+        let expected: Vec<i64> = (1..=PINNED_MIGRATION_CHECKSUMS.len() as i64).collect();
+        assert_eq!(
+            versions, expected,
+            "migration versions must be contiguous 1..=N with no gaps"
+        );
     }
 }
