@@ -7,8 +7,23 @@ ARG CLAW_USE_CN_APT_MIRROR=0
 FROM ${NODE_BASE_IMAGE} AS admin-build
 WORKDIR /build
 COPY web/gateway-admin/package.json web/gateway-admin/package-lock.json ./
+# npmmirror / npm can flake ("Exit handler never called" → incomplete node_modules → tsc missing).
+# Retry npm ci and require local typescript before COPY sources. Author: kejiqing
 RUN npm config set registry https://registry.npmmirror.com \
-  && npm ci
+  && npm config set fetch-retries 5 \
+  && npm config set fetch-retry-mintimeout 20000 \
+  && npm config set fetch-retry-maxtimeout 120000 \
+  && i=1; \
+     until npm ci && test -x node_modules/.bin/tsc; do \
+       echo "npm ci incomplete (attempt ${i})" >&2; \
+       i=$((i + 1)); \
+       if [ "${i}" -gt 5 ]; then \
+         echo "npm ci failed after retries" >&2; \
+         exit 1; \
+       fi; \
+       rm -rf node_modules; \
+       sleep $((i * 3)); \
+     done
 COPY web/gateway-admin/ ./
 RUN npm run build \
   && test -f dist/index.html \
