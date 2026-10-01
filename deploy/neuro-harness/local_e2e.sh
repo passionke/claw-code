@@ -2,13 +2,13 @@
 # Local two-turn e2e for neuro-harness bins against the spike mock LLM + mock MCP.
 # Usage: deploy/neuro-harness/local_e2e.sh opencode|appserver
 # Needs: mock_openai.py on $MOCK_LLM (default http://127.0.0.1:18080/v1), built bins in
-# rust/target/debug, and NEURO_OPENCODE_BIN / NEURO_CODEX_ACP_BIN pointing at local engines.
+# rust/crates/neuro-harness/target/debug (standalone workspace), and NEURO_OPENCODE_BIN / NEURO_CODEX_ACP_BIN pointing at local engines.
 # Author: kejiqing
 set -euo pipefail
 
 ENGINE="${1:?usage: $0 opencode|appserver}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-BIN="$REPO/rust/target/debug/neuro-$ENGINE"
+BIN="$REPO/rust/crates/neuro-harness/target/debug/neuro-$ENGINE"
 MOCK_LLM="${MOCK_LLM:-http://127.0.0.1:18080/v1}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/nh-e2e-$ENGINE.XXXXXX")"
 SESS="$WORK/sess"

@@ -207,6 +207,11 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 
 ## 11. 构建与镜像
 
+- `rust/crates/neuro-harness` 是独立 cargo workspace：自带 `[workspace]` 和 `Cargo.lock`，并在 `rust/Cargo.toml` 中 `exclude`。原因：ACP SDK 会打开 serde_json 的 `preserve_order` / `raw_value` 特性。如果和 claw、gateway 在同一次 cargo 调用里构建，resolver-2 会把这些特性合并进去，改变它们的行为。实测证据：`cargo test -p rusty-claude-cli --test mock_parity_harness` 单独运行时通过，加上 `-p neuro-harness` 后失败；1.88 clippy 在 `runtime/src/mcp_stdio.rs` 报出 4 个新的 `result_large_err`。因此：
+  - `linux-compile.sh` 对它单独调用一次 `cargo build --manifest-path crates/neuro-harness/Cargo.toml`，使用同一个 `CARGO_TARGET_DIR`。
+  - `.githooks/pre-push` 发现自带 `Cargo.lock` 的 crate 时，用 `--manifest-path` 单独执行 fmt、clippy（`--all-targets -D warnings`）和 test，不会因此触发 workspace 全量检查。
+  - 本地产物位于 `rust/crates/neuro-harness/target/`。
+  - 已知缺口：`rust-ci.yml` 的 `cargo test --workspace` 不覆盖这个 crate，目前只靠 pre-push 和 `neuro-harness-worker.yaml` 的编译覆盖。
 - `deploy/stack/lib/linux-compile.sh`：产物统一由 `CLAW_LINUX_RELEASE_BINS` 列出，包括 `claw`、`http-gateway-rs`、`neuro-opencode`、`neuro-appserver`。
 - npm 源统一用 `claw_npm_registry`（`deploy/stack/lib/claw-region.sh`）：region 为 `china` 时用 `registry.npmmirror.com`，其他情况用 `registry.npmjs.org`。已实测：同一份 lockfile 用 `npm ci --registry=https://registry.npmmirror.com` 安装时，全部从 npmmirror 下载，integrity 校验通过（npm 默认 `replace-registry-host=npmjs`）。
 - `Containerfile.gateway-worker-opencode`：`FROM claw-gateway-worker:<tag>`。opencode 用 glibc 平台包 `opencode-linux-{x64,arm64}@1.18.34`。与计划的偏差：计划写的是 musl 包，但 worker 基础镜像是 Debian bookworm（glibc），没有 musl 的动态加载器。tgz 的 sha512 integrity 写死在 `ARG` 里，构建时用 node 计算后比对；npmjs 与 npmmirror 的值一致。

@@ -1,5 +1,8 @@
 [workspace]
 members = ["crates/*"]
+# Own workspace: agent-client-protocol turns on serde_json preserve_order/raw_value, which
+# would otherwise unify into claw/gateway builds and change their JSON behavior. Author: kejiqing
+exclude = ["crates/neuro-harness"]
 resolver = "2"
 
 [workspace.package]

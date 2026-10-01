@@ -1,17 +1,21 @@
 [package]
 name = "neuro-harness"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-publish.workspace = true
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
 description = "ACP harness worker CLIs (neuro-opencode, neuro-appserver) speaking the gateway solve contract. Author: kejiqing"
+
+# Standalone workspace (excluded from rust/Cargo.toml): agent-client-protocol enables serde_json
+# preserve_order/raw_value; keeping its own Cargo.lock stops that from reaching claw/gateway builds.
+[workspace]
 
 [dependencies]
 agent-client-protocol = { version = "=2.2.0", features = ["unstable_end_turn_token_usage"] }
 gateway-solve-turn = { path = "../gateway-solve-turn" }
 runtime = { path = "../runtime" }
 serde = { version = "1", features = ["derive"] }
-serde_json.workspace = true
+serde_json = "1"
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]
@@ -25,5 +29,13 @@ path = "src/bin/neuro-opencode.rs"
 name = "neuro-appserver"
 path = "src/bin/neuro-appserver.rs"
 
-[lints]
-workspace = true
+# Same lint set as rust/Cargo.toml [workspace.lints].
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_panics_doc = "allow"
+missing_errors_doc = "allow"

@@ -216,8 +216,10 @@ claw_linux_compile_release() {
         sccache --show-stats || true
       fi
       cargo build --release -p rusty-claude-cli --bin claw \
-        -p http-gateway-rs --bin http-gateway-rs \
-        -p neuro-harness --bin neuro-opencode --bin neuro-appserver
+        -p http-gateway-rs --bin http-gateway-rs
+      # neuro-harness is its own workspace: ACP serde_json features must not unify into claw/gateway.
+      cargo build --release --manifest-path crates/neuro-harness/Cargo.toml \
+        --bin neuro-opencode --bin neuro-appserver
       if command -v sccache >/dev/null 2>&1; then
         sccache --show-stats || true
       fi
