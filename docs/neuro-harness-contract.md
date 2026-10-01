@@ -205,7 +205,17 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 
 `/responses` 的判定新增在 `gateway_tap_client::base_model_url_is_responses`，路径归一化规则与 tap client 相同。注意 `tap_client_from_base_model_url` 不能直接用来判定：它对 chat/completions 和无后缀的 URL 也返回缺省值 `codex`。
 
-## 11. 实验分支须知
+## 11. 构建与镜像
+
+- `deploy/stack/lib/linux-compile.sh`：产物统一由 `CLAW_LINUX_RELEASE_BINS` 列出，包括 `claw`、`http-gateway-rs`、`neuro-opencode`、`neuro-appserver`。
+- npm 源统一用 `claw_npm_registry`（`deploy/stack/lib/claw-region.sh`）：region 为 `china` 时用 `registry.npmmirror.com`，其他情况用 `registry.npmjs.org`。已实测：同一份 lockfile 用 `npm ci --registry=https://registry.npmmirror.com` 安装时，全部从 npmmirror 下载，integrity 校验通过（npm 默认 `replace-registry-host=npmjs`）。
+- `Containerfile.gateway-worker-opencode`：`FROM claw-gateway-worker:<tag>`。opencode 用 glibc 平台包 `opencode-linux-{x64,arm64}@1.18.34`。与计划的偏差：计划写的是 musl 包，但 worker 基础镜像是 Debian bookworm（glibc），没有 musl 的动态加载器。tgz 的 sha512 integrity 写死在 `ARG` 里，构建时用 node 计算后比对；npmjs 与 npmmirror 的值一致。
+- `Containerfile.gateway-worker-appserver`：`FROM claw-gateway-worker:<tag>`，`node` 取自 `node:22-bookworm-slim`。不用 bookworm 自带的 Node 18：codex-acp 依赖的 `open@11` 要求 Node ≥ 20。codex-acp 目录由 `npm ci --omit=dev --ignore-scripts` 按 `deploy/neuro-harness/codex-acp/package-lock.json` 安装（lockfile 中所有包都有 integrity；所有依赖都没有 install 脚本）。
+- `deploy/neuro-harness/build-worker-images.sh <strict-worker-image> <tag>`：构建两个镜像并做冒烟检查。检查项：`neuro-*` 不带参数时退出码为 2（证明二进制能加载），`opencode --version`，`node --version`，`codex --version`。CI 和本地都走这个脚本。
+- `.github/workflows/neuro-harness-worker.yaml`：手动触发，需要输入 strict worker 的 `tag`。在 home-ubt 上依次编译、构建、冒烟检查，然后推送 `claw-gateway-worker-{opencode,appserver}:<tag>` 和 `:dev-<sha12>` 到 ACR。
+- e2b：`build-claw-worker-{opencode,appserver}-selfhosted.py` 的实现都在 `e2b_engine_worker.py`。模板 = strict worker 模板（Dockerfile、start/ready 命令相同）+ 从引擎镜像经 registry HTTP 提取的 `/usr/local/bin` 和 `/usr/local/lib/neuro-engines`。构建完成后写入 PG 的 `e2bWorkerOpencode` / `e2bWorkerAppserver`；写入失败直接报错，不吞掉。`bootstrap-templates-from-ci-tag.sh` 在最后执行这两步：如果该 tag 没有引擎镜像，bootstrap 会在 claw 模板全部完成之后失败。
+
+## 12. 实验分支须知
 
 - migration `6_project_harness_engine.sql` 只部署到独立的测试 PG，不进入 pre 和 prod。合入主干时按当时的最新编号重新编号。
   - 与计划的偏差：`db_migrate.rs` 的单测 `published_migration_checksums_are_pinned` 要求每个 migration 都必须锁定 checksum，否则 `cargo test` 失败。因此分支上已经把 version 6 的 SHA-384 加入了 `PINNED_MIGRATION_CHECKSUMS`。重新编号时要同步改这一条。

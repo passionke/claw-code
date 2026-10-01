@@ -43,6 +43,15 @@ claw_cn_mirror_enabled() {
   claw_region_is_china
 }
 
+# npm registry for pinned engine packages (neuro-harness images): china → npmmirror. Author: kejiqing
+claw_npm_registry() {
+  if claw_region_is_china; then
+    printf '%s\n' https://registry.npmmirror.com
+  else
+    printf '%s\n' https://registry.npmjs.org
+  fi
+}
+
 # Apply mirror/registry defaults from region (explicit .env values win). Author: kejiqing
 claw_apply_region_defaults() {
   claw_region_load

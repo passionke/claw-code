@@ -182,5 +182,13 @@ case "${CLAW_E2B_NAS_API:-1}" in
     ;;
 esac
 
+# neuro-harness engine workers (feat/neuro-harness): images from .github/workflows/neuro-harness-worker.yaml.
+# Author: kejiqing
+export CLAW_E2B_WORKER_OPENCODE_IMAGE="${CLAW_E2B_WORKER_OPENCODE_IMAGE:-${PREFIX}/claw-gateway-worker-opencode:${TAG}}"
+export CLAW_E2B_WORKER_APPSERVER_IMAGE="${CLAW_E2B_WORKER_APPSERVER_IMAGE:-${PREFIX}/claw-gateway-worker-appserver:${TAG}}"
+echo "    opencode_image=${CLAW_E2B_WORKER_OPENCODE_IMAGE} appserver_image=${CLAW_E2B_WORKER_APPSERVER_IMAGE}" >&2
+run_py "${E2B_DIR}/build-claw-worker-opencode-selfhosted.py"
+run_py "${E2B_DIR}/build-claw-worker-appserver-selfhosted.py"
+
 echo "" >&2
 echo "OK: bootstrap templates published for tag=${TAG} on ${E2B_API_URL}" >&2

@@ -1,0 +1,8 @@
+{
+  "name": "neuro-codex-acp",
+  "private": true,
+  "description": "Pinned codex-acp for the neuro-appserver worker image. Author: kejiqing",
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "2.1.1"
+  }
+}
