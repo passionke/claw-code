@@ -265,6 +265,30 @@ async fn run_publish_script(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
+    // Forward region / CN flags so bootstrap pip mirror does not depend only on
+    // sourcing repo .env inside the child (compose often has CLAW_E2B_CN only).
+    // Author: kejiqing
+    for key in [
+        "region",
+        "REGION",
+        "CLAW_REGION",
+        "CLAW_E2B_CN",
+        "CLAW_E2B_API_KEY",
+        "CLAW_E2B_API_URL",
+        "CLAW_E2B_SANDBOX_URL",
+        "CLAW_E2B_DOMAIN",
+        "CLAW_GATEWAY_DATABASE_URL",
+        "DATABASE_URL",
+        "CLAW_CLUSTER_ID",
+        "CLAW_IMAGE_PREFIX",
+        "CLAW_IMAGE_REGISTRY",
+        "CLAUDE_TAP_IMAGE",
+    ] {
+        if let Some(v) = env_nonempty(key) {
+            cmd.env(key, v);
+        }
+    }
+
     if let Some(env_file) = resolve_deploy_env_file() {
         cmd.env("CLAW_DEPLOY_ENV_FILE", env_file);
     }
