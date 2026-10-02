@@ -18,8 +18,8 @@ use crate::master_observer::{
 };
 use crate::project_config_apply::{build_settings_json_from_row, enabled_mcp_servers};
 use crate::project_scope::{
-    build_scope_key, mcp_bind_is_initialized, mcp_bind_snapshot, mcp_bind_values_match,
-    parse_scope_json, render_mcp_servers_from_extra_session, scope_bind_values,
+    build_scope_key, mcp_bind_is_initialized, mcp_bind_snapshot, parse_scope_json,
+    render_mcp_servers_from_extra_session, scope_bind_values,
 };
 use crate::session_db::{GatewaySessionDb, ProjectConfigRow};
 
@@ -207,10 +207,6 @@ pub async fn ensure_scope_mcp_bind(
         .get_project_config(proj_id)
         .await
         .map_err(|e| format!("load project_config for scope settings: {e}"))?;
-
-    if mcp_bind_is_initialized(&row.mcp_bind_json) {
-        mcp_bind_values_match(&row.mcp_bind_json, &scope_values)?;
-    }
 
     let rendered = render_mcp_servers_from_extra_session(mcp_servers_template, extra_session)
         .map_err(|e| format!("render scope MCP template: {e}"))?;
