@@ -70,6 +70,9 @@ pub(crate) struct ProjectConfigResponse {
     proj_id: i64,
     #[serde(rename = "projectRole")]
     project_role: String,
+    /// `null` when the column could not be read. Author: kejiqing
+    #[serde(rename = "harnessEngine")]
+    harness_engine: Option<pool::harness_engine::HarnessEngine>,
     #[serde(rename = "contentRev")]
     content_rev: String,
     #[serde(rename = "stableContentRev", skip_serializing_if = "Option::is_none")]
@@ -646,6 +649,13 @@ pub(crate) async fn project_config_row_to_response(
             .get_project_role(row.proj_id)
             .await
             .unwrap_or_else(|_| crate::master_observer::PROJECT_ROLE_NORMAL.to_string()),
+        harness_engine: pool::harness_engine::load_project_harness_engine(
+            &state.session_db,
+            row.proj_id,
+        )
+        .await
+        .map_err(|e| tracing::warn!(proj_id = row.proj_id, error = %e, "load harness_engine"))
+        .ok(),
         content_rev: row.content_rev.clone(),
         stable_content_rev: row.stable_content_rev.clone(),
         draft_open: row.draft_open,
@@ -1147,6 +1157,14 @@ pub(crate) async fn put_project_config(
         Some(incoming) => incoming.clone(),
         None => existing.worker_profile_json.clone(),
     };
+    let harness_engine =
+        pool::harness_engine::load_project_harness_engine(&state.session_db, proj_id)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    harness_engine
+        .strategy()
+        .validate_worker_profile(&worker_profile_json)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     let worker_env_json = match &req.worker_env_json {
         Some(incoming) => incoming.clone(),
         None => existing.worker_env_json.clone(),
@@ -1518,6 +1536,7 @@ mod max_iterations_project_response_tests {
         let response = ProjectConfigResponse {
             proj_id: 1,
             project_role: "normal".into(),
+            harness_engine: Some(pool::harness_engine::HarnessEngine::Claw),
             content_rev: "rev".into(),
             stable_content_rev: Some("rev".into()),
             draft_open: false,

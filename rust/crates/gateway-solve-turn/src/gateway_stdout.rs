@@ -201,8 +201,7 @@ pub fn tool_process_kind(tool_name: &str) -> &'static str {
     }
 }
 
-fn tool_title(tool_name: &str, args_summary: &str) -> String {
-    let kind = tool_process_kind(tool_name);
+fn tool_title(tool_name: &str, kind: &str, args_summary: &str) -> String {
     match kind {
         "search" => {
             if args_summary.is_empty() {
@@ -286,18 +285,34 @@ fn args_summary_from_input(tool_name: &str, input: &str) -> String {
     truncate_summary(&v.to_string())
 }
 
-/// Emit `tool.start` for AG-UI / process disclosure. Author: kejiqing
-pub fn emit_tool_start(tool_call_id: &str, tool_name: &str, input: &str) -> io::Result<()> {
+/// JSON body for `tool.start` with an explicit `kind` (ACP harness engines). Author: kejiqing
+#[must_use]
+pub fn tool_start_event_with_kind(
+    tool_call_id: &str,
+    tool_name: &str,
+    kind: &str,
+    input: &str,
+) -> Value {
     let args_summary = args_summary_from_input(tool_name, input);
-    let title = tool_title(tool_name, &args_summary);
-    emit_raw_json(&serde_json::json!({
+    let title = tool_title(tool_name, kind, &args_summary);
+    serde_json::json!({
         "ev": "tool.start",
         "toolCallId": tool_call_id,
         "name": tool_name,
-        "kind": tool_process_kind(tool_name),
+        "kind": kind,
         "title": title,
         "argsSummary": args_summary,
-    }))
+    })
+}
+
+/// Emit `tool.start` for AG-UI / process disclosure. Author: kejiqing
+pub fn emit_tool_start(tool_call_id: &str, tool_name: &str, input: &str) -> io::Result<()> {
+    emit_raw_json(&tool_start_event_with_kind(
+        tool_call_id,
+        tool_name,
+        tool_process_kind(tool_name),
+        input,
+    ))
 }
 
 /// JSON body for `thinking.delta`. `None` when there is nothing to emit. Author: kejiqing
@@ -352,11 +367,31 @@ pub fn tool_end_event(
     duration_ms: u64,
     result: &str,
 ) -> Value {
+    tool_end_event_with_kind(
+        tool_call_id,
+        tool_name,
+        tool_process_kind(tool_name),
+        ok,
+        duration_ms,
+        result,
+    )
+}
+
+/// JSON body for `tool.end` with an explicit `kind` (ACP harness engines). Author: kejiqing
+#[must_use]
+pub fn tool_end_event_with_kind(
+    tool_call_id: &str,
+    tool_name: &str,
+    kind: &str,
+    ok: bool,
+    duration_ms: u64,
+    result: &str,
+) -> Value {
     serde_json::json!({
         "ev": "tool.end",
         "toolCallId": tool_call_id,
         "name": tool_name,
-        "kind": tool_process_kind(tool_name),
+        "kind": kind,
         "status": if ok { "ok" } else { "error" },
         "durationMs": duration_ms,
         "resultSummary": truncate_summary(result),

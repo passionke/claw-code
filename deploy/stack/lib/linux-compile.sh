@@ -4,6 +4,9 @@
 # Author: kejiqing
 set -euo pipefail
 
+# Release bins kept under .linux-artifacts/release (neuro-* = neuro-harness engine workers). Author: kejiqing
+CLAW_LINUX_RELEASE_BINS="claw http-gateway-rs neuro-opencode neuro-appserver"
+
 # Resolve container platform arch (override via CLAW_LINUX_COMPILE_PLATFORM=linux/amd64). Author: kejiqing
 claw_linux_compile_arch() {
   local raw="${CLAW_LINUX_COMPILE_PLATFORM:-}"
@@ -35,8 +38,8 @@ claw_linux_compile_prune_ci_bins() {
   for item in "${out_dir}"/*; do
     base="$(basename "${item}")"
     keep=0
-    case "${base}" in
-      claw | http-gateway-rs) keep=1 ;;
+    case " ${CLAW_LINUX_RELEASE_BINS} " in
+      *" ${base} "*) keep=1 ;;
     esac
     if [[ "${keep}" -eq 0 ]]; then
       rm -rf "${item}"
@@ -187,6 +190,7 @@ claw_linux_compile_release() {
     -e "SCCACHE_DIR=/root/.cache/sccache" \
     -e "SCCACHE_CACHE_SIZE=${sccache_size}" \
     -e "RUST_MIN_STACK=${RUST_MIN_STACK:-16777216}" \
+    -e "CLAW_LINUX_RELEASE_BINS=${CLAW_LINUX_RELEASE_BINS}" \
     "${cargo_env_args[@]+"${cargo_env_args[@]}"}" \
     "${uid_args[@]+"${uid_args[@]}"}" \
     -v "${root_dir}:/workspace:Z" \
@@ -213,12 +217,20 @@ claw_linux_compile_release() {
       fi
       cargo build --release -p rusty-claude-cli --bin claw \
         -p http-gateway-rs --bin http-gateway-rs
+      # neuro-harness is its own workspace: ACP serde_json features must not unify into claw/gateway.
+      cargo build --release --manifest-path crates/neuro-harness/Cargo.toml \
+        --bin neuro-opencode --bin neuro-appserver
       if command -v sccache >/dev/null 2>&1; then
         sccache --show-stats || true
       fi
-      ls -la /artifacts/release/http-gateway-rs /artifacts/release/claw
+      keep_args=""
+      for b in ${CLAW_LINUX_RELEASE_BINS}; do
+        ls -la "/artifacts/release/${b}"
+        keep_args="${keep_args} ! -name ${b}"
+      done
+      # shellcheck disable=SC2086
       find /artifacts/release -mindepth 1 -maxdepth 1 \
-        ! -name claw ! -name http-gateway-rs -exec rm -rf {} + 2>/dev/null || true
+        ${keep_args} -exec rm -rf {} + 2>/dev/null || true
       if [ -n "${CLAW_HOST_UID:-}" ] && [ -n "${CLAW_HOST_GID:-}" ]; then
         chown -R "${CLAW_HOST_UID}:${CLAW_HOST_GID}" /artifacts
         chown -R "${CLAW_HOST_UID}:${CLAW_HOST_GID}" \
@@ -249,7 +261,7 @@ claw_linux_compile_release() {
     bin_tmp="$(mktemp -d "${TMPDIR:-/tmp}/claw-linux-bins.XXXXXX")"
     host_uid="$(id -u)"
     host_gid="$(id -g)"
-    for bin in http-gateway-rs claw; do
+    for bin in ${CLAW_LINUX_RELEASE_BINS}; do
       if [[ ! -f "${out_dir}/${bin}" ]]; then
         echo "error: missing ${out_dir}/${bin} after linux compile" >&2
         rm -rf "${bin_tmp}"
@@ -285,7 +297,7 @@ claw_linux_compile_release() {
       fi
     fi
   fi
-  for bin in http-gateway-rs claw; do
+  for bin in ${CLAW_LINUX_RELEASE_BINS}; do
     if [[ ! -f "${out_dir}/${bin}" ]]; then
       echo "error: missing ${out_dir}/${bin} after linux compile" >&2
       exit 1

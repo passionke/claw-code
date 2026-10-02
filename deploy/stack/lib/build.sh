@@ -160,24 +160,22 @@ claw_build_playground_image() {
     fi
     step "playground slim image ${image_name} (admin via bind mount when dist/ present)"
     # shellcheck disable=SC2086
-    "${container_cli}" build \
+    "${root_dir}/deploy/stack/lib/container-build.sh" "${container_cli}" \
+      deploy/stack/Containerfile.gateway-playground.slim \
       --build-arg "DEBIAN_BASE_IMAGE=${debian_base}" \
       "$@" \
-      -f "${root_dir}/deploy/stack/Containerfile.gateway-playground.slim" \
-      -t "${image_name}" \
-      "${root_dir}"
+      -t "${image_name}"
     return 0
   fi
 
   step "image ${image_name} (admin SPA built inside Containerfile / CI)"
   # shellcheck disable=SC2086
-  "${container_cli}" build \
+  "${root_dir}/deploy/stack/lib/container-build.sh" "${container_cli}" \
+    deploy/stack/Containerfile.gateway-playground \
     --build-arg "DEBIAN_BASE_IMAGE=${debian_base}" \
     --build-arg "NODE_BASE_IMAGE=${node_base}" \
     "$@" \
-    -f "${root_dir}/deploy/stack/Containerfile.gateway-playground" \
-    -t "${image_name}" \
-    "${root_dir}"
+    -t "${image_name}"
 }
 
 use_prebuilt_linux_path() {
@@ -204,33 +202,30 @@ if use_prebuilt_linux_path; then
 
   step "2/3 image ${IMAGE_NAME} (Containerfile.gateway-rs.prebuilt)"
   # shellcheck disable=SC2086
-  "${CONTAINER_CLI}" build \
+  "${ROOT_DIR}/deploy/stack/lib/container-build.sh" "${CONTAINER_CLI}" \
+    deploy/stack/Containerfile.gateway-rs.prebuilt \
     --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
     "${APT_MIRROR_BUILD_ARGS[@]}" \
-    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-rs.prebuilt" \
-    -t "${IMAGE_NAME}" \
-    "${ROOT_DIR}"
+    -t "${IMAGE_NAME}"
 
   if skip_local_worker_images; then
     step "skip worker images (e2b-only: worker runs in e2b; set GITHUB_ACTIONS=true to build on CI)"
   else
     step "3/4 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker.prebuilt)"
     # shellcheck disable=SC2086
-    "${CONTAINER_CLI}" build \
+    "${ROOT_DIR}/deploy/stack/lib/container-build.sh" "${CONTAINER_CLI}" \
+      deploy/stack/Containerfile.gateway-worker.prebuilt \
       --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
       "${APT_MIRROR_BUILD_ARGS[@]}" \
-      -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker.prebuilt" \
-      -t "${WORKER_IMAGE_NAME}" \
-      "${ROOT_DIR}"
+      -t "${WORKER_IMAGE_NAME}"
 
     step "4/4 image ${RELAXED_WORKER_IMAGE_NAME} (Containerfile.gateway-worker-relaxed.prebuilt)"
     # shellcheck disable=SC2086
-    "${CONTAINER_CLI}" build \
+    "${ROOT_DIR}/deploy/stack/lib/container-build.sh" "${CONTAINER_CLI}" \
+      deploy/stack/Containerfile.gateway-worker-relaxed.prebuilt \
       --build-arg "WORKER_BASE_IMAGE=${WORKER_IMAGE_NAME}" \
       "${APT_MIRROR_BUILD_ARGS[@]}" \
-      -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker-relaxed.prebuilt" \
-      -t "${RELAXED_WORKER_IMAGE_NAME}" \
-      "${ROOT_DIR}"
+      -t "${RELAXED_WORKER_IMAGE_NAME}"
   fi
 
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
@@ -251,39 +246,36 @@ else
 
   step "1/3 image ${IMAGE_NAME}"
   # shellcheck disable=SC2086
-  "${CONTAINER_CLI}" build \
+  "${ROOT_DIR}/deploy/stack/lib/container-build.sh" "${CONTAINER_CLI}" \
+    deploy/stack/Containerfile.gateway-rs \
     --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
     --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
     "${RUSTUP_BUILD_ARGS[@]}" \
     "${CARGO_MIRROR_BUILD_ARGS[@]}" \
     "${APT_MIRROR_BUILD_ARGS[@]}" \
-    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-rs" \
-    -t "${IMAGE_NAME}" \
-    "${ROOT_DIR}"
+    -t "${IMAGE_NAME}"
 
   if skip_local_worker_images; then
     step "skip worker images (e2b backend: worker runs in e2b via CLAW_E2B_WORKER_IMAGE)"
   else
     step "2/5 image ${WORKER_IMAGE_NAME}"
     # shellcheck disable=SC2086
-    "${CONTAINER_CLI}" build \
+    "${ROOT_DIR}/deploy/stack/lib/container-build.sh" "${CONTAINER_CLI}" \
+      deploy/stack/Containerfile.gateway-worker \
       --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
       --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
       "${RUSTUP_BUILD_ARGS[@]}" \
       "${CARGO_MIRROR_BUILD_ARGS[@]}" \
       "${APT_MIRROR_BUILD_ARGS[@]}" \
-      -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker" \
-      -t "${WORKER_IMAGE_NAME}" \
-      "${ROOT_DIR}"
+      -t "${WORKER_IMAGE_NAME}"
 
     step "3/5 image ${RELAXED_WORKER_IMAGE_NAME} (Containerfile.gateway-worker-relaxed)"
     # shellcheck disable=SC2086
-    "${CONTAINER_CLI}" build \
+    "${ROOT_DIR}/deploy/stack/lib/container-build.sh" "${CONTAINER_CLI}" \
+      deploy/stack/Containerfile.gateway-worker-relaxed \
       --build-arg "WORKER_BASE_IMAGE=${WORKER_IMAGE_NAME}" \
       "${APT_MIRROR_BUILD_ARGS[@]}" \
-      -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker-relaxed" \
-      -t "${RELAXED_WORKER_IMAGE_NAME}" \
-      "${ROOT_DIR}"
+      -t "${RELAXED_WORKER_IMAGE_NAME}"
   fi
 
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"

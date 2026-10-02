@@ -138,6 +138,8 @@ export default function ProjectPage() {
   ] as const;
 
   const row = projects.find((p) => p.projId === projId);
+  const harnessEngine = projectConfig?.harnessEngine ?? row?.harnessEngine;
+  const engineLocksRole = harnessEngine != null && harnessEngine !== "claw";
   const showRolePage = loc.pathname.startsWith("/project-role");
   const showConfigPage = !showRolePage;
   const delegateTargetOptions = projects
@@ -691,6 +693,9 @@ export default function ProjectPage() {
           <Form.Item label="项目 ID">
             <Input value={String(projId)} disabled />
           </Form.Item>
+          <Form.Item label="Harness 引擎" tooltip="创建时选定，不可修改">
+            <Input value={harnessEngine ?? "未知"} disabled />
+          </Form.Item>
           <Form.Item
             name="projectCode"
             label="项目 Code"
@@ -748,6 +753,7 @@ export default function ProjectPage() {
             style={{ width: 220 }}
             value={projectRole}
             onChange={setProjectRole}
+            disabled={engineLocksRole}
             options={[
               { value: "normal", label: "normal" },
               { value: "router", label: "router" },
@@ -758,9 +764,19 @@ export default function ProjectPage() {
               { value: "observation", label: "observation（只读）", disabled: true },
             ]}
           />
-          <Button type="primary" loading={savingRole} onClick={() => void saveProjectRole()}>
+          <Button
+            type="primary"
+            loading={savingRole}
+            disabled={engineLocksRole}
+            onClick={() => void saveProjectRole()}
+          >
             保存角色
           </Button>
+          {engineLocksRole ? (
+            <Typography.Text type="secondary">
+              {harnessEngine} 引擎项目固定为 normal 角色
+            </Typography.Text>
+          ) : null}
         </Space>
         {projectRole === "scope" && (
           <Space direction="vertical" style={{ width: "100%", marginTop: 8 }}>

@@ -107,20 +107,18 @@ claw_rust_compile_build_local() {
   local rust_base="${reg}/library/rust:${CLAW_RUST_IMAGE_TAG}"
   echo "==> building compile image ${image_name} (FROM ${rust_base}${CLAW_LINUX_COMPILE_PLATFORM:+, platform=${CLAW_LINUX_COMPILE_PLATFORM}}; apt_cn=${apt_cn})" >&2
   if [[ ${#platform_args[@]} -gt 0 ]]; then
-    "${container_cli}" build \
+    "${root_dir}/deploy/stack/lib/container-build.sh" "${container_cli}" \
+      deploy/stack/Containerfile.rust-compile \
       "${platform_args[@]}" \
       --build-arg "RUST_BASE_IMAGE=${rust_base}" \
       --build-arg "CLAW_USE_CN_APT_MIRROR=${apt_cn}" \
-      -f "${root_dir}/deploy/stack/Containerfile.rust-compile" \
-      -t "${image_name}" \
-      "${root_dir}" >&2
+      -t "${image_name}" >&2
   else
-    "${container_cli}" build \
+    "${root_dir}/deploy/stack/lib/container-build.sh" "${container_cli}" \
+      deploy/stack/Containerfile.rust-compile \
       --build-arg "RUST_BASE_IMAGE=${rust_base}" \
       --build-arg "CLAW_USE_CN_APT_MIRROR=${apt_cn}" \
-      -f "${root_dir}/deploy/stack/Containerfile.rust-compile" \
-      -t "${image_name}" \
-      "${root_dir}" >&2
+      -t "${image_name}" >&2
   fi
 }
 

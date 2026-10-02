@@ -35,12 +35,11 @@ claw_cn_mirror_enabled && apt_mirror_arg=(--build-arg "CLAW_USE_CN_APT_MIRROR=1"
 if ! "${rt}" image exists "${pg_img}" 2>/dev/null; then
   echo "    building ${pg_img} (Containerfile.gateway-playground — npm build inside image)"
   # shellcheck disable=SC2086
-  "${rt}" build -q \
+  "${LIB_DIR}/container-build.sh" "${rt}" deploy/stack/Containerfile.gateway-playground -q \
     --build-arg "DEBIAN_BASE_IMAGE=${debian_reg}/library/debian:bookworm-slim" \
     --build-arg "NODE_BASE_IMAGE=${node_img}" \
     "${apt_mirror_arg[@]}" \
-    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground" \
-    -t "${pg_img}" "${ROOT_DIR}" >/dev/null
+    -t "${pg_img}" >/dev/null
 else
   echo "    reusing ${pg_img}"
 fi

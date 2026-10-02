@@ -51,9 +51,17 @@ export interface GitSyncJson {
   remoteCount?: number;
 }
 
+/** Project harness engine, fixed at creation (neuro-harness). Author: kejiqing */
+export type HarnessEngine = "claw" | "opencode" | "appserver";
+
+/** opencode only loads skills whose name matches this pattern. */
+export const OPENCODE_SKILL_NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
 export interface ProjectListItem {
   projId: number;
   projectRole?: string;
+  /** `null` = gateway could not read it. */
+  harnessEngine?: HarnessEngine | null;
   projectCode?: string;
   projectDescription?: string;
   contentRev?: string;
@@ -81,6 +89,7 @@ export type { WorkerProfileJson } from "./landlock";
 export interface ProjectConfig {
   projId: number;
   projectRole?: string;
+  harnessEngine?: HarnessEngine | null;
   projectCode?: string;
   projectDescription?: string;
   contentRev: string;

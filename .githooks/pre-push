@@ -40,38 +40,57 @@ if [[ -n "${base_ref}" ]]; then
   diff_range="${base_ref}...HEAD"
 fi
 
+# Crates with their own Cargo.lock are standalone workspaces (excluded from rust/Cargo.toml);
+# they are checked via --manifest-path so their features never unify into the root workspace.
+is_standalone_crate() {
+  [[ -f "${repo_root}/rust/crates/$1/Cargo.lock" ]]
+}
+
 rust_pkgs=()
+standalone_pkgs=()
 while IFS= read -r path; do
   [[ "${path}" == rust/crates/* ]] || continue
   pkg="${path#rust/crates/}"
   pkg="${pkg%%/*}"
   [[ -n "${pkg}" ]] || continue
   found=0
-  for existing in "${rust_pkgs[@]:-}"; do
+  for existing in "${rust_pkgs[@]:-}" "${standalone_pkgs[@]:-}"; do
     if [[ "${existing}" == "${pkg}" ]]; then
       found=1
       break
     fi
   done
   if [[ "${found}" -eq 0 ]]; then
-    rust_pkgs+=("${pkg}")
+    if is_standalone_crate "${pkg}"; then
+      standalone_pkgs+=("${pkg}")
+    else
+      rust_pkgs+=("${pkg}")
+    fi
   fi
 done < <(git diff --name-only --diff-filter=ACMR "${diff_range}" 2>/dev/null || true)
 
 if [[ "${#rust_pkgs[@]}" -eq 0 ]]; then
   rust_changed=0
   while IFS= read -r path; do
+    if [[ "${path}" == rust/crates/* ]]; then
+      pkg="${path#rust/crates/}"
+      pkg="${pkg%%/*}"
+      is_standalone_crate "${pkg}" && continue
+    fi
     if [[ "${path}" == rust/* ]]; then
       rust_changed=1
       break
     fi
   done < <(git diff --name-only --diff-filter=ACMR "${diff_range}" 2>/dev/null || true)
-  if [[ "${rust_changed}" -eq 0 ]]; then
+  if [[ "${rust_changed}" -eq 1 ]]; then
+    echo "[pre-push] warn: rust changed but no rust/crates/* paths; checking full workspace"
+    scope_mode="workspace"
+  elif [[ "${#standalone_pkgs[@]}" -gt 0 ]]; then
+    scope_mode="none"
+  else
     echo "[pre-push] skip: no rust/** changes in ${diff_range}"
     exit 0
   fi
-  echo "[pre-push] warn: rust changed but no rust/crates/* paths; checking full workspace"
-  scope_mode="workspace"
 else
   scope_mode="packages"
 fi
@@ -95,8 +114,8 @@ rust_cargo() {
 
 # Build -p flags (bash 3.2 compatible; no mapfile).
 pkg_flags=()
-for pkg in "${rust_pkgs[@]}"; do
-  pkg_flags+=(-p "${pkg}")
+for pkg in "${rust_pkgs[@]:-}"; do
+  [[ -n "${pkg}" ]] && pkg_flags+=(-p "${pkg}")
 done
 
 channel="$(rust_toolchain_channel)"
@@ -109,7 +128,7 @@ if [[ "${scope_mode}" == "workspace" ]]; then
   rust_cargo clippy --workspace --all-targets -- -D warnings
   echo "[pre-push] running cargo test --workspace"
   rust_cargo test --workspace
-else
+elif [[ "${scope_mode}" == "packages" ]]; then
   echo "[pre-push] scope: ${rust_pkgs[*]} (${diff_range})"
   echo "[pre-push] running cargo fmt --check for changed packages"
   for pkg in "${rust_pkgs[@]}"; do
@@ -122,6 +141,15 @@ else
   echo "[pre-push] running cargo test for changed packages"
   rust_cargo test "${pkg_flags[@]}"
 fi
+
+for pkg in "${standalone_pkgs[@]:-}"; do
+  [[ -n "${pkg}" ]] || continue
+  manifest="crates/${pkg}/Cargo.toml"
+  echo "[pre-push] standalone ${pkg}: fmt / clippy --all-targets / test (--manifest-path ${manifest})"
+  rust_cargo fmt --manifest-path "${manifest}" -- --check
+  rust_cargo clippy --manifest-path "${manifest}" --all-targets -- -D warnings
+  rust_cargo test --manifest-path "${manifest}"
+done
 
 echo "[pre-push] all checks passed"
 

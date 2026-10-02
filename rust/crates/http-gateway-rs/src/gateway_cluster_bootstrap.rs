@@ -638,6 +638,11 @@ pub async fn invalidate_e2b_template_pins(db: &GatewaySessionDb) -> Result<(), S
     for (section, fields) in [
         ("e2bWorker", &["templateId", "buildId", "alias"][..]),
         ("e2bWorkerRelaxed", &["templateId", "buildId", "alias"][..]),
+        ("e2bWorkerOpencode", &["templateId", "buildId", "alias"][..]),
+        (
+            "e2bWorkerAppserver",
+            &["templateId", "buildId", "alias"][..],
+        ),
         (
             "e2bNasApi",
             &[

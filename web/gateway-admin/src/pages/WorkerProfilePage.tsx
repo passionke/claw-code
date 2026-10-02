@@ -53,6 +53,9 @@ export default function WorkerProfilePage() {
   const [workerLoading, setWorkerLoading] = useState(false);
   const [workerResetting, setWorkerResetting] = useState(false);
   const mode = Form.useWatch("mode", form);
+  const harnessEngine = projectConfig?.harnessEngine;
+  const engineStrictOnly = harnessEngine != null && harnessEngine !== "claw";
+  const relaxedOffered = relaxedAllowed && !engineStrictOnly;
 
   const loadWorkerStatus = useCallback(async () => {
     setWorkerLoading(true);
@@ -387,11 +390,20 @@ export default function WorkerProfilePage() {
         <Form.Item name="mode" label="Worker profile">
           <Radio.Group>
             <Radio value="strict">Strict（Landlock session 隔离）</Radio>
-            {relaxedAllowed ? (
+            {relaxedOffered ? (
               <Radio value="relaxed">Relaxed（root + 可写容器）</Radio>
             ) : null}
           </Radio.Group>
         </Form.Item>
+        {engineStrictOnly ? (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={`${harnessEngine} 引擎项目仅支持 Strict worker`}
+            description="接口拒绝写入 mode=relaxed；Agent 提问（ask-user）对该引擎不生效。"
+          />
+        ) : null}
         <Form.Item
           name="askUserQuestionInAgent"
           label="Agent 模式允许向用户提问"
