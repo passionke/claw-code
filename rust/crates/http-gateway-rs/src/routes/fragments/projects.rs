@@ -1281,9 +1281,6 @@ pub(crate) async fn create_project(
             format!("ds {proj_id} already registered in project_config"),
         ));
     }
-    pool::harness_engine::check_project_llm_upstream(&state.session_db, harness_engine, proj_id)
-        .await
-        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     let lock = get_proj_lock(&state, proj_id).await;
     let _guard = lock.lock().await;

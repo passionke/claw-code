@@ -137,7 +137,7 @@ export default function CreateProjectModal({
           extra={
             engine && engine !== "claw"
               ? `${engine} 项目仅支持 strict worker、normal 角色与 agent 模式（无 plan / ask-user）。` +
-                (engine === "appserver" ? "生效 LLM 的 baseModelUrl 须以 /responses 结尾。" : "")
+                (engine === "appserver" ? "创建后请在项目 LLM 中配置以 /responses 结尾的 baseModelUrl，否则 solve 返回 400。" : "")
               : undefined
           }
         >

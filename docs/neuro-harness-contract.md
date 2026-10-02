@@ -196,7 +196,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 
 | 位置 | 行为 |
 |---|---|
-| `POST /v1/projects` | 新增 `harnessEngine` 字段，缺省为 `claw`，非法值返回 400。appserver 项目要求生效中的 LLM `baseModelUrl` 以 `/responses` 结尾，否则返回 400。插入项目之后用一次 UPDATE 写入引擎列；之后所有 upsert 和发布路径都不会碰这一列。 |
+| `POST /v1/projects` | 新增 `harnessEngine` 字段，缺省为 `claw`，非法值返回 400。建项目时不校验 LLM：项目级 LLM 只能在项目建好之后配置，建项目时校验会互相卡住。appserver 的 `/responses` 要求只在 solve 时校验。插入项目之后用一次 UPDATE 写入引擎列；之后所有 upsert 和发布路径都不会碰这一列。 |
 | `PUT /v1/projects/{id}/role` | 非 claw 项目只能设为 `normal`，其他角色返回 400 `unsupported_by_engine`。 |
 | `PUT /v1/projects/{id}/config` | 非 claw 项目写入 `workerProfileJson.mode=relaxed` 时返回 400。 |
 | solve（`run_solve_request_docker`） | 非 claw 项目只能走 e2b 后端。`interactionMode=plan` 或带 sealedPlan 时返回 400。appserver 每次 solve 都重新校验 `/responses`。task 固定为 `interactionMode=agent`、`askUserQuestionEnabled=false`、`forceSingleTurn=true`。exec 的 bin 换成 `/usr/local/bin/neuro-{opencode,appserver}`。 |
