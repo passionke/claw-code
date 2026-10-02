@@ -90,11 +90,10 @@ jobs:
           set -euo pipefail
           TAG="${{ steps.base_images.outputs.rust_image_tag }}"
           LOCAL="claw-rust-compile:${TAG}"
-          docker build \
-            -f ./deploy/stack/Containerfile.rust-compile \
+          ./deploy/stack/lib/container-build.sh docker deploy/stack/Containerfile.rust-compile \
             --build-arg "RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}" \
             --build-arg "CLAW_USE_CN_APT_MIRROR=1" \
-            -t "${LOCAL}" .
+            -t "${LOCAL}"
           echo "local=${LOCAL}" >> "$GITHUB_OUTPUT"
 
       - name: Push claw-rust-compile → ACR (skopeo v2s2)
@@ -271,11 +270,10 @@ jobs:
         run: |
           set -euo pipefail
           LOCAL="${PACKAGE}:${RELEASE_TAG}"
-          docker build \
-            -f "./${{ matrix.dockerfile }}" \
+          ./deploy/stack/lib/container-build.sh docker "${{ matrix.dockerfile }}" \
             --build-arg "DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}" \
             --build-arg "NODE_BASE_IMAGE=${{ steps.base_images.outputs.node_image }}" \
-            -t "${LOCAL}" .
+            -t "${LOCAL}"
           echo "local=${LOCAL}" >> "$GITHUB_OUTPUT"
 
       - name: Push ${{ matrix.package }} → ACR (skopeo v2s2)
@@ -353,10 +351,9 @@ jobs:
           STRICT="${PREFIX}/claw-gateway-worker:${RELEASE_TAG}"
           LOCAL="claw-gateway-worker-relaxed:${RELEASE_TAG}"
           docker pull "${STRICT}"
-          docker build \
-            -f ./deploy/stack/Containerfile.gateway-worker-relaxed \
+          ./deploy/stack/lib/container-build.sh docker deploy/stack/Containerfile.gateway-worker-relaxed \
             --build-arg "WORKER_BASE_IMAGE=${STRICT}" \
-            -t "${LOCAL}" .
+            -t "${LOCAL}"
 
       - name: Push relaxed worker → ACR (skopeo v2s2)
         env:

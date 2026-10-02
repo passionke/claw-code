@@ -102,13 +102,11 @@ push_package() {
       ;;
   esac
   echo "==> build ${image}:${RELEASE_TAG}"
-  docker build \
-    -f "$ROOT/${dockerfile}" \
+  "$ROOT/deploy/stack/lib/container-build.sh" docker "${dockerfile}" \
     "${build_args[@]}" \
     -t "${image}:${RELEASE_TAG}" \
     -t "${image}:sha-${SHA12}" \
-    -t "${image}:latest" \
-    "$ROOT"
+    -t "${image}:latest"
   for tag in "${RELEASE_TAG}" "sha-${SHA12}" latest; do
     echo "==> push ${image}:${tag}"
     docker push "${image}:${tag}"

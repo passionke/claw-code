@@ -42,12 +42,11 @@ engine_smoke() {
 
 for engine in opencode appserver; do
   image="claw-gateway-worker-${engine}:${TAG}"
-  "${CLI}" build \
-    -f "deploy/stack/Containerfile.gateway-worker-${engine}" \
+  deploy/stack/lib/container-build.sh "${CLI}" "deploy/stack/Containerfile.gateway-worker-${engine}" \
     --build-arg "WORKER_BASE_IMAGE=${WORKER_BASE_IMAGE}" \
     --build-arg "NODE_BASE_IMAGE=${NODE_BASE_IMAGE}" \
     --build-arg "NPM_REGISTRY=${NPM_REGISTRY}" \
-    -t "${image}" .
+    -t "${image}"
   # neuro-* without args prints usage and exits 2: proves the binary loads in this image.
   "${CLI}" run --rm --entrypoint sh "${image}" -c "
     set -eu

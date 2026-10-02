@@ -27,7 +27,7 @@ cmd="${1:-worker-image}"
 case "${cmd}" in
   worker-image)
     echo "==> build worker image from ${CONTAINERFILE}"
-    podman build -f "${CONTAINERFILE}" -t "${WORKER_IMAGE}" .
+    deploy/stack/lib/container-build.sh podman "${CONTAINERFILE}" -t "${WORKER_IMAGE}"
     ;;
   fc-layered)
     if [[ ! -f "${FC_DIR}/claw" ]]; then

@@ -109,11 +109,10 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.base_images.outputs.rust_image_tag }}"
-          docker build \
-            -f ./deploy/stack/Containerfile.rust-compile \
+          ./deploy/stack/lib/container-build.sh docker deploy/stack/Containerfile.rust-compile \
             --build-arg "RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}" \
             --build-arg "CLAW_USE_CN_APT_MIRROR=1" \
-            -t "claw-rust-compile:${TAG}" .
+            -t "claw-rust-compile:${TAG}"
 
       - name: Push claw-rust-compile → ACR
         env:
@@ -271,10 +270,9 @@ jobs:
           BRANCH_TAG: ${{ needs.resolve-tag.outputs.branch_tag }}
         run: |
           set -euo pipefail
-          docker build \
-            -f "./${{ matrix.dockerfile }}" \
+          ./deploy/stack/lib/container-build.sh docker "${{ matrix.dockerfile }}" \
             --build-arg "DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}" \
-            -t "${PACKAGE}:${BRANCH_TAG}" .
+            -t "${PACKAGE}:${BRANCH_TAG}"
 
       - name: Push ${{ matrix.package }} → ACR
         env:
