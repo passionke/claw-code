@@ -137,7 +137,7 @@ export default function CreateProjectModal({
           extra={
             engine && engine !== "claw"
               ? `${engine} 项目仅支持 strict worker、normal 角色与 agent 模式（无 plan / ask-user）。` +
-                (engine === "appserver" ? "创建后请在项目 LLM 中配置以 /responses 结尾的 baseModelUrl，否则 solve 返回 400。" : "")
+                (engine === "appserver" ? "项目 LLM 的上游需支持 Responses API；baseModelUrl 填 API 根地址（如 https://api.deepseek.com），引擎会自动拼接 /responses。" : "")
               : undefined
           }
         >

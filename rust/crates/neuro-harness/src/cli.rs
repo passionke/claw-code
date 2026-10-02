@@ -34,7 +34,7 @@ enum Command {
 }
 
 /// `main` of `neuro-<engine>` bins.
-pub fn main_with_profile(profile: &dyn EngineProfile) -> ExitCode {
+pub fn main_with_profile(profile: &'static dyn EngineProfile) -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match parse_args(&args) {
         Ok(Command::Solve(task_file)) => run_solve(profile, &task_file),
@@ -105,7 +105,7 @@ fn run_mcp_proxy(server: &str, session_root: &Path) -> ExitCode {
 }
 
 /// Always ends with exactly one `solve.done`.
-fn run_solve(profile: &dyn EngineProfile, task_file: &Path) -> ExitCode {
+fn run_solve(profile: &'static dyn EngineProfile, task_file: &Path) -> ExitCode {
     gateway_solve_turn::apply_worker_env();
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| solve(profile, task_file)))
         .unwrap_or_else(|panic| {
@@ -130,7 +130,7 @@ fn run_solve(profile: &dyn EngineProfile, task_file: &Path) -> ExitCode {
     }
 }
 
-fn solve(profile: &dyn EngineProfile, task_file: &Path) -> Result<Value, HarnessError> {
+fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value, HarnessError> {
     let task = load_task(task_file)?;
     reject_unsupported(&task)?;
     let session_root =
@@ -185,7 +185,7 @@ fn solve(profile: &dyn EngineProfile, task_file: &Path) -> Result<Value, Harness
         .map_err(|e| HarnessError::internal(format!("append user message: {e}")))?;
 
     let spec = TurnSpec {
-        engine: profile.engine(),
+        profile,
         launch,
         session_root: session_root.clone(),
         mcp_servers,

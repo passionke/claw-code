@@ -18,12 +18,12 @@ use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client, ConnectionT
 use tokio::sync::mpsc;
 
 use crate::mapper::{token_usage, OutEvent, TurnMapper, TurnTranscript};
-use crate::profile::AgentLaunch;
+use crate::profile::{AgentLaunch, EngineProfile, TurnSignal};
 use crate::state::{write_state, HarnessState};
 use crate::HarnessError;
 
 pub struct TurnSpec {
-    pub engine: &'static str,
+    pub profile: &'static dyn EngineProfile,
     pub launch: AgentLaunch,
     pub session_root: PathBuf,
     pub mcp_servers: Vec<McpServer>,
@@ -53,7 +53,7 @@ pub async fn run_turn(
     mut on_event: impl FnMut(&OutEvent) + Send + 'static,
 ) -> Result<TurnOutcome, HarnessError> {
     let TurnSpec {
-        engine,
+        profile,
         launch,
         session_root,
         mcp_servers,
@@ -63,6 +63,7 @@ pub async fn run_turn(
         mut mapper,
         trace_path,
     } = spec;
+    let engine = profile.engine();
 
     let agent = AcpAgent::new(
         AcpAgentConfig::new(launch.command.clone())
@@ -104,9 +105,11 @@ pub async fn run_turn(
             })?;
 
             let mut cancelled_for_iterations = false;
+            let mut failure = EngineFailure::default();
             loop {
                 match rx.recv().await {
                     Some(Inbound::Update(update)) => {
+                        failure.observe(profile.turn_signal(&update));
                         for ev in mapper.on_update(&update) {
                             on_event(&ev);
                         }
@@ -118,7 +121,7 @@ pub async fn run_turn(
                     }
                     Some(Inbound::PromptDone(r)) => {
                         let resp = (*r)?;
-                        return Ok((resp, mapper, cancelled_for_iterations, on_event));
+                        return Ok((resp, mapper, cancelled_for_iterations, failure, on_event));
                     }
                     None => return Err(acp_internal("ACP connection closed during prompt")),
                 }
@@ -126,8 +129,11 @@ pub async fn run_turn(
         })
         .await;
 
-    let (resp, mapper, cancelled_for_iterations, mut on_event) =
+    let (resp, mapper, cancelled_for_iterations, failure, mut on_event) =
         result.map_err(|e| HarnessError::internal(format!("acp: {}", describe_acp_error(&e))))?;
+    if let Some(err) = failure.into_error(engine) {
+        return Err(err);
+    }
 
     let completion_reason = match resp.stop_reason {
         StopReason::EndTurn => "model_end_turn",
@@ -150,6 +156,30 @@ pub async fn run_turn(
         usage,
         transcript,
     })
+}
+
+/// Folds [`TurnSignal`]s of one turn; `Failed` wins over the prompt's stop reason.
+#[derive(Debug, Default)]
+struct EngineFailure {
+    detail: Option<String>,
+    failed: bool,
+}
+
+impl EngineFailure {
+    fn observe(&mut self, signal: Option<TurnSignal>) {
+        match signal {
+            Some(TurnSignal::ErrorDetail(d)) => self.detail = Some(d),
+            Some(TurnSignal::Failed) => self.failed = true,
+            None => {}
+        }
+    }
+
+    fn into_error(self, engine: &str) -> Option<HarnessError> {
+        self.failed.then(|| {
+            let detail = self.detail.unwrap_or_else(|| "no error detail".into());
+            HarnessError::new(502, format!("{engine} turn failed: {detail}"))
+        })
+    }
 }
 
 /// initialize → `session/new` (persisting the id) or `session/resume`, else `session/load`.

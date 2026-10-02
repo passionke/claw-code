@@ -134,9 +134,6 @@ pub(crate) async fn run_solve_request_docker(
             sealed_plan_markdown: req.sealed_plan_markdown.as_deref(),
         })
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
-    harness_engine::check_project_llm_upstream(&state.session_db, engine, req.proj_id)
-        .await
-        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
 
     let (llm_route, worker_llm_env) = if pool_id == E2B_POOL_ID {
         state

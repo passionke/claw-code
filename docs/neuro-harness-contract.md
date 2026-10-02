@@ -87,6 +87,7 @@ stdout 中以 `__CLAW_GATEWAY_STDOUT__` 开头的行是结构化事件，其他�
 | `cancelled`，且是客户端因 `maxIterations` 发起的 | 成功，`completionReason=max_iterations` |
 | `cancelled`（其他原因）、`refusal` | 失败，500 |
 | JSON-RPC 错误、引擎子进程退出 | 失败，500 |
+| 引擎通过 `EngineProfile::turn_signal` 报告本轮失败（即使 `stopReason=end_turn`） | 失败，502，消息为最近一次上游错误详情 |
 | 本轮超过 `timeoutSeconds` | 失败，504 |
 | 收到 SIGTERM / SIGINT | 失败，500 |
 
@@ -165,6 +166,8 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 - 环境变量：`INITIAL_AGENT_MODE=agent-full-access`（隔离交给 landlock）。
 - 指令：`$CODEX_HOME/AGENTS.md` 写入 `.neuro-harness/instructions.md` 的内容（Codex 的全局指令文件）。
 - skills：每轮重建 `{session_root}/.agents/skills`，`$CLAW_PROJECT_CONFIG_ROOT/.claw/skills` 下每个含 `SKILL.md` 的目录建一个软链接。
+- 上游：Codex 请求 `<tap>/responses`，tap 转发到 `baseModelUrl + /responses`（`claude-tap` `proxy.py`：`target + 请求路径`）。所以项目 LLM 的 `baseModelUrl` 填 API 根地址（如 `https://api.deepseek.com`），上游须支持 Responses API；gateway 不做 URL 校验。
+- 失败识别：codex-acp 出错时先发 `session_info_update._meta.codex.error`（`additionalDetails` 为原因，带重试），放弃时发 `_meta.codex.threadStatus.type="systemError"`，再把错误文本当作正文 chunk、并以 `end_turn` 结束 prompt。`turn_signal` 识别这两种 `_meta`，本轮按失败处理。
 
 ## 9. Spike 结论（2026-10-02，本机 macOS，mock LLM）
 
@@ -192,14 +195,14 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 
 ## 10. gateway 接入（`http-gateway-rs/src/pool/harness_engine.rs`）
 
-引擎相关的知识只放在这一个模块里，按策略模式组织：`EngineStrategy` trait 的默认实现就是 claw 的行为（`ClawEngine` 是空实现）；opencode 和 appserver 共用 `NeuroEngine`，差异只体现在各自的静态配置里（worker 可执行文件、模板 alias、settings 段、是否要求 `/responses`、运行时所需的只读路径）。热点文件只调用 `engine.strategy().<hook>()`，不写引擎分支：
+引擎相关的知识只放在这一个模块里，按策略模式组织：`EngineStrategy` trait 的默认实现就是 claw 的行为（`ClawEngine` 是空实现）；opencode 和 appserver 共用 `NeuroEngine`，差异只体现在各自的静态配置里（worker 可执行文件、模板 alias、settings 段、运行时所需的只读路径）。热点文件只调用 `engine.strategy().<hook>()`，不写引擎分支：
 
 | 位置 | 行为 |
 |---|---|
-| `POST /v1/projects` | 新增 `harnessEngine` 字段，缺省为 `claw`，非法值返回 400。建项目时不校验 LLM：项目级 LLM 只能在项目建好之后配置，建项目时校验会互相卡住。appserver 的 `/responses` 要求只在 solve 时校验。插入项目之后用一次 UPDATE 写入引擎列；之后所有 upsert 和发布路径都不会碰这一列。 |
+| `POST /v1/projects` | 新增 `harnessEngine` 字段，缺省为 `claw`，非法值返回 400。不校验 LLM。插入项目之后用一次 UPDATE 写入引擎列；之后所有 upsert 和发布路径都不会碰这一列。 |
 | `PUT /v1/projects/{id}/role` | 非 claw 项目只能设为 `normal`，其他角色返回 400 `unsupported_by_engine`。 |
 | `PUT /v1/projects/{id}/config` | 非 claw 项目写入 `workerProfileJson.mode=relaxed` 时返回 400。 |
-| solve（`run_solve_request_docker`） | 非 claw 项目只能走 e2b 后端。`interactionMode=plan` 或带 sealedPlan 时返回 400。appserver 每次 solve 都重新校验 `/responses`。task 固定为 `interactionMode=agent`、`askUserQuestionEnabled=false`、`forceSingleTurn=true`。exec 的 bin 换成 `/usr/local/bin/neuro-{opencode,appserver}`。 |
+| solve（`run_solve_request_docker`） | 非 claw 项目只能走 e2b 后端。`interactionMode=plan` 或带 sealedPlan 时返回 400。task 固定为 `interactionMode=agent`、`askUserQuestionEnabled=false`、`forceSingleTurn=true`。exec 的 bin 换成 `/usr/local/bin/neuro-{opencode,appserver}`。 |
 | strict Landlock（`prepare_task`） | 在解析出的规则（cluster 默认或项目覆盖）上追加引擎运行时需要的只读路径，追加结果写进任务文件，可以审计。opencode 追加 `/proc` 和 `/dev/urandom`：在 e2b 沙箱里重放证实，缺 `/dev/urandom` 时 Bun 崩在 `0xBBADBEEF`，缺 `/proc` 时 SIGABRT，只放 `/proc/self` 不够。appserver 不追加：默认规则下启动正常，行为与不加 Landlock 一致。claw 的规则不变。 |
 | `desired_worker_spec` | 模板取自 PG 的 `e2bWorkerOpencode` / `e2bWorkerAppserver`（`templateId` 为空时用 alias `claw-worker-{opencode,appserver}`，`buildId` 为可选 pin），固定使用 strict。contract key 的 profile 段写成 `strict+<engine>`，claw 项目的 key 不变。 |
 | 列表接口、config 接口 | 返回字段 `harnessEngine`。读取失败时返回 `null`，不回落成 claw。 |

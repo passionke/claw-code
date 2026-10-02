@@ -3,6 +3,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use agent_client_protocol::schema::v1::SessionUpdate;
+
 use crate::HarnessError;
 
 /// Inputs a profile may project into its engine-specific config.
@@ -29,10 +31,24 @@ pub struct AgentLaunch {
     pub env: BTreeMap<String, String>,
 }
 
+/// Engine-private turn state carried in-band on ACP updates (e.g. codex `_meta`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnSignal {
+    /// Latest upstream error detail; becomes the failure message.
+    ErrorDetail(String),
+    /// The engine gave up on the turn, even if the prompt still ends with `end_turn`.
+    Failed,
+}
+
 pub trait EngineProfile: Sync {
     /// Value stored in `projects.harness_engine` (`opencode` | `appserver`).
     fn engine(&self) -> &'static str;
 
     /// Write engine config for this turn under `session_root` and return the launch command.
     fn prepare(&self, ctx: &PrepareContext<'_>) -> Result<AgentLaunch, HarnessError>;
+
+    /// In-band signal on an update; engines that fail through ACP errors keep the default.
+    fn turn_signal(&self, _update: &SessionUpdate) -> Option<TurnSignal> {
+        None
+    }
 }

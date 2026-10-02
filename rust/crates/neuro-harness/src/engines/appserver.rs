@@ -5,9 +5,10 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
+use agent_client_protocol::schema::v1::SessionUpdate;
 use serde_json::{json, Value};
 
-use crate::profile::{AgentLaunch, EngineProfile, PrepareContext};
+use crate::profile::{AgentLaunch, EngineProfile, PrepareContext, TurnSignal};
 use crate::projection::{link_skills, write_file};
 use crate::HarnessError;
 
@@ -57,6 +58,24 @@ impl EngineProfile for AppserverProfile {
             args: Vec::new(),
             env,
         })
+    }
+
+    /// codex-acp reports a dead turn as `_meta.codex.threadStatus.type = "systemError"`, then
+    /// streams the error text as a normal message and answers the prompt with `end_turn`.
+    fn turn_signal(&self, update: &SessionUpdate) -> Option<TurnSignal> {
+        let SessionUpdate::SessionInfoUpdate(info) = update else {
+            return None;
+        };
+        let codex = info.meta.as_ref()?.get("codex")?;
+        if codex.pointer("/threadStatus/type").and_then(Value::as_str) == Some("systemError") {
+            return Some(TurnSignal::Failed);
+        }
+        let error = codex.get("error")?;
+        ["additionalDetails", "message"]
+            .iter()
+            .find_map(|k| error.get(*k).and_then(Value::as_str))
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| TurnSignal::ErrorDetail(s.to_string()))
     }
 }
 
@@ -174,6 +193,32 @@ fn model_catalog(model: &str, context_window: u64) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn info(meta: &Value) -> SessionUpdate {
+        serde_json::from_value(json!({"sessionUpdate": "session_info_update", "_meta": meta}))
+            .unwrap()
+    }
+
+    #[test]
+    fn codex_system_error_is_a_failed_turn() {
+        let p = AppserverProfile;
+        let retry = info(&json!({"codex": {"error": {
+            "message": "Reconnecting... 5/5",
+            "codexErrorInfo": {"responseStreamDisconnected": {"httpStatusCode": 404}},
+            "additionalDetails": "unexpected status 404 Not Found: Unknown error, url: http://tap/responses"
+        }}}));
+        assert_eq!(
+            p.turn_signal(&retry),
+            Some(TurnSignal::ErrorDetail(
+                "unexpected status 404 Not Found: Unknown error, url: http://tap/responses".into()
+            ))
+        );
+        let dead = info(&json!({"codex": {"threadStatus": {"type": "systemError"}}}));
+        assert_eq!(p.turn_signal(&dead), Some(TurnSignal::Failed));
+        let active =
+            info(&json!({"codex": {"threadStatus": {"type": "active", "activeFlags": []}}}));
+        assert_eq!(p.turn_signal(&active), None);
+    }
 
     #[test]
     fn toml_strings_are_escaped() {

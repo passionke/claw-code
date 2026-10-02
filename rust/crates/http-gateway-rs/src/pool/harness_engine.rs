@@ -86,15 +86,6 @@ pub trait EngineStrategy: Sync {
         None
     }
 
-    /// Whether the effective LLM must be checked by [`Self::validate_llm_upstream`].
-    fn checks_llm_upstream(&self) -> bool {
-        false
-    }
-
-    fn validate_llm_upstream(&self, _base_model_url: &str) -> Result<(), String> {
-        Ok(())
-    }
-
     fn validate_role(&self, _role: &str) -> Result<(), String> {
         Ok(())
     }
@@ -134,8 +125,6 @@ pub struct NeuroEngine {
     /// e2b template alias, also the template when PG has no `templateId`.
     template_alias: &'static str,
     template_settings: fn(&GatewayGlobalSettingsStore) -> &E2bWorkerSettings,
-    /// Codex speaks only the Responses API.
-    requires_responses_upstream: bool,
     /// Read-only paths the engine runtime needs inside the strict Landlock jail, appended to the
     /// resolved DSL (e.g. Bun aborts without `/proc` and `/dev/urandom`).
     landlock_runtime_ro: &'static [&'static str],
@@ -154,7 +143,6 @@ static OPENCODE: NeuroEngine = NeuroEngine {
     worker_bin: "/usr/local/bin/neuro-opencode",
     template_alias: "claw-worker-opencode",
     template_settings: opencode_settings,
-    requires_responses_upstream: false,
     landlock_runtime_ro: &["/proc", "/dev/urandom"],
 };
 
@@ -163,7 +151,6 @@ static APPSERVER: NeuroEngine = NeuroEngine {
     worker_bin: "/usr/local/bin/neuro-appserver",
     template_alias: "claw-worker-appserver",
     template_settings: appserver_settings,
-    requires_responses_upstream: true,
     landlock_runtime_ro: &[],
 };
 
@@ -193,21 +180,6 @@ impl EngineStrategy for NeuroEngine {
             alias: self.template_alias.to_string(),
             profile_label: format!("strict+{}", self.name),
         })
-    }
-
-    fn checks_llm_upstream(&self) -> bool {
-        self.requires_responses_upstream
-    }
-
-    fn validate_llm_upstream(&self, base_model_url: &str) -> Result<(), String> {
-        if !self.requires_responses_upstream
-            || crate::gateway_tap_client::base_model_url_is_responses(base_model_url)
-        {
-            return Ok(());
-        }
-        Err(self.unsupported(&format!(
-            "LLM baseModelUrl must end with /responses, got {base_model_url:?}"
-        )))
     }
 
     /// Engine projects stay `normal`.
@@ -318,24 +290,6 @@ pub async fn engine_worker_template(
     Ok(engine.strategy().worker_template(&store))
 }
 
-/// [`EngineStrategy::validate_llm_upstream`] against the project's effective LLM
-/// (project override, else cluster).
-pub async fn check_project_llm_upstream(
-    db: &GatewaySessionDb,
-    engine: HarnessEngine,
-    proj_id: i64,
-) -> Result<(), String> {
-    let strategy = engine.strategy();
-    if !strategy.checks_llm_upstream() {
-        return Ok(());
-    }
-    let runtime = crate::gateway_project_llm::load_effective_llm_runtime(db, proj_id)
-        .await
-        .map_err(|e| format!("load effective LLM for proj {proj_id}: {e}"))?
-        .ok_or_else(|| format!("no active LLM for proj {proj_id}"))?;
-    strategy.validate_llm_upstream(&runtime.base_model_url)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,30 +356,6 @@ mod tests {
             .strategy()
             .worker_template(&store)
             .is_none());
-    }
-
-    #[test]
-    fn appserver_requires_responses_upstream() {
-        let s = HarnessEngine::Appserver.strategy();
-        assert!(s.checks_llm_upstream());
-        assert!(s
-            .validate_llm_upstream("https://api.openai.com/v1/responses")
-            .is_ok());
-        assert!(s
-            .validate_llm_upstream("https://api.openai.com/v1/responses/")
-            .is_ok());
-        assert!(s
-            .validate_llm_upstream("https://h/v1/RESPONSES?x=1")
-            .is_ok());
-        let err = s
-            .validate_llm_upstream("https://api.x.ai/v1/chat/completions")
-            .unwrap_err();
-        assert!(err.starts_with("unsupported_by_engine:"), "{err}");
-        assert!(s.validate_llm_upstream("https://api.x.ai/v1").is_err());
-        for e in [HarnessEngine::Opencode, HarnessEngine::Claw] {
-            assert!(!e.strategy().checks_llm_upstream());
-            assert!(e.strategy().validate_llm_upstream("https://x/v1").is_ok());
-        }
     }
 
     #[test]
