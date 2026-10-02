@@ -25,6 +25,21 @@ pub const SINGLETON_ROLE_OBSERVE_PROJ: &str = "observe-proj";
 /// Per-project worker `metadata.clawRole`.
 pub const WARM_PROJ_ROLE: &str = "warm-proj";
 
+/// Whether a warm-proj sandbox id is in the per-proj keep list (orphan reap must not kill it).
+///
+/// Keep lists must include **scope** workers as well as singleton slots — both use
+/// `clawRole=warm-proj`. Author: kejiqing
+#[must_use]
+pub fn warm_proj_sandbox_kept<S: ::std::hash::BuildHasher>(
+    proj_id: i64,
+    sandbox_id: &str,
+    keep_by_proj: &HashMap<i64, Vec<String>, S>,
+) -> bool {
+    keep_by_proj
+        .get(&proj_id)
+        .is_some_and(|keeps| keeps.iter().any(|k| k == sandbox_id))
+}
+
 /// Observe sandbox env key for claude-tap `--tap-client`. Author: kejiqing
 pub const CLAW_TAP_CLIENT_ENV: &str = "CLAW_TAP_CLIENT";
 
@@ -914,6 +929,10 @@ impl E2bSandboxClient {
     }
 
     /// Kill stray `warm-proj` sandboxes for this cluster: not any PG-registered keep sandbox per proj.
+    ///
+    /// `keep_by_proj` must include **all** live workers for the proj (singleton `scope_key=''`
+    /// **and** scope-role workers). Scope sandboxes also carry `clawRole=warm-proj`; omitting them
+    /// causes gateway startup orphan-reap to kill live scope workers. Author: kejiqing
     pub async fn reap_cluster_warm_proj_orphans(
         &self,
         cluster_id: &str,
@@ -942,10 +961,7 @@ impl E2bSandboxClient {
             let Some(sid) = row.get("__sandboxId") else {
                 continue;
             };
-            if keep_by_proj
-                .get(&proj_id)
-                .is_some_and(|keeps| keeps.iter().any(|k| k == sid))
-            {
+            if warm_proj_sandbox_kept(proj_id, sid, keep_by_proj) {
                 continue;
             }
             match self.kill_sandbox(sid).await {
@@ -1800,6 +1816,28 @@ mod nas_addr_tests {
 #[cfg(test)]
 mod client_tests {
     use super::*;
+
+    #[test]
+    fn warm_proj_keep_includes_scope_sandbox() {
+        let mut keep = HashMap::new();
+        keep.insert(
+            3024_i64,
+            vec!["sbx-singleton".to_string(), "sbx-scope-fda".to_string()],
+        );
+        assert!(warm_proj_sandbox_kept(3024, "sbx-scope-fda", &keep));
+        assert!(warm_proj_sandbox_kept(3024, "sbx-singleton", &keep));
+        assert!(!warm_proj_sandbox_kept(3024, "sbx-stray", &keep));
+        assert!(!warm_proj_sandbox_kept(1, "sbx-scope-fda", &keep));
+    }
+
+    #[test]
+    fn warm_proj_keep_empty_proj_is_not_kept() {
+        let keep: HashMap<i64, Vec<String>> = HashMap::new();
+        assert!(
+            !warm_proj_sandbox_kept(3024, "sbx-scope-fda", &keep),
+            "missing keep entry must not protect a sandbox"
+        );
+    }
 
     #[test]
     fn observe_env_vars_global_has_tap_client_no_proj() {
