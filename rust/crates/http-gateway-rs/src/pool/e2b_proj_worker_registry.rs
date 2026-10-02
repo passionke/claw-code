@@ -77,6 +77,18 @@ fn scope_slot_key(proj_id: i64, scope_key: &str, slot_index: u32) -> WorkerSlotK
     }
 }
 
+/// Build orphan-reap keep map from live PG workers (singleton + scope). Author: kejiqing
+fn keep_by_proj_from_live_workers(rows: &[ProjectFcWorkerRow]) -> HashMap<i64, Vec<String>> {
+    let mut keep_by_proj: HashMap<i64, Vec<String>> = HashMap::new();
+    for row in rows {
+        keep_by_proj
+            .entry(row.proj_id)
+            .or_default()
+            .push(row.sandbox_id.clone());
+    }
+    keep_by_proj
+}
+
 /// Outcome of probing a scope worker before lease. Author: kejiqing
 enum ScopeWorkerReady {
     Ready,
@@ -430,16 +442,12 @@ impl E2bProjWorkerRegistry {
         let Ok(db) = self.session_db().await else {
             return;
         };
+        // Keep **all** live workers (singleton + scope). Scope sandboxes also carry
+        // clawRole=warm-proj; singleton-only keep lists kill them on gateway restart/release.
+        // Author: kejiqing
         let mut keep_by_proj: HashMap<i64, Vec<String>> = HashMap::new();
-        if let Ok(proj_ids) = db.list_project_config_proj_ids().await {
-            for proj_id in proj_ids {
-                if let Ok(rows) = db.list_project_e2b_singleton_workers(proj_id).await {
-                    let ids: Vec<String> = rows.into_iter().map(|r| r.sandbox_id).collect();
-                    if !ids.is_empty() {
-                        keep_by_proj.insert(proj_id, ids);
-                    }
-                }
-            }
+        if let Ok(rows) = db.list_cluster_e2b_live_workers().await {
+            keep_by_proj = keep_by_proj_from_live_workers(&rows);
         }
         match self
             .client
@@ -743,8 +751,10 @@ impl E2bProjWorkerRegistry {
             .get_project_e2b_worker(proj_id, e2b_worker_slot_i32(slot_index))
             .await
         {
+            // Keep live singleton + scope workers for this proj (same clawRole=warm-proj).
+            // Author: kejiqing
             let keep: Vec<String> = db
-                .list_project_e2b_singleton_workers(proj_id)
+                .list_project_e2b_live_workers(proj_id)
                 .await
                 .unwrap_or_default()
                 .into_iter()
@@ -2003,5 +2013,50 @@ mod tests {
         let leases = HashMap::from([(0, 0), (1, 0)]);
         assert_eq!(select_least_lease_slot(2, &present, &leases, 0), 0);
         assert_eq!(select_least_lease_slot(2, &present, &leases, 1), 1);
+    }
+
+    fn live_row(proj_id: i64, scope_key: &str, sandbox_id: &str) -> ProjectFcWorkerRow {
+        ProjectFcWorkerRow {
+            proj_id,
+            scope_key: scope_key.to_string(),
+            slot_index: 0,
+            sandbox_id: sandbox_id.to_string(),
+            worker_id: "w".into(),
+            template_id: "tpl".into(),
+            handle_json: json!({}),
+            updated_at_ms: 0,
+            in_use_count: 0,
+            in_use_until_ms: 0,
+            lifecycle_state: "running".into(),
+            last_idle_at_ms: 0,
+            mcp_bind_json: json!({}),
+            invalid_reason: String::new(),
+        }
+    }
+
+    /// Regression: release/startup orphan reap must keep scope workers, not only singleton.
+    #[test]
+    fn startup_orphan_keep_includes_scope_workers() {
+        let rows = vec![
+            live_row(3024, "", "sbx-singleton"),
+            live_row(3024, "fda-role", "sbx-scope-fda"),
+            live_row(1001, "", "sbx-other"),
+        ];
+        let keep = keep_by_proj_from_live_workers(&rows);
+        let ids = keep.get(&3024).expect("proj 3024 keep");
+        assert!(ids.contains(&"sbx-singleton".to_string()));
+        assert!(
+            ids.contains(&"sbx-scope-fda".to_string()),
+            "scope sandbox must be in keep or release restart kills it"
+        );
+        assert_eq!(
+            keep.get(&1001).map(Vec::as_slice),
+            Some(["sbx-other".to_string()].as_slice())
+        );
+        assert!(claw_e2b_sandbox_client::warm_proj_sandbox_kept(
+            3024,
+            "sbx-scope-fda",
+            &keep
+        ));
     }
 }

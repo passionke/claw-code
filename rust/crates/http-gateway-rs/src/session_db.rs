@@ -1981,6 +1981,46 @@ impl GatewaySessionDb {
         rows.iter().map(row_to_project_fc_worker).collect()
     }
 
+    /// Live workers for one project (singleton **and** scope). Use for warm-proj orphan keep lists.
+    /// Author: kejiqing
+    pub async fn list_project_e2b_live_workers(
+        &self,
+        proj_id: i64,
+    ) -> Result<Vec<ProjectFcWorkerRow>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT proj_id, scope_key, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms,
+                      in_use_count, in_use_until_ms, lifecycle_state, last_idle_at_ms, mcp_bind_json, invalid_reason
+               FROM project_e2b_worker
+               WHERE cluster_id = $1 AND proj_id = $2
+                 AND lifecycle_state IN ('running', 'sleeping')
+               ORDER BY scope_key ASC, slot_index ASC",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_project_fc_worker).collect()
+    }
+
+    /// All live workers in this cluster (singleton + scope). Startup orphan-reap keep source.
+    /// Author: kejiqing
+    pub async fn list_cluster_e2b_live_workers(
+        &self,
+    ) -> Result<Vec<ProjectFcWorkerRow>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT proj_id, scope_key, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms,
+                      in_use_count, in_use_until_ms, lifecycle_state, last_idle_at_ms, mcp_bind_json, invalid_reason
+               FROM project_e2b_worker
+               WHERE cluster_id = $1
+                 AND lifecycle_state IN ('running', 'sleeping')
+               ORDER BY proj_id ASC, scope_key ASC, slot_index ASC",
+        )
+        .bind(self.cluster_id())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_project_fc_worker).collect()
+    }
+
     /// Count live scope workers for one project (`scope_key <> ''`). Author: kejiqing
     pub async fn count_project_e2b_scope_workers(&self, proj_id: i64) -> Result<i64, SqlxError> {
         let n: i64 = sqlx::query_scalar(
