@@ -9,9 +9,12 @@ use std::time::Duration;
 use agent_client_protocol::schema::v1::{
     ContentBlock as AcpBlock, EnvVariable, McpServer, McpServerStdio, ResourceLink, TextContent,
 };
-use gateway_solve_turn::{GatewaySolveTaskFile, SolveAttachment};
-use runtime::{ConfigLoader, Session};
-use serde_json::{json, Value};
+use gateway_solve_turn::{
+    append_solve_timing_point, reset_task_progress, truncate_progress_history,
+    truncate_solve_timing_events, GatewaySolveTaskFile, SolveAttachment, SolveTimingRecorder,
+};
+use runtime::{ConfigLoader, Session, TurnTimingSink};
+use serde_json::{json, Map, Value};
 
 use crate::acp_client::{run_turn, TurnOutcome, TurnSpec};
 use crate::mapper::{OutEvent, TurnMapper};
@@ -24,6 +27,7 @@ use crate::{HarnessError, HARNESS_DIR};
 
 const DEFAULT_TIMEOUT_SECONDS: u64 = 120;
 const DEFAULT_MAX_ITERATIONS: usize = 64;
+const REAP_GRACE: Duration = Duration::from_secs(2);
 
 enum Command {
     Solve(PathBuf),
@@ -107,6 +111,7 @@ fn run_mcp_proxy(server: &str, session_root: &Path) -> ExitCode {
 /// Always ends with exactly one `solve.done`.
 fn run_solve(profile: &'static dyn EngineProfile, task_file: &Path) -> ExitCode {
     gateway_solve_turn::apply_worker_env();
+    crate::reaper::adopt_orphans();
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| solve(profile, task_file)))
         .unwrap_or_else(|panic| {
             let msg = panic
@@ -116,6 +121,12 @@ fn run_solve(profile: &'static dyn EngineProfile, task_file: &Path) -> ExitCode 
                 .unwrap_or_else(|| "unknown panic".to_string());
             Err(HarnessError::internal(format!("panic: {msg}")))
         });
+    if !crate::reaper::reap_children(REAP_GRACE) {
+        eprintln!(
+            "[{}] engine left live processes outside its process group",
+            profile.engine()
+        );
+    }
     match result {
         Ok(output) => {
             let text = output.to_string();
@@ -135,6 +146,18 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
     reject_unsupported(&task)?;
     let session_root =
         std::env::current_dir().map_err(|e| HarnessError::internal(format!("current dir: {e}")))?;
+    let turn_ctx = TurnContext::from_task(&task);
+    // Same per-turn files as claw `gateway-solve-once`: the gateway reads them back for the
+    // timeline / tools / progress views.
+    let _ = truncate_solve_timing_events(&session_root);
+    let _ = append_solve_timing_point(
+        &session_root,
+        "bootstrap_worker_entered",
+        Some(&turn_ctx.turn_id),
+    );
+    reset_task_progress(&session_root, &turn_ctx.session_id)
+        .map_err(|e| HarnessError::internal(format!("reset task progress: {e}")))?;
+    let _ = truncate_progress_history(&session_root);
     let harness_dir = session_root.join(HARNESS_DIR);
     let tmp_dir = session_root.join("tmp");
     for dir in [&harness_dir, &tmp_dir] {
@@ -157,7 +180,7 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
         .ok_or_else(|| HarnessError::internal("OPENAI_BASE_URL is not set"))?;
     let project_config_root = runtime::gateway_project_config_root(&session_root);
 
-    write_turn_context(&session_root, &TurnContext::from_task(&task))?;
+    write_turn_context(&session_root, &turn_ctx)?;
     let instructions = instructions_path(&session_root);
     write_file(
         &instructions,
@@ -200,9 +223,16 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
         .enable_all()
         .build()
         .map_err(|e| HarnessError::internal(format!("tokio runtime: {e}")))?;
+    let timing = SolveTimingRecorder::new(&session_root);
+    timing.emit("turn_started", turn_attrs(&turn_ctx.turn_id));
+    let tool_timing = timing.clone();
+    let on_event = move |ev: &OutEvent| {
+        record_tool_timing(&tool_timing, ev);
+        emit_event(ev);
+    };
     let outcome = rt.block_on(async {
         tokio::select! {
-            r = tokio::time::timeout(Duration::from_secs(timeout_seconds), run_turn(spec, emit_event)) => {
+            r = tokio::time::timeout(Duration::from_secs(timeout_seconds), run_turn(spec, on_event)) => {
                 r.unwrap_or_else(|_| Err(HarnessError::new(504, format!("turn timed out after {timeout_seconds}s"))))
             }
             sig = wait_for_signal() => Err(HarnessError::internal(format!("received {sig}"))),
@@ -211,6 +241,7 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
     // Child process group is gone once run_turn returned/was dropped; shut the runtime down
     // without waiting on stray blocking tasks.
     rt.shutdown_timeout(Duration::from_secs(1));
+    timing.emit("turn_completed", turn_attrs(&turn_ctx.turn_id));
 
     for message in &outcome.transcript.messages {
         session
@@ -243,6 +274,32 @@ fn output_json(
         "harnessEngine": engine,
         "llmRoute": task.llm_route,
     })
+}
+
+fn turn_attrs(turn_id: &str) -> Map<String, Value> {
+    let mut attrs = Map::new();
+    attrs.insert("turn_id".into(), json!(turn_id));
+    attrs
+}
+
+/// `tool_execution_*` solve timing (timeline "Tool 执行" lane), as claw's conversation loop.
+fn record_tool_timing(timing: &SolveTimingRecorder, ev: &OutEvent) {
+    let (kind, id, name) = match ev {
+        OutEvent::ToolStart { id, name, .. } => ("tool_execution_started", id, name),
+        OutEvent::ToolEnd { id, name, .. } => ("tool_execution_finished", id, name),
+        _ => return,
+    };
+    let mut attrs = Map::new();
+    attrs.insert("tool_use_id".into(), json!(id));
+    attrs.insert("tool_name".into(), json!(name));
+    if let OutEvent::ToolEnd {
+        ok, duration_ms, ..
+    } = ev
+    {
+        attrs.insert("duration_ms".into(), json!(duration_ms));
+        attrs.insert("is_error".into(), json!(!ok));
+    }
+    timing.emit(kind, attrs);
 }
 
 fn emit_event(ev: &OutEvent) {

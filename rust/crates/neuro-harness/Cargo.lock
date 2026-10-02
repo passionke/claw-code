@@ -1395,6 +1395,7 @@ dependencies = [
  "agent-client-protocol",
  "gateway-solve-turn",
  "runtime",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

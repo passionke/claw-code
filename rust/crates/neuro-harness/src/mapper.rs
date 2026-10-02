@@ -280,15 +280,7 @@ impl TurnMapper {
             Some(ToolCallStatus::InProgress | ToolCallStatus::Completed | ToolCallStatus::Failed)
         ) || state.input.as_ref().is_some_and(|v| !is_empty_input(v));
         if ready && state.started_at.is_none() {
-            events.push(OutEvent::ToolStart {
-                id: id.to_string(),
-                name: state.name.clone(),
-                kind: state.kind,
-                input: input_string(state.input.as_ref()),
-            });
-            if let Some(s) = self.tools.get_mut(id) {
-                s.started_at = Some(Instant::now());
-            }
+            events.push(self.start_tool(id));
         }
         let content_text = content.map(|c| contents_text(c)).unwrap_or_default();
         match status {
@@ -311,20 +303,38 @@ impl TurnMapper {
         events
     }
 
+    /// Freeze name/kind (MCP → claw name, also on the transcript `tool_use`) and emit `tool.start`.
+    fn start_tool(&mut self, id: &str) -> OutEvent {
+        let servers = &self.mcp_servers;
+        let state = self.tools.get_mut(id).expect("start_tool on a known tool");
+        if state.kind == "mcp" {
+            if let Some(n) =
+                mcp_contract_name(servers, &state.name, &state.title, state.input.as_ref())
+            {
+                state.name = n;
+            }
+        }
+        state.started_at = Some(Instant::now());
+        let event = OutEvent::ToolStart {
+            id: id.to_string(),
+            name: state.name.clone(),
+            kind: state.kind,
+            input: input_string(state.input.as_ref()),
+        };
+        let name = state.name.clone();
+        patch_tool_use_name(&mut self.pending, &mut self.messages, id, &name);
+        event
+    }
+
     fn end_tool(&mut self, id: &str, ok: bool, output: String) -> Vec<OutEvent> {
         let mut events = Vec::new();
-        let Some(state) = self.tools.get_mut(id) else {
+        if !self.tools.contains_key(id) {
             return events;
-        };
-        if state.started_at.is_none() {
-            events.push(OutEvent::ToolStart {
-                id: id.to_string(),
-                name: state.name.clone(),
-                kind: state.kind,
-                input: input_string(state.input.as_ref()),
-            });
-            state.started_at = Some(Instant::now());
         }
+        if self.tools.get(id).is_some_and(|s| s.started_at.is_none()) {
+            events.push(self.start_tool(id));
+        }
+        let state = self.tools.get_mut(id).expect("checked above");
         state.ended = true;
         let duration_ms = state
             .started_at
@@ -403,6 +413,52 @@ fn is_mcp_name(server: &str, s: &str) -> bool {
     s.starts_with(&format!("mcp.{server}."))
         || s.starts_with(&format!("mcp__{server}"))
         || s.starts_with(&format!("{server}_"))
+}
+
+/// Claw transcript name (`mcp__<server>__<tool>`) for an MCP call: codex puts `server`/`tool`
+/// in the input; otherwise strip the engine prefix (`mcp.<s>.`, `mcp__<s>__`, `<s>_`).
+fn mcp_contract_name(
+    servers: &[String],
+    name: &str,
+    title: &str,
+    input: Option<&Value>,
+) -> Option<String> {
+    let field = |k: &str| input.and_then(|i| i.get(k)).and_then(Value::as_str);
+    if let (Some(server), Some(tool)) = (field("server"), field("tool")) {
+        return Some(runtime::mcp_tool_name(server, tool));
+    }
+    servers.iter().find_map(|server| {
+        [name, title].iter().find_map(|s| {
+            [
+                format!("mcp.{server}."),
+                format!("mcp__{server}__"),
+                format!("{server}_"),
+            ]
+            .iter()
+            .find_map(|p| s.strip_prefix(p.as_str()))
+            .filter(|tool| !tool.is_empty())
+            .map(|tool| runtime::mcp_tool_name(server, tool))
+        })
+    })
+}
+
+fn patch_tool_use_name(
+    pending: &mut [ContentBlock],
+    messages: &mut [ConversationMessage],
+    id: &str,
+    new_name: &str,
+) {
+    let blocks = pending
+        .iter_mut()
+        .chain(messages.iter_mut().flat_map(|m| m.blocks.iter_mut()));
+    for block in blocks {
+        if let ContentBlock::ToolUse { id: bid, name, .. } = block {
+            if bid == id {
+                *name = new_name.to_string();
+                return;
+            }
+        }
+    }
 }
 
 fn meta_flag(meta: Option<&serde_json::Map<String, Value>>, key: &str) -> bool {

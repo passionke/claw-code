@@ -9,6 +9,7 @@ pub mod mapper;
 pub mod mcp_proxy;
 pub mod profile;
 pub mod projection;
+pub mod reaper;
 pub mod state;
 pub mod task;
 pub mod turn_context;

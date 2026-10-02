@@ -16,6 +16,7 @@ Author: kejiqing
 - 每个引擎一个固定的 bin，不接受 `--engine` 参数：`neuro-opencode`、`neuro-appserver`。
 - 执行环境与 claw 相同（`deploy/e2b/e2b_exec.py`）：`cwd = HOME = /claw_sessions/{seg}`，`CLAW_PROJECT_CONFIG_ROOT=/claw_ds/project_home_def`。
 - 一次 exec 只跑一轮：spawn 引擎子进程，经 stdio 走 ACP JSON-RPC，本轮结束后关闭子进程。
+- 进程回收：solve 进程启动时设为 child subreaper（`PR_SET_CHILD_SUBREAPER`），引擎的孤儿进程（codex、mcp-proxy 等）都过继给它。本轮结束后 ACP 客户端会 SIGKILL 整个引擎进程组，solve 进程随后 `waitpid` 回收全部子进程再退出（`src/reaper.rs`）。2 秒内仍有存活子进程（说明有进程脱离了进程组）时，向 stderr 输出告警。不做这一步时，孤儿会过继给沙箱 1 号进程 `envd`，而 envd 不回收，每轮留下约 4 个僵尸进程。
 - gateway 的布局和命名本期不动：`.claw/`、`CLAW_*`、`__CLAW_GATEWAY_STDOUT__`、`clawExitCode` 全部沿用。
 
 ## 2. 输入
@@ -103,7 +104,15 @@ stdout 中以 `__CLAW_GATEWAY_STDOUT__` 开头的行是结构化事件，其他�
   - user：`build_user_turn_message(prompt, attachments)`，与 claw 相同。
   - assistant：`text`、`tool_use{id, name, input}`；本轮的 `usage` 挂在最后一条 assistant 消息上。
   - tool：`tool_result{tool_use_id, tool_name, output, is_error}`。不能用 user 角色，否则 gateway 的 `turn_message_groups_from_jsonl_contents` 会错误切分轮次。
+  - 工具名：MCP 工具统一写成 claw 的 `mcp__<server>__<tool>`（`runtime::mcp_tool_name`）。Codex 从输入里的 `server`、`tool` 取；opencode 去掉引擎前缀（`<server>_`）。`tool.start`、`tool.end`、transcript 和 solve timing 用同一个名字。其他工具保留引擎原名。
 - 引擎自己的会话状态（opencode 的 sqlite、Codex 的 rollout 和 sqlite）只用于续接，不作为 gateway 的数据源。
+
+### 4.1 耗时与进度文件
+
+与 claw `gateway-solve-once` 写同样的文件，gateway 读回后供 timeline、tools 和进度接口使用：
+
+- `.claw/solve-timing-events.ndjson`：每轮先清空，再写 `bootstrap_worker_entered`、`turn_started`、每个工具的 `tool_execution_started` / `tool_execution_finished`（`toolUseId`、`toolName`、`durationMs`、`isError`，来自 ACP tool_call 事件），成功结束时写 `turn_completed`。ACP 不暴露单次 LLM 调用的边界，所以没有 `llm_stream_*`，LLM 耗时以 tap 为准。
+- `.claw/task-progress.json`、`.claw/progress-events.ndjson`：每轮重置；mcp-proxy 在 `tools/call` 里按 claw 的同一规则（`should_emit_tool_progress_event`，即查询类 MCP 工具）写 `mcp_tool_started`，并收集实体名映射。
 
 ## 5. 读写范围
 

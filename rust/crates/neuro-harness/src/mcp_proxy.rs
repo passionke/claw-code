@@ -5,6 +5,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use gateway_solve_turn::entity_labels::ingest_entity_labels_from_mcp_response;
+use gateway_solve_turn::{record_mcp_tool_started, should_emit_tool_progress_event};
 use runtime::{build_mcp_call_meta, ConfigLoader, McpServerManager};
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -137,8 +139,23 @@ impl Proxy {
             .get(&name)
             .cloned()
             .ok_or((-32602, format!("unknown tool {name}")))?;
-        let meta = merge_meta(params.get("_meta"), &self.gateway_meta()?);
+        let ctx = read_turn_context(&self.session_root).map_err(|e| (-32603, e))?;
+        let meta = merge_meta(
+            params.get("_meta"),
+            &build_mcp_call_meta(&ctx.to_mcp_call_context()),
+        );
         let args = params.get("arguments").cloned();
+        let progress_args = args.clone().unwrap_or_else(|| json!({}));
+        // Same rule and files as claw `call_runtime_mcp_tool` (gateway progress + tools window).
+        let emit = should_emit_tool_progress_event(&qualified, true, Some(&progress_args));
+        if emit {
+            let _ = record_mcp_tool_started(
+                &self.session_root,
+                &ctx.session_id,
+                ctx.extra_session.as_ref(),
+                &progress_args,
+            );
+        }
         match self.manager.call_tool(&qualified, args, Some(meta)).await {
             Ok(resp) => {
                 if let Some(err) = resp.error {
@@ -147,6 +164,15 @@ impl Proxy {
                 let result = resp.result.map_or(Value::Null, |r| {
                     serde_json::to_value(r).unwrap_or(Value::Null)
                 });
+                if emit {
+                    let _ = ingest_entity_labels_from_mcp_response(
+                        &self.session_root,
+                        ctx.extra_session.as_ref(),
+                        &progress_args,
+                        &result.to_string(),
+                        false,
+                    );
+                }
                 Ok(strip_nulls(result))
             }
             Err(e) => Ok(json!({
@@ -154,11 +180,6 @@ impl Proxy {
                 "isError": true,
             })),
         }
-    }
-
-    fn gateway_meta(&self) -> Result<Value, (i64, String)> {
-        let ctx = read_turn_context(&self.session_root).map_err(|e| (-32603, e))?;
-        Ok(build_mcp_call_meta(&ctx.to_mcp_call_context()))
     }
 }
 

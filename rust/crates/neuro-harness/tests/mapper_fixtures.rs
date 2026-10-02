@@ -89,11 +89,11 @@ fn opencode_mcp_tool_turn() {
     // pending tool_call with empty rawInput does not start; in_progress with input does.
     assert_eq!(
         starts(&events),
-        vec![("probe_echo_meta", "mcp", r#"{"note":"spike"}"#)]
+        vec![("mcp__probe__echo_meta", "mcp", r#"{"note":"spike"}"#)]
     );
     assert_eq!(
         ends(&events),
-        vec![("probe_echo_meta", true, "meta_keys=progressToken")]
+        vec![("mcp__probe__echo_meta", true, "meta_keys=progressToken")]
     );
     assert_eq!(t.message, "TOOL_RESULT_SEEN: meta_keys=progressToken");
     assert_eq!(t.tool_calls, 1);
@@ -109,7 +109,7 @@ fn opencode_mcp_tool_turn() {
     );
     assert!(matches!(
         &t.messages[0].blocks[..],
-        [ContentBlock::ToolUse { name, input, .. }] if name == "probe_echo_meta" && input == r#"{"note":"spike"}"#
+        [ContentBlock::ToolUse { name, input, .. }] if name == "mcp__probe__echo_meta" && input == r#"{"note":"spike"}"#
     ));
     assert!(matches!(
         &t.messages[1].blocks[..],
@@ -126,7 +126,7 @@ fn appserver_mcp_tool_turn_uses_meta_flag_and_raw_output() {
     // codex reports MCP calls as `execute`; `_meta.is_mcp_tool_call` wins.
     let s = starts(&events);
     assert_eq!(s.len(), 1);
-    assert_eq!((s[0].0, s[0].1), ("mcp.probe.echo_meta", "mcp"));
+    assert_eq!((s[0].0, s[0].1), ("mcp__probe__echo_meta", "mcp"));
     let e = ends(&events);
     assert_eq!(e.len(), 1);
     assert!(e[0].1);
