@@ -24,6 +24,7 @@ from e2b_template_registry import (
     template_apt_prepare_prefix,
     template_debian_base_image,
 )
+from registry_extract import try_image_digest
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
@@ -200,6 +201,8 @@ def main() -> int:
                 "buildId": build.build_id,
                 "contentHash": content_digest,
                 "alias": alias,
+                "imageRef": base_image,
+                "imageDigest": try_image_digest(base_image),
                 "updatedAtMs": now_ms,
             },
             now_ms=now_ms,

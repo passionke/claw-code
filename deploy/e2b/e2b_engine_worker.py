@@ -27,7 +27,7 @@ from e2b_template_registry import (
     template_debian_base_image,
     template_image_prefix,
 )
-from registry_extract import extract_paths_from_image
+from registry_extract import extract_paths_from_image, try_image_digest
 
 ENGINES: dict[str, dict[str, object]] = {
     "opencode": {
@@ -184,6 +184,8 @@ def build(engine: str) -> int:
             "buildId": build_result.build_id,
             "contentHash": content_digest,
             "alias": alias,
+            "imageRef": image,
+            "imageDigest": try_image_digest(image, platform=platform),
             "updatedAtMs": now_ms,
         },
         now_ms=now_ms,

@@ -25,7 +25,7 @@ from e2b_template_registry import (
     template_gateway_worker_image,
 )
 from e2b_template_build import build_template_with_retry
-from registry_extract import extract_file_from_image
+from registry_extract import extract_file_from_image, try_image_digest
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
@@ -409,6 +409,8 @@ def main() -> int:
         )
     else:
         try:
+            # Source image the worker template is derived from (CI/ACR worker tag).
+            source_image = _worker_base_image()
             merge_settings_json_key(
                 "e2bWorker",
                 {
@@ -416,6 +418,8 @@ def main() -> int:
                     "buildId": build.build_id,
                     "contentHash": content_digest,
                     "alias": alias,
+                    "imageRef": source_image,
+                    "imageDigest": try_image_digest(source_image, platform=_template_platform()),
                     "updatedAtMs": now_ms,
                 },
                 now_ms=now_ms,
