@@ -20,9 +20,8 @@ permissions:
 
 env:
   CLAW_CONTAINER_RUNTIME: docker
-  CLAW_USE_CN_CRATES_MIRROR: "1"
-  CLAW_USE_CN_RUST_MIRROR: "1"
-  CLAW_USE_CN_APT_MIRROR: "1"
+  # Unified region switch: china → CN apt/cargo/rust mirrors; else → international. Author: kejiqing
+  REGION: china
 
 jobs:
   resolve-tag:
@@ -109,9 +108,12 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.base_images.outputs.rust_image_tag }}"
+          # shellcheck source=/dev/null
+          source deploy/stack/lib/claw-region.sh
+          claw_apply_region_defaults
           ./deploy/stack/lib/container-build.sh docker deploy/stack/Containerfile.rust-compile \
             --build-arg "RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}" \
-            --build-arg "CLAW_USE_CN_APT_MIRROR=1" \
+            --build-arg "CLAW_USE_CN_APT_MIRROR=${CLAW_USE_CN_APT_MIRROR:-0}" \
             -t "claw-rust-compile:${TAG}"
 
       - name: Push claw-rust-compile → ACR
@@ -270,8 +272,12 @@ jobs:
           BRANCH_TAG: ${{ needs.resolve-tag.outputs.branch_tag }}
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source deploy/stack/lib/claw-region.sh
+          claw_apply_region_defaults
           ./deploy/stack/lib/container-build.sh docker "${{ matrix.dockerfile }}" \
             --build-arg "DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}" \
+            --build-arg "CLAW_USE_CN_APT_MIRROR=${CLAW_USE_CN_APT_MIRROR:-0}" \
             -t "${PACKAGE}:${BRANCH_TAG}"
 
       - name: Push ${{ matrix.package }} → ACR
@@ -300,9 +306,6 @@ jobs:
       - build-and-push
     runs-on: [self-hosted, home-ubt]
     environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
-    env:
-      # home-ubt is in China: claw_npm_registry → registry.npmmirror.com
-      region: china
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -343,10 +346,14 @@ jobs:
           CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source deploy/stack/lib/claw-region.sh
+          claw_apply_region_defaults
           STRICT="${PREFIX}/claw-gateway-worker:${BRANCH_TAG}"
           docker pull "${STRICT}"
           ./deploy/stack/lib/container-build.sh docker deploy/stack/Containerfile.gateway-worker-relaxed \
             --build-arg "WORKER_BASE_IMAGE=${STRICT}" \
+            --build-arg "CLAW_USE_CN_APT_MIRROR=${CLAW_USE_CN_APT_MIRROR:-0}" \
             -t "claw-gateway-worker-relaxed:${BRANCH_TAG}"
           CONTAINER_BASE_REGISTRY="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}" \
             bash deploy/neuro-harness/build-worker-images.sh "${STRICT}" "${BRANCH_TAG}"
