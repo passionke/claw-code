@@ -87,7 +87,13 @@ def _acr_login_if_needed(image_ref: str) -> None:
 
 
 def _tap_base_image() -> str:
-    return template_claude_tap_image()
+    tap = template_claude_tap_image()
+    if not tap:
+        raise SystemExit(
+            "error: CLAUDE_TAP_IMAGE is required — observe version is a setting, "
+            "no hardcoded tag (set CLAUDE_TAP_IMAGE or use the Admin publish-observe flow)"
+        )
+    return tap
 
 
 def _worker_release_tag() -> str:

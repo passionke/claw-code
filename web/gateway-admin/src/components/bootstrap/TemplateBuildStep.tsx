@@ -46,6 +46,12 @@ export default function TemplateBuildStep({
   const [tagsMeta, setTagsMeta] = useState<BootstrapCiImageTagsResponse | null>(null);
   const [tagsLoadError, setTagsLoadError] = useState<string | null>(null);
 
+  // Observe is decoupled: publish it first from a claw-tap tag, then the worker/others. Author: kejiqing
+  const [tapTagForm] = Form.useForm<{ tapImageTag: string }>();
+  const [tapTagOptions, setTapTagOptions] = useState<{ value: string; label: string }[]>([]);
+  const [tapTagsLoading, setTapTagsLoading] = useState(false);
+  const [publishingObserve, setPublishingObserve] = useState(false);
+
   const job: BootstrapPublishJob | undefined = snap.publishJob;
   const jobRunning = job?.phase === "running";
   const templatesOk =
@@ -101,6 +107,54 @@ export default function TemplateBuildStep({
   useEffect(() => {
     void loadTags();
   }, [loadTags]);
+
+  const loadTapTags = useCallback(async () => {
+    if (!gatewayBase) return;
+    setTapTagsLoading(true);
+    try {
+      const data = await proxyHttp<BootstrapCiImageTagsResponse>(
+        gatewayBase,
+        "GET",
+        "/v1/gateway/bootstrap/ci-image-tags?imageName=claw-tap"
+      );
+      setTapTagOptions(data.tags.map((t) => ({ value: t, label: t })));
+      const current = tapTagForm.getFieldValue("tapImageTag") as string | undefined;
+      const pick = (current && current.trim()) || data.suggestedTag || data.tags[0];
+      if (pick) tapTagForm.setFieldsValue({ tapImageTag: pick });
+    } catch (e) {
+      message.warning(`拉取 claw-tap tag 清单失败（仍可手填）：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setTapTagsLoading(false);
+    }
+  }, [gatewayBase, tapTagForm]);
+
+  useEffect(() => {
+    void loadTapTags();
+  }, [loadTapTags]);
+
+  const publishObserve = async () => {
+    if (!gatewayBase) return;
+    const { tapImageTag } = await tapTagForm.validateFields();
+    setPublishingObserve(true);
+    try {
+      const resp = await proxyHttp<BootstrapPublishTemplatesResponse>(
+        gatewayBase,
+        "POST",
+        "/v1/gateway/bootstrap/publish-observe-templates",
+        { tapImageTag: tapImageTag.trim() }
+      );
+      if (resp.accepted) {
+        message.success("observe 已受理发布；完成后在「核心组件」重置 observe 生效");
+      } else {
+        message.warning(resp.message ?? "未受理（可能已有任务在跑）");
+      }
+      await onRefresh();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "受理失败");
+    } finally {
+      setPublishingObserve(false);
+    }
+  };
 
   // Progress is polled via parent refresh; extra tick while job runs. Author: kejiqing
   useEffect(() => {
@@ -158,6 +212,59 @@ export default function TemplateBuildStep({
           Tag 可从清单选，也可直接手填。
         </Typography.Paragraph>
       )}
+
+      <Alert
+        type="info"
+        showIcon
+        message="第一步：observe（claw-tap 版本）"
+        description="observe 与 worker 解耦，先选 claw-tap 版本单独打 observe；第二步再选 worker tag 打其余模板。"
+      />
+      <Form form={tapTagForm} layout="inline" style={{ gap: 8 }}>
+        <Form.Item
+          name="tapImageTag"
+          label="claw-tap 版本"
+          rules={[{ required: true, message: "请选择或手填 claw-tap tag" }]}
+        >
+          <AutoComplete
+            options={tapTagOptions}
+            placeholder={tapTagsLoading ? "加载 claw-tap tag…" : "选择或手填 claw-tap tag"}
+            style={{ width: 240 }}
+            disabled={jobRunning || publishingObserve}
+            filterOption={(input, option) =>
+              (option?.value ?? "")
+                .toString()
+                .toLowerCase()
+                .includes(input.trim().toLowerCase())
+            }
+          />
+        </Form.Item>
+        <Form.Item>
+          <Button
+            loading={tapTagsLoading}
+            disabled={jobRunning || publishingObserve}
+            onClick={() => void loadTapTags()}
+          >
+            刷新
+          </Button>
+        </Form.Item>
+        <Form.Item>
+          <Button
+            type="primary"
+            loading={publishingObserve}
+            disabled={jobRunning}
+            onClick={() => void publishObserve()}
+          >
+            发布 observe
+          </Button>
+        </Form.Item>
+      </Form>
+
+      <Alert
+        type="info"
+        showIcon
+        message="第二步：worker / 其余模板"
+        description="选或手填 worker CI/镜像 tag，重打 worker / relaxed / nas-api / opencode / appserver。"
+      />
 
       {tagsMeta ? (
         <Typography.Text type="secondary">

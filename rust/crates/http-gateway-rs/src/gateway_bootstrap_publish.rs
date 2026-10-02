@@ -57,6 +57,13 @@ pub struct BootstrapPublishTemplatesInput {
     pub image_tag: String,
 }
 
+/// Publish only the observe template from a claw-tap image tag (observe is decoupled from worker).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct BootstrapPublishObserveInput {
+    #[serde(rename = "tapImageTag")]
+    pub tap_image_tag: String,
+}
+
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BootstrapPublishTemplatesResponse {
     pub accepted: bool,
@@ -76,6 +83,14 @@ pub struct BootstrapCiImageTagsResponse {
     pub suggested_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+/// Optional image name override for `GET /v1/gateway/bootstrap/ci-image-tags`. Author: kejiqing
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct BootstrapCiImageTagsQuery {
+    #[serde(rename = "imageName", default)]
+    pub image_name: Option<String>,
 }
 
 struct PublishState {
@@ -158,6 +173,18 @@ fn resolve_publish_script() -> Result<PathBuf, String> {
     Ok(script)
 }
 
+/// Observe-only publish script (observe is decoupled from worker, built from a claw-tap tag).
+fn resolve_observe_publish_script() -> Result<PathBuf, String> {
+    let root = resolve_bootstrap_repo_root().ok_or_else(|| {
+        "CLAW_REPO_ROOT / deploy .env not found — cannot locate publish script".to_string()
+    })?;
+    let script = root.join("deploy/e2b/bootstrap-observe-from-tap-tag.sh");
+    if !script.is_file() {
+        return Err(format!("missing publish script: {}", script.display()));
+    }
+    Ok(script)
+}
+
 /// Start async publish; returns immediately. Poll `current_publish_job` / bootstrap status.
 /// Rejects if a job is already running. Author: kejiqing
 pub fn start_publish_templates(
@@ -200,7 +227,7 @@ pub fn start_publish_templates(
     let tag_spawn = tag.clone();
     tokio::spawn(async move {
         let outcome =
-            run_publish_script(script_arc.as_path(), repo_arc.as_path(), &tag_spawn).await;
+            run_publish_script(script_arc.as_path(), repo_arc.as_path(), &tag_spawn, &[]).await;
         let Ok(mut guard) = publish_state().lock() else {
             return;
         };
@@ -238,10 +265,97 @@ pub fn start_publish_templates(
     })
 }
 
+/// Start async observe-only publish from a claw-tap tag; returns immediately. Author: kejiqing
+pub fn start_publish_observe_templates(
+    input: &BootstrapPublishObserveInput,
+) -> Result<BootstrapPublishTemplatesResponse, String> {
+    let tag = input.tap_image_tag.trim().to_string();
+    if tag.is_empty() {
+        return Err("tapImageTag is required (e.g. v0.1.0)".into());
+    }
+    if tag.contains('/') || tag.contains(' ') || tag.contains('\n') {
+        return Err("tapImageTag must be a bare tag (no registry path or whitespace)".into());
+    }
+    let script = resolve_observe_publish_script()?;
+    let repo = resolve_bootstrap_repo_root().ok_or_else(|| "repo root missing".to_string())?;
+
+    {
+        let mut guard = publish_state()
+            .lock()
+            .map_err(|_| "publish state lock poisoned".to_string())?;
+        if guard.running {
+            return Ok(BootstrapPublishTemplatesResponse {
+                accepted: false,
+                job: guard.job.clone(),
+                message: Some("publish already running".into()),
+            });
+        }
+        guard.running = true;
+        guard.job = BootstrapPublishJob {
+            phase: BootstrapPublishPhase::Running,
+            image_tag: Some(tag.clone()),
+            started_at_ms: Some(now_ms()),
+            finished_at_ms: None,
+            message: Some(format!("publishing observe template from {tag}")),
+            log_tail: vec![format!("==> start observe tag={tag}")],
+        };
+    }
+
+    let script_arc = Arc::new(script);
+    let repo_arc = Arc::new(repo);
+    let tag_spawn = tag.clone();
+    let prefix = resolve_ci_image_prefix();
+    tokio::spawn(async move {
+        let image_ref = format!("{prefix}/claw-tap:{tag_spawn}");
+        let outcome = run_publish_script(
+            script_arc.as_path(),
+            repo_arc.as_path(),
+            &tag_spawn,
+            &[("CLAUDE_TAP_IMAGE", image_ref.clone())],
+        )
+        .await;
+        let Ok(mut guard) = publish_state().lock() else {
+            return;
+        };
+        guard.running = false;
+        guard.job.finished_at_ms = Some(now_ms());
+        match outcome {
+            Ok(()) => {
+                guard.job.phase = BootstrapPublishPhase::Succeeded;
+                guard.job.message = Some(format!("observe template published from {tag_spawn}"));
+                push_log(&mut guard.job, "==> succeeded".into());
+                info!(
+                    target: "claw_gateway_bootstrap",
+                    tag = %tag_spawn,
+                    "observe template publish succeeded"
+                );
+            }
+            Err(err) => {
+                guard.job.phase = BootstrapPublishPhase::Failed;
+                guard.job.message = Some(err.clone());
+                push_log(&mut guard.job, format!("==> failed: {err}"));
+                warn!(
+                    target: "claw_gateway_bootstrap",
+                    tag = %tag_spawn,
+                    error = %err,
+                    "observe template publish failed"
+                );
+            }
+        }
+    });
+
+    Ok(BootstrapPublishTemplatesResponse {
+        accepted: true,
+        job: current_publish_job(),
+        message: Some("observe publish started".into()),
+    })
+}
+
 async fn run_publish_script(
     script: &std::path::Path,
     repo: &std::path::Path,
     tag: &str,
+    extra_env: &[(&str, String)],
 ) -> Result<(), String> {
     let art = std::env::var("CLAW_BOOTSTRAP_ARTIFACT_DIR")
         .ok()
@@ -264,6 +378,9 @@ async fn run_publish_script(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
 
     // Forward region / CN flags so bootstrap pip mirror does not depend only on
     // sourcing repo .env inside the child (compose often has CLAW_E2B_CN only).
@@ -579,11 +696,16 @@ fn sort_ci_tags(mut tags: Vec<String>) -> Vec<String> {
     tags
 }
 
-/// List CI/ACR tags for claw-gateway-worker (bootstrap dropdown). Author: kejiqing
-pub async fn list_ci_image_tags() -> Result<BootstrapCiImageTagsResponse, String> {
+/// List CI/ACR tags for an image name (default `claw-gateway-worker`). Author: kejiqing
+pub async fn list_ci_image_tags_for(
+    image_name: &str,
+) -> Result<BootstrapCiImageTagsResponse, String> {
     let prefix = resolve_ci_image_prefix();
-    let image_name = env_nonempty("CLAW_BOOTSTRAP_CI_IMAGE_NAME")
-        .unwrap_or_else(|| "claw-gateway-worker".into());
+    let image_name = if image_name.trim().is_empty() {
+        env_nonempty("CLAW_BOOTSTRAP_CI_IMAGE_NAME").unwrap_or_else(|| "claw-gateway-worker".into())
+    } else {
+        image_name.trim().to_string()
+    };
     let (registry_host, repository) = split_registry_repo(&prefix, &image_name)?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))

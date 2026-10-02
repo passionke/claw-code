@@ -31,6 +31,7 @@ GET	/v1/gateway/bootstrap/ci-image-tags	get_gateway_bootstrap_ci_image_tags_hand
 POST	/v1/gateway/bootstrap/complete	post_gateway_bootstrap_complete_handler
 POST	/v1/gateway/bootstrap/ensure-core	post_gateway_bootstrap_ensure_core_handler
 GET	/v1/gateway/bootstrap/env-snapshot	get_gateway_bootstrap_env_snapshot_handler
+POST	/v1/gateway/bootstrap/publish-observe-templates	post_gateway_bootstrap_publish_observe_templates_handler
 GET	/v1/gateway/bootstrap/publish-templates	get_gateway_bootstrap_publish_templates_handler
 POST	/v1/gateway/bootstrap/publish-templates	post_gateway_bootstrap_publish_templates_handler
 POST	/v1/gateway/bootstrap/reopen	post_gateway_bootstrap_reopen_handler
@@ -44,6 +45,7 @@ POST	/v1/gateway/global-settings/admin-mcp-tokens	issue_gateway_admin_mcp_token_
 DELETE	/v1/gateway/global-settings/admin-mcp-tokens/{token_id}	revoke_gateway_admin_mcp_token_handler
 PUT	/v1/gateway/global-settings/claw-tap	put_gateway_claw_tap_handler
 POST	/v1/gateway/global-settings/claw-tap/probe	probe_gateway_claw_tap_handler
+PUT	/v1/gateway/global-settings/e2b-observe	put_gateway_e2b_observe_settings_handler
 PUT	/v1/gateway/global-settings/e2b-singleton-templates	put_gateway_e2b_singleton_templates_handler
 GET	/v1/gateway/global-settings/e2b-singletons	get_gateway_e2b_singletons_handler
 POST	/v1/gateway/global-settings/e2b-singletons/{component}/ensure	ensure_gateway_e2b_singleton_handler
@@ -154,6 +156,7 @@ POST	/v1/sessions/{session_id}/turns/{turn_id}/ask-user-answer	post_ask_user_ans
 POST	/v1/sessions/{session_id}/turns/{turn_id}/cancel	cancel_session_turn
 GET	/v1/sessions/{session_id}/turns/{turn_id}/timeline	get_turn_timeline
 GET	/v1/sessions/{session_id}/turns/{turn_id}/tools	get_turn_tools
+GET	/v1/sessions/{session_id}/turns/{turn_id}/usage	get_turn_usage
 GET	/v1/skills/{proj_id}	list_proj_skills
 GET	/v1/skills/{proj_id}/{skill_name}	get_proj_skill
 POST	/v1/solve	solve

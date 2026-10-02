@@ -137,6 +137,7 @@ mod tests {
     fn observe_missing_live() -> E2bObserveSettingsPublic {
         E2bObserveSettingsPublic {
             template_id: None,
+            tap_image_tag: None,
             build_id: None,
             image_ref: None,
             image_digest: None,
@@ -225,6 +226,7 @@ mod tests {
         };
         let obs = E2bObserveSettingsPublic {
             template_id: None,
+            tap_image_tag: None,
             build_id: None,
             image_ref: None,
             image_digest: None,

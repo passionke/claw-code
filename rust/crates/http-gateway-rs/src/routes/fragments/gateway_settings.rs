@@ -240,6 +240,28 @@ pub(crate) async fn put_gateway_e2b_worker_settings_handler(
 
 #[utoipa::path(
     put,
+    path = "/v1/gateway/global-settings/e2b-observe",
+    tag = "Gateway Settings",
+    operation_id = "put_gateway_e2b_observe_settings_handler",
+    summary = "Update e2b observe template id / claw-tap image tag",
+    request_body = gateway_e2b_observe_settings::PutE2bObserveSettingsInput,
+    responses(
+        (status = 200, description = "Updated observe settings", body = gateway_e2b_observe_settings::E2bObserveSettingsPublic),
+        (status = 400, description = "Invalid input")
+    )
+)]
+pub(crate) async fn put_gateway_e2b_observe_settings_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_e2b_observe_settings::PutE2bObserveSettingsInput>,
+) -> Result<Json<gateway_e2b_observe_settings::E2bObserveSettingsPublic>, ApiError> {
+    let body = gateway_e2b_observe_settings::put_e2b_observe_settings(&state.session_db, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(body))
+}
+
+#[utoipa::path(
+    put,
     path = "/v1/gateway/global-settings/claw-tap",
     tag = "Gateway Settings",
     operation_id = "put_gateway_claw_tap_handler",

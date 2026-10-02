@@ -7,6 +7,7 @@ use std::time::Duration;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use utoipa::ToSchema;
 
 /// Same ceiling as session file upload. Author: kejiqing
 const COMPAT_IMAGE_MAX_BYTES: usize = 100 * 1024 * 1024;
@@ -893,6 +894,133 @@ pub fn responses_usage_from_rows(
     (usage, by_model)
 }
 
+/// Per-request usage detail for the turn usage endpoint. Author: kejiqing
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnUsageRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    pub model_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_creation_input_tokens: u32,
+    pub cache_read_input_tokens: u32,
+    pub source: String,
+}
+
+impl From<&crate::session_db::TurnModelUsageRow> for TurnUsageRequest {
+    fn from(r: &crate::session_db::TurnModelUsageRow) -> Self {
+        Self {
+            base_url: r.base_url.clone(),
+            model_id: r.model.clone(),
+            provider: r.provider.clone(),
+            input_tokens: r.input_tokens,
+            output_tokens: r.output_tokens,
+            cache_creation_input_tokens: r.cache_creation_input_tokens,
+            cache_read_input_tokens: r.cache_read_input_tokens,
+            source: r.source.clone(),
+        }
+    }
+}
+
+/// Turn-level usage aggregate + per-request detail. Author: kejiqing
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnUsageSummary {
+    pub request_count: u64,
+    #[schema(value_type = Object)]
+    pub usage: Value,
+    #[schema(value_type = Object)]
+    pub usage_by_model: Option<Value>,
+    pub requests: Vec<TurnUsageRequest>,
+}
+
+/// Build a turn-level usage aggregate from raw `gateway_model_usage` rows. Author: kejiqing
+///
+/// `usage`/`usage_by_model` reuse [`openai_usage_from_rows`] (cache read is folded into
+/// prompt tokens); empty rows yield `usage = null`, `usage_by_model = None`, `request_count = 0`.
+#[must_use]
+pub fn build_turn_usage_summary(rows: &[crate::session_db::TurnModelUsageRow]) -> TurnUsageSummary {
+    let request_count = u64::try_from(rows.len()).unwrap_or(0);
+    let (usage, usage_by_model) = openai_usage_from_rows(rows);
+    let requests = rows.iter().map(TurnUsageRequest::from).collect();
+    TurnUsageSummary {
+        request_count,
+        usage,
+        usage_by_model,
+        requests,
+    }
+}
+
+/// Turn-level usage aggregate without per-request detail (for the `/turns` list). Author: kejiqing
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnUsageAggregate {
+    pub request_count: u64,
+    #[schema(value_type = Object)]
+    pub usage: Value,
+    #[schema(value_type = Object)]
+    pub usage_by_model: Option<Value>,
+}
+
+/// Build a per-turn usage aggregate from grouped summary rows (across models within a turn).
+///
+/// Same cache-into-input semantics as [`openai_usage_from_rows`]. Author: kejiqing
+#[must_use]
+pub fn build_turn_usage_aggregate(
+    rows: &[crate::session_db::TurnModelUsageSummaryRow],
+) -> TurnUsageAggregate {
+    if rows.is_empty() {
+        return TurnUsageAggregate {
+            request_count: 0,
+            usage: Value::Null,
+            usage_by_model: None,
+        };
+    }
+    let mut by_model: BTreeMap<String, (u64, u64, u64, u64)> = BTreeMap::new();
+    let mut request_count = 0u64;
+    for row in rows {
+        request_count = request_count.saturating_add(row.request_count);
+        let entry = by_model.entry(row.model.clone()).or_default();
+        entry.0 = entry.0.saturating_add(row.input_tokens);
+        entry.1 = entry.1.saturating_add(row.output_tokens);
+        entry.2 = entry.2.saturating_add(row.cache_creation_input_tokens);
+        entry.3 = entry.3.saturating_add(row.cache_read_input_tokens);
+    }
+    let mut prompt_tokens = 0u64;
+    let mut completion_tokens = 0u64;
+    let mut cached_tokens = 0u64;
+    let mut usage_by_model = Vec::new();
+    for (model, (input, output, cache_create, cache_read)) in &by_model {
+        let model_prompt = input
+            .saturating_add(*cache_create)
+            .saturating_add(*cache_read);
+        prompt_tokens = prompt_tokens.saturating_add(model_prompt);
+        completion_tokens = completion_tokens.saturating_add(*output);
+        cached_tokens = cached_tokens.saturating_add(*cache_read);
+        usage_by_model.push(json!({
+            "model": model,
+            "prompt_tokens": model_prompt,
+            "completion_tokens": output,
+            "total_tokens": model_prompt.saturating_add(*output),
+            "prompt_tokens_details": { "cached_tokens": cache_read }
+        }));
+    }
+    let usage = json!({
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens.saturating_add(completion_tokens),
+        "prompt_tokens_details": { "cached_tokens": cached_tokens }
+    });
+    TurnUsageAggregate {
+        request_count,
+        usage,
+        usage_by_model: Some(Value::Array(usage_by_model)),
+    }
+}
+
 pub fn extract_solve_message(output_json: Option<&Value>, output_text: &str) -> String {
     if let Some(v) = output_json {
         if let Some(msg) = v.get("message").and_then(Value::as_str) {
@@ -979,6 +1107,7 @@ mod tests {
             TurnModelUsageRow {
                 provider: Some("openai".into()),
                 model: "m1".into(),
+                base_url: Some("https://api.openai.com".into()),
                 input_tokens: 10,
                 output_tokens: 5,
                 cache_creation_input_tokens: 2,
@@ -988,6 +1117,7 @@ mod tests {
             TurnModelUsageRow {
                 provider: Some("openai".into()),
                 model: "m1".into(),
+                base_url: Some("https://api.openai.com".into()),
                 input_tokens: 1,
                 output_tokens: 1,
                 cache_creation_input_tokens: 0,
@@ -997,6 +1127,7 @@ mod tests {
             TurnModelUsageRow {
                 provider: Some("anthropic".into()),
                 model: "m2".into(),
+                base_url: Some("https://api.anthropic.com".into()),
                 input_tokens: 100,
                 output_tokens: 20,
                 cache_creation_input_tokens: 0,
@@ -1016,6 +1147,116 @@ mod tests {
         assert_eq!(arr[0]["prompt_tokens"], 16);
         assert_eq!(arr[1]["model"], "m2");
         assert_eq!(arr[1]["prompt_tokens"], 107);
+    }
+
+    fn usage_row(
+        model: &str,
+        base_url: Option<&str>,
+        input: u32,
+        output: u32,
+        cache_create: u32,
+        cache_read: u32,
+    ) -> crate::session_db::TurnModelUsageRow {
+        crate::session_db::TurnModelUsageRow {
+            provider: Some(if model.starts_with('m') {
+                "openai".into()
+            } else {
+                "anthropic".into()
+            }),
+            model: model.to_string(),
+            base_url: base_url.map(str::to_string),
+            input_tokens: input,
+            output_tokens: output,
+            cache_creation_input_tokens: cache_create,
+            cache_read_input_tokens: cache_read,
+            source: "tap".into(),
+        }
+    }
+
+    #[test]
+    fn turn_usage_empty_is_null() {
+        let summary = build_turn_usage_summary(&[]);
+        assert_eq!(summary.request_count, 0);
+        assert!(summary.usage.is_null());
+        assert!(summary.usage_by_model.is_none());
+        assert!(summary.requests.is_empty());
+    }
+
+    #[test]
+    fn turn_usage_single_row() {
+        let rows = vec![usage_row("m1", None, 10, 5, 2, 3)];
+        let summary = build_turn_usage_summary(&rows);
+        assert_eq!(summary.request_count, 1);
+        assert_eq!(summary.requests.len(), 1);
+        assert_eq!(summary.usage["prompt_tokens"], 15); // 10 + 2 + 3
+        assert_eq!(summary.usage["completion_tokens"], 5);
+        assert_eq!(summary.usage["total_tokens"], 20);
+    }
+
+    #[test]
+    fn turn_usage_multi_model_breakdown() {
+        let rows = vec![
+            usage_row("m1", None, 10, 5, 2, 3),
+            usage_row("m2", None, 100, 20, 0, 7),
+        ];
+        let summary = build_turn_usage_summary(&rows);
+        assert_eq!(summary.request_count, 2);
+        let arr = summary
+            .usage_by_model
+            .expect("by model")
+            .as_array()
+            .cloned()
+            .unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(summary.usage["prompt_tokens"], 15 + 107);
+        assert_eq!(summary.usage["completion_tokens"], 25);
+    }
+
+    #[test]
+    fn turn_usage_request_count_is_rows_not_models() {
+        let rows = vec![
+            usage_row("m1", None, 1, 1, 0, 0),
+            usage_row("m1", None, 2, 2, 0, 0),
+            usage_row("m2", None, 3, 3, 0, 0),
+        ];
+        let summary = build_turn_usage_summary(&rows);
+        assert_eq!(summary.request_count, 3);
+        assert_eq!(summary.requests.len(), 3);
+        let arr = summary
+            .usage_by_model
+            .expect("by model")
+            .as_array()
+            .cloned()
+            .unwrap();
+        assert_eq!(arr.len(), 2);
+    }
+
+    #[test]
+    fn turn_usage_base_url_detail() {
+        let rows = vec![
+            usage_row("m1", Some("https://api.openai.com"), 1, 1, 0, 0),
+            usage_row("m1", None, 1, 1, 0, 0),
+        ];
+        let summary = build_turn_usage_summary(&rows);
+        assert_eq!(
+            summary.requests[0].base_url.as_deref(),
+            Some("https://api.openai.com")
+        );
+        assert!(summary.requests[1].base_url.is_none());
+    }
+
+    #[test]
+    fn turn_usage_cache_into_input() {
+        let rows = vec![usage_row("m2", None, 100, 20, 0, 7)];
+        let summary = build_turn_usage_summary(&rows);
+        let arr = summary
+            .usage_by_model
+            .expect("by model")
+            .as_array()
+            .cloned()
+            .unwrap();
+        assert_eq!(arr[0]["prompt_tokens"], 107); // 100 + 0 + 7
+        assert_eq!(arr[0]["prompt_tokens_details"]["cached_tokens"], 7);
     }
 
     const PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";

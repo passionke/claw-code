@@ -203,58 +203,6 @@ pub async fn reconcile_session_transcript_from_jsonl(
     Ok(imported)
 }
 
-fn insert_model_usage_from_solve_json(
-    _db: &GatewaySessionDb,
-    turn_id: &str,
-    output_json: &Value,
-    model: Option<&str>,
-    duration_ms: i64,
-) {
-    let model_name = output_json
-        .get("model")
-        .and_then(Value::as_str)
-        .or(model)
-        .unwrap_or("unknown");
-    let usage = output_json.get("usage");
-    let input_tokens = i32::try_from(
-        usage
-            .and_then(|u| u.get("input_tokens"))
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
-    )
-    .unwrap_or(i32::MAX);
-    let output_tokens = i32::try_from(
-        usage
-            .and_then(|u| u.get("output_tokens"))
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
-    )
-    .unwrap_or(i32::MAX);
-    let cache_creation = i32::try_from(
-        usage
-            .and_then(|u| u.get("cache_creation_input_tokens"))
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
-    )
-    .unwrap_or(i32::MAX);
-    let cache_read = i32::try_from(
-        usage
-            .and_then(|u| u.get("cache_read_input_tokens"))
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
-    )
-    .unwrap_or(i32::MAX);
-    let _ = (
-        turn_id,
-        model_name,
-        input_tokens,
-        output_tokens,
-        cache_creation,
-        cache_read,
-        duration_ms,
-    );
-}
-
 /// After solve: sync latest jsonl turn and persist turn result columns.
 pub async fn persist_turn_after_solve(
     pool: &PgPool,
@@ -267,8 +215,8 @@ pub async fn persist_turn_after_solve(
     claw_exit_code: i32,
     output_text: &str,
     output_json: Option<&Value>,
-    duration_ms: i64,
-    model: Option<&str>,
+    _duration_ms: i64,
+    _model: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let workspace_rel = format!("proj_{proj_id}");
     db.upsert_project(proj_id, &format!("proj_{proj_id}"), &workspace_rel)
@@ -306,10 +254,6 @@ pub async fn persist_turn_after_solve(
         has_report,
     )
     .await?;
-
-    if let Some(json) = output_json {
-        insert_model_usage_from_solve_json(db, turn_id, json, model, duration_ms);
-    }
 
     let _ = pool;
     let _ = session_home;

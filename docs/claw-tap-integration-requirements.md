@@ -168,12 +168,12 @@ Worker 出站 LLM 请求经 observe `:8080` 上的 tap。Gateway 在 worker env 
 **Tap 要求（账单真源）：**
 
 1. 转发上游前 **strip** `claw-turn-id`（与 strip session 头同层）。
-2. **仅当**请求带了非空 `claw-turn-id`：上游完成后解析 usage + model，**INSERT** `gateway_model_usage`（`source=tap`；列口径为 Anthropic 风格 `input` / `output` / `cache_*`）。
+2. **仅当**请求带了非空 `claw-turn-id`：上游完成后解析 usage + model + base_url，**INSERT** `gateway_model_usage`（`source=tap`；列口径为 Anthropic 风格 `input` / `output` / `cache_*`，`base_url` = 生效上游 LLM base URL，`provider` = 由请求路径推导的 `anthropic` | `openai`）。
 3. **缺 `claw-turn-id`**：代理照常，**不 INSERT、不报错**；不得猜 turn 或挂到上一轮 session。
 4. INSERT 失败只打 warn，**不阻断**代理响应。
-5. 解析 OpenAI（`prompt_tokens` / `completion_tokens` / `prompt_tokens_details.cached_tokens`）与 Anthropic（`input_tokens` / `output_tokens` / `cache_*`）。OpenAI 的 `prompt_tokens` 含 cached 时，落库须拆成 `input = prompt - cached`、`cache_read = cached`，以便 Gateway 再合成 `prompt = input + cache_creation + cache_read`。
+5. 解析 OpenAI（`prompt_tokens` / `completion_tokens` / `prompt_tokens_details.cached_tokens`）与 Anthropic（`input_tokens` / `output_tokens` / `cache_*`）。OpenAI 的 `prompt_tokens` 含 cached 时，落库须拆成 `input = prompt - cached`、`cache_read = cached`，以便 Gateway 再合成 `prompt = input + cache_creation + cache_read`。归一化优先识别 Anthropic 字段（含 `cache_read_input_tokens`/`cache_creation_input_tokens` 即直取），否则按 OpenAI 拆分。
 
-**Gateway（本仓库）**：OpenAI 兼容响应按该 `turn_id` **SUM** `gateway_model_usage`，填顶层 `usage` 与 `nerogate.usageByModel`；表空则 `usage: null`（不编造）。**禁止**扫 Live HTML / `tap-traces/` 或用 worker `TokenUsage` 当账单。Worker **不**注入 `CLAW_GATEWAY_DATABASE_URL`、**不**写 PG。
+**Gateway（本仓库）**：OpenAI 兼容响应按该 `turn_id` **SUM** `gateway_model_usage`，填顶层 `usage` 与 `nerogate.usageByModel`；表空则 `usage: null`（不编造）。另提供 `GET /v1/sessions/{id}/turns/{turn_id}/usage` 返回 per-request 明细（baseUrl/modelId/input/cache/output）+ 聚合，`GET /v1/sessions/{id}/turns` 列表每 turn 带聚合 usage。**禁止**扫 Live HTML / `tap-traces/` 或用 worker `TokenUsage` 当账单。Worker **不**注入 `CLAW_GATEWAY_DATABASE_URL`、**不**写 PG。
 
 ---
 
@@ -185,7 +185,7 @@ Worker 出站 LLM 请求经 observe `:8080` 上的 tap。Gateway 在 worker env 
 - [ ] 连接**同一 PG** 读取 gateway 全局 LLM 配置（与 gateway Admin 一致）
 - [ ] 提供 OpenAI 兼容代理（worker 只连 tap，不连 upstream 根地址）
 - [ ] 与 gateway 联调：probe 成功 → `readyz` 200 → solve 通
-- [ ] 读 `claw-turn-id`；有则 INSERT `gateway_model_usage`，无则代理不记账（§6.1）
+- [x] 读 `claw-turn-id`；有则 INSERT `gateway_model_usage`，无则代理不记账（§6.1，含 `base_url`/`provider` 落库）
 
 ---
 
