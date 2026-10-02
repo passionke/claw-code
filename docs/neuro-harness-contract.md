@@ -235,7 +235,6 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 
 ## 12. 实验分支须知
 
-- migration `6_project_harness_engine.sql` 只部署到独立的测试 PG，不进入 pre 和 prod。合入主干时按当时的最新编号重新编号。
-  - 与计划的偏差：`db_migrate.rs` 的单测 `published_migration_checksums_are_pinned` 要求每个 migration 都必须锁定 checksum，否则 `cargo test` 失败。因此分支上已经把 version 6 的 SHA-384 加入了 `PINNED_MIGRATION_CHECKSUMS`。重新编号时要同步改这一条。
-- 在分支合入之前，独立测试 PG 不能直接切回主干版本：要么重建，要么手工删除这条 migration 记录（`_sqlx_migrations` 中 version=6 的行）并删除 `harness_engine` 列。
+- migration `7_project_harness_engine.sql`（分支上曾为 6；合入前因 main 已占用 6 而重编号）。`PINNED_MIGRATION_CHECKSUMS` 同步锁定 version 7。
+- 独立测试 PG 若已跑过旧的 version=6（harness_engine）：合入后要么重建库，要么手工对齐 `_sqlx_migrations`（删除错误的 version=6 行、按 main 的 6 + 本分支的 7 重放）。
 - 每次 rebase 主干后，执行 claw 引擎的现有 e2e 回归，确认 claw 的行为没有变化。

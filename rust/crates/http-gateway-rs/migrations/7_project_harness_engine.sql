@@ -1,4 +1,4 @@
--- Project harness engine, fixed at creation (feat/neuro-harness; renumber when merging to main).
+-- Project harness engine, fixed at creation (feat/neuro-harness; was 6 on branch, renumbered to 7 for main).
 -- Author: kejiqing
 ALTER TABLE project_config
     ADD COLUMN IF NOT EXISTS harness_engine TEXT NOT NULL DEFAULT 'claw'
