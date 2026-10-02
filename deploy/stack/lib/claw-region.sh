@@ -34,9 +34,8 @@ claw_region_is_china() {
   [[ "$(claw_region_name)" == china ]]
 }
 
-# True when CN apt/cargo/rust mirrors should be used (CI SG sets GITHUB_ACTIONS). Author: kejiqing
+# True when CN apt/cargo/rust mirrors should be used (region=china; self-hosted runner is CN too). Author: kejiqing
 claw_cn_mirror_enabled() {
-  [[ "${GITHUB_ACTIONS:-}" == "true" ]] && return 1
   case "${CLAW_USE_CN_APT_MIRROR:-}" in 1) return 0 ;; 0) return 1 ;; esac
   [[ "${CLAW_USE_CN_CRATES_MIRROR:-0}" == "1" ]] && return 0
   [[ "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]] && return 0
