@@ -25,6 +25,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::agent_completion;
 use crate::biz_advice_report::{
     biz_report_sse_event_stream, build_biz_advice_polish_prompt, db_snapshot_report_sse_response,
     load_boss_report_writer_instructions, report_body_from_persisted,
@@ -36,15 +37,15 @@ use crate::{
     gateway_admin_mcp_token, gateway_bootstrap_deploy, gateway_bootstrap_publish,
     gateway_claw_tap_settings, gateway_cluster_bootstrap, gateway_e2b_core_readiness,
     gateway_e2b_nas_settings, gateway_e2b_observe_proxy, gateway_e2b_observe_reset,
-    gateway_e2b_singleton_api, gateway_e2b_worker_settings, gateway_endpoint,
-    gateway_global_settings, gateway_llm_config_sync, gateway_project_e2b_worker,
+    gateway_e2b_observe_settings, gateway_e2b_singleton_api, gateway_e2b_worker_settings,
+    gateway_endpoint, gateway_global_settings, gateway_llm_config_sync, gateway_project_e2b_worker,
     gateway_project_llm, gateway_project_observe, gateway_strict_landlock_settings,
     gateway_tap_client, gateway_translate, llm_context_window, llm_probe, master_apprentice_access,
     master_mcp, master_observer, master_scheduler, mcp_probe, pool, pool_consumer_resolve,
     preflight_plugin_api, project_config_apply, project_config_draft, project_config_version,
     project_entity_revision, project_extra_session, project_git_sync, project_id, project_tools,
     session_db, session_execution, session_merge, session_upload, solve_pool, task_status,
-    trace_id, turn_id, turn_timeline_api, turn_tools_api,
+    trace_id, turn_id, turn_timeline_api, turn_tools_api, turn_usage_api,
 };
 use axum::body::Bytes;
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};

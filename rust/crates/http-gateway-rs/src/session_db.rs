@@ -39,11 +39,26 @@ pub struct GatewaySessionSummary {
 pub struct TurnModelUsageRow {
     pub provider: Option<String>,
     pub model: String,
+    pub base_url: Option<String>,
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub cache_creation_input_tokens: u32,
     pub cache_read_input_tokens: u32,
     pub source: String,
+}
+
+/// One aggregated LLM usage group for a session (per turn/model/base_url/provider). Author: kejiqing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnModelUsageSummaryRow {
+    pub turn_id: String,
+    pub model: String,
+    pub base_url: Option<String>,
+    pub provider: Option<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub request_count: u64,
 }
 
 /// One row for [`GatewaySessionDb::list_turns_for_session`]. Author: kejiqing
@@ -3895,7 +3910,7 @@ impl GatewaySessionDb {
         turn_id: &str,
     ) -> Result<Vec<TurnModelUsageRow>, SqlxError> {
         let rows = sqlx::query(
-            r"SELECT provider, model, input_tokens, output_tokens,
+            r"SELECT provider, model, base_url, input_tokens, output_tokens,
                      cache_creation_input_tokens, cache_read_input_tokens, source
               FROM gateway_model_usage
               WHERE turn_id = $1
@@ -3913,6 +3928,11 @@ impl GatewaySessionDb {
                     model: row
                         .try_get::<String, _>("model")
                         .unwrap_or_else(|_| "unknown".to_string()),
+                    base_url: row
+                        .try_get::<Option<String>, _>("base_url")
+                        .ok()
+                        .flatten()
+                        .filter(|s| !s.trim().is_empty()),
                     input_tokens: nonneg(row.try_get::<i32, _>("input_tokens").unwrap_or(0)),
                     output_tokens: nonneg(row.try_get::<i32, _>("output_tokens").unwrap_or(0)),
                     cache_creation_input_tokens: nonneg(
@@ -3929,6 +3949,64 @@ impl GatewaySessionDb {
                 }
             })
             .collect())
+    }
+
+    /// Aggregated LLM usage for every turn in a session (grouped per turn/model/base_url/provider).
+    ///
+    /// One row per (turn_id, model, base_url, provider) with `SUM(input/output/cache_*)` and
+    /// `COUNT(*)` (= number of LLM calls). Joins `gateway_turns` so only turns that belong to this
+    /// cluster/session/proj are included. Author: kejiqing
+    pub async fn list_model_usage_summary_for_session(
+        &self,
+        session_id: &str,
+        proj_id: i64,
+    ) -> Result<Vec<TurnModelUsageSummaryRow>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT u.turn_id, u.model, u.base_url, u.provider,
+                     SUM(u.input_tokens)::bigint AS input_tokens,
+                     SUM(u.output_tokens)::bigint AS output_tokens,
+                     SUM(u.cache_creation_input_tokens)::bigint AS cache_creation_input_tokens,
+                     SUM(u.cache_read_input_tokens)::bigint AS cache_read_input_tokens,
+                     COUNT(*)::bigint AS request_count
+              FROM gateway_model_usage u
+              JOIN gateway_turns t ON t.cluster_id = $1 AND t.turn_id = u.turn_id
+              WHERE t.session_id = $2 AND t.proj_id = $3
+              GROUP BY u.turn_id, u.model, u.base_url, u.provider
+              ORDER BY u.turn_id ASC, u.model ASC",
+        )
+        .bind(self.cluster_id())
+        .bind(session_id)
+        .bind(proj_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let nonneg = |v: i64| -> u64 { u64::try_from(v.max(0)).unwrap_or(0) };
+            out.push(TurnModelUsageSummaryRow {
+                turn_id: row.try_get::<String, _>("turn_id").unwrap_or_default(),
+                model: row
+                    .try_get::<String, _>("model")
+                    .unwrap_or_else(|_| "unknown".to_string()),
+                base_url: row
+                    .try_get::<Option<String>, _>("base_url")
+                    .ok()
+                    .flatten()
+                    .filter(|s| !s.trim().is_empty()),
+                provider: row.try_get::<Option<String>, _>("provider").ok().flatten(),
+                input_tokens: nonneg(row.try_get::<i64, _>("input_tokens").unwrap_or(0)),
+                output_tokens: nonneg(row.try_get::<i64, _>("output_tokens").unwrap_or(0)),
+                cache_creation_input_tokens: nonneg(
+                    row.try_get::<i64, _>("cache_creation_input_tokens")
+                        .unwrap_or(0),
+                ),
+                cache_read_input_tokens: nonneg(
+                    row.try_get::<i64, _>("cache_read_input_tokens")
+                        .unwrap_or(0),
+                ),
+                request_count: nonneg(row.try_get::<i64, _>("request_count").unwrap_or(0)),
+            });
+        }
+        Ok(out)
     }
 
     pub async fn finalize_turn_with_artifacts_ready(
@@ -5421,6 +5499,144 @@ mod tests {
         let summary = listed.iter().find(|s| s.session_id == sid).unwrap();
         assert!(summary.has_bad_feedback);
         assert!(!summary.has_good_feedback);
+    }
+
+    async fn raw_insert_usage(
+        db: &GatewaySessionDb,
+        turn_id: &str,
+        model: &str,
+        base_url: Option<&str>,
+        provider: &str,
+        input: i32,
+        output: i32,
+        cache_create: i32,
+        cache_read: i32,
+    ) {
+        sqlx::query(
+            r#"INSERT INTO gateway_model_usage
+                 (turn_id, provider, model, base_url, input_tokens, output_tokens,
+                  cache_creation_input_tokens, cache_read_input_tokens, source)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'tap')"#,
+        )
+        .bind(turn_id)
+        .bind(provider)
+        .bind(model)
+        .bind(base_url)
+        .bind(input)
+        .bind(output)
+        .bind(cache_create)
+        .bind(cache_read)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_model_usage_for_turn_returns_base_url() {
+        let Some(db) = test_db().await else {
+            eprintln!("skip list_model_usage_for_turn_returns_base_url: set CLAW_GATEWAY_TEST_DATABASE_URL");
+            return;
+        };
+        let t = now_ms();
+        let sid = format!("u1_{}", uuid::Uuid::new_v4().simple());
+        db.insert_session(&sid, 1, "proj_1/sessions/u", t, None)
+            .await
+            .unwrap();
+        let tid = test_turn_id();
+        db.insert_turn(&tid, &sid, 1, "queued", t, Some("hi"), None, None)
+            .await
+            .unwrap();
+        raw_insert_usage(
+            &db,
+            &tid,
+            "m1",
+            Some("https://api.openai.com"),
+            "openai",
+            10,
+            5,
+            2,
+            3,
+        )
+        .await;
+        let rows = db.list_model_usage_for_turn(&tid).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].base_url.as_deref(), Some("https://api.openai.com"));
+        assert_eq!(rows[0].model, "m1");
+        assert_eq!(rows[0].input_tokens, 10);
+        assert_eq!(rows[0].cache_read_input_tokens, 3);
+        assert_eq!(rows[0].source, "tap");
+    }
+
+    #[tokio::test]
+    async fn model_usage_summary_groups_and_filters() {
+        let Some(db) = test_db().await else {
+            eprintln!(
+                "skip model_usage_summary_groups_and_filters: set CLAW_GATEWAY_TEST_DATABASE_URL"
+            );
+            return;
+        };
+        let t = now_ms();
+        let sid_a = format!("us_a_{}", uuid::Uuid::new_v4().simple());
+        let sid_b = format!("us_b_{}", uuid::Uuid::new_v4().simple());
+        db.insert_session(&sid_a, 1, "proj_1/sessions/a", t, None)
+            .await
+            .unwrap();
+        db.insert_session(&sid_b, 2, "proj_2/sessions/b", t, None)
+            .await
+            .unwrap();
+        let ta1 = test_turn_id();
+        let ta2 = test_turn_id();
+        let tb1 = test_turn_id();
+        db.insert_turn(&ta1, &sid_a, 1, "queued", t, Some("a1"), None, None)
+            .await
+            .unwrap();
+        db.insert_turn(&ta2, &sid_a, 1, "queued", t + 1, Some("a2"), None, None)
+            .await
+            .unwrap();
+        db.insert_turn(&tb1, &sid_b, 2, "queued", t, Some("b1"), None, None)
+            .await
+            .unwrap();
+
+        // turn a1: two rows same model (count=2), one row another model.
+        raw_insert_usage(&db, &ta1, "m1", Some("https://a"), "openai", 10, 5, 0, 0).await;
+        raw_insert_usage(&db, &ta1, "m1", Some("https://a"), "openai", 1, 1, 0, 0).await;
+        raw_insert_usage(
+            &db,
+            &ta1,
+            "m2",
+            Some("https://a"),
+            "anthropic",
+            100,
+            20,
+            0,
+            7,
+        )
+        .await;
+        // turn a2: one row.
+        raw_insert_usage(&db, &ta2, "m3", None, "openai", 7, 7, 0, 0).await;
+        // other session/proj — must be excluded.
+        raw_insert_usage(&db, &tb1, "m4", Some("https://b"), "openai", 999, 999, 0, 0).await;
+
+        let rows = db
+            .list_model_usage_summary_for_session(&sid_a, 1)
+            .await
+            .unwrap();
+        // Excludes sid_b rows (m4) and includes only session A turns.
+        assert!(rows.iter().all(|r| r.turn_id == ta1 || r.turn_id == ta2));
+        // m1 grouped into a single row with SUM + COUNT=2.
+        let m1 = rows
+            .iter()
+            .find(|r| r.model == "m1")
+            .expect("m1 grouped row");
+        assert_eq!(m1.input_tokens, 11);
+        assert_eq!(m1.output_tokens, 6);
+        assert_eq!(m1.request_count, 2);
+        let m2 = rows.iter().find(|r| r.model == "m2").expect("m2 row");
+        assert_eq!(m2.cache_read_input_tokens, 7);
+        let m3 = rows.iter().find(|r| r.model == "m3").expect("m3 row");
+        assert_eq!(m3.request_count, 1);
+        assert!(m3.base_url.is_none());
+        assert!(!rows.iter().any(|r| r.model == "m4"));
     }
 
     #[tokio::test]

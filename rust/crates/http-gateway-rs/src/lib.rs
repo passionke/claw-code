@@ -106,6 +106,7 @@ pub mod trace_id;
 pub mod turn_id;
 pub mod turn_timeline_api;
 pub mod turn_tools_api;
+pub mod turn_usage_api;
 pub mod workspace_perm;
 
 pub mod gateway_logging;

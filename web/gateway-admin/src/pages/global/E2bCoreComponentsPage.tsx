@@ -17,6 +17,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 import type {
+  BootstrapCiImageTagsResponse,
+  BootstrapPublishTemplatesResponse,
   E2bSingletonActionResponse,
   E2bSingletonsStatusResponse,
   E2bTemplateEntry,
@@ -103,6 +105,10 @@ export default function E2bCoreComponentsPage() {
   const [e2bApiUrl, setE2bApiUrl] = useState("");
   const [clusterId, setClusterId] = useState("");
   const [poolSizeCap, setPoolSizeCap] = useState(16);
+  const [tapTags, setTapTags] = useState<{ value: string; label: string }[]>([]);
+  const [tapTagsLoading, setTapTagsLoading] = useState(false);
+  const [selectedTapTag, setSelectedTapTag] = useState("");
+  const [publishingObserve, setPublishingObserve] = useState(false);
   const [form] = Form.useForm<{
     nasApiTemplateId: string;
     observeTemplateId: string;
@@ -170,6 +176,60 @@ export default function E2bCoreComponentsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const loadTapTags = useCallback(async () => {
+    if (!gatewayBase) return;
+    setTapTagsLoading(true);
+    try {
+      const data = await proxyHttp<BootstrapCiImageTagsResponse>(
+        gatewayBase,
+        "GET",
+        "/v1/gateway/bootstrap/ci-image-tags?imageName=claw-tap"
+      );
+      setTapTags(data.tags.map((t) => ({ value: t, label: t })));
+      const current = selectedTapTag || status?.observe.tapImageTag || data.suggestedTag || data.tags[0];
+      if (current && !selectedTapTag) setSelectedTapTag(current);
+    } catch (e) {
+      message.error(`加载 claw-tap 版本失败：${String(e)}`);
+    } finally {
+      setTapTagsLoading(false);
+    }
+  }, [gatewayBase, selectedTapTag, status?.observe.tapImageTag]);
+
+  useEffect(() => {
+    void loadTapTags();
+  }, [loadTapTags]);
+
+  const rebuildObserve = async () => {
+    const tag = selectedTapTag.trim();
+    if (!tag) {
+      message.warning("请先选择 claw-tap 版本");
+      return;
+    }
+    setPublishingObserve(true);
+    try {
+      // Persist the desired tag (version source of truth) then kick the async build.
+      await proxyHttp(gatewayBase, "PUT", "/v1/gateway/global-settings/e2b-observe", {
+        tapImageTag: tag,
+      });
+      const resp = await proxyHttp<BootstrapPublishTemplatesResponse>(
+        gatewayBase,
+        "POST",
+        "/v1/gateway/bootstrap/publish-observe-templates",
+        { tapImageTag: tag }
+      );
+      if (resp.accepted) {
+        message.success("已受理 observe 重打；完成后点「重置 observe」生效");
+      } else {
+        message.warning(resp.message ?? "未受理（可能已有任务在跑）");
+      }
+      await load();
+    } catch (e) {
+      message.error(`重打 observe 失败：${String(e)}`);
+    } finally {
+      setPublishingObserve(false);
+    }
+  };
 
   const nasApiTemplateOptions = useMemo(
     () =>
@@ -473,6 +533,13 @@ export default function E2bCoreComponentsPage() {
               <Descriptions.Item label="模版">
                 <Typography.Text code>{status.observe.effectiveTemplateId}</Typography.Text>
               </Descriptions.Item>
+              <Descriptions.Item label="claw-tap 版本">
+                {status.observe.tapImageTag ? (
+                  <Typography.Text code>{status.observe.tapImageTag}</Typography.Text>
+                ) : (
+                  "—"
+                )}
+              </Descriptions.Item>
               <Descriptions.Item label="sandboxId">
                 {status.observe.sandboxId ? (
                   <Typography.Text code copyable>
@@ -503,22 +570,50 @@ export default function E2bCoreComponentsPage() {
                 {status.observe.lastError || "—"}
               </Descriptions.Item>
             </Descriptions>
-            <Popconfirm
-              title="重置 observe 单例？"
-              description="将删除当前 observe sandbox 并重建 claude-tap（约 1–2 分钟）。"
-              onConfirm={() => void resetComponent("observe")}
-              okText="重置"
-              cancelText="取消"
-            >
+            <Space style={{ marginTop: 16, width: "100%" }} align="center">
+              <Select
+                showSearch
+                style={{ minWidth: 200 }}
+                placeholder={tapTagsLoading ? "加载 claw-tap 版本…" : "选择 claw-tap 版本"}
+                value={selectedTapTag || undefined}
+                loading={tapTagsLoading}
+                options={tapTags}
+                optionFilterProp="label"
+                notFoundContent="无 claw-tap tag，请先发布 claw-tap 镜像"
+                onChange={(v) => setSelectedTapTag(v)}
+              />
               <Button
-                style={{ marginTop: 16 }}
-                type="primary"
-                icon={<SyncOutlined />}
-                loading={resetting === "observe"}
+                icon={<ReloadOutlined />}
+                loading={tapTagsLoading}
+                onClick={() => void loadTapTags()}
               >
-                重置 observe
+                刷新版本
               </Button>
-            </Popconfirm>
+            </Space>
+            <Space style={{ marginTop: 8 }} wrap>
+              <Button
+                icon={<SaveOutlined />}
+                loading={publishingObserve}
+                onClick={() => void rebuildObserve()}
+              >
+                重打 observe
+              </Button>
+              <Popconfirm
+                title="重置 observe 单例？"
+                description="将删除当前 observe sandbox 并重建 claude-tap（约 1–2 分钟）。"
+                onConfirm={() => void resetComponent("observe")}
+                okText="重置"
+                cancelText="取消"
+              >
+                <Button
+                  type="primary"
+                  icon={<SyncOutlined />}
+                  loading={resetting === "observe"}
+                >
+                  重置 observe
+                </Button>
+              </Popconfirm>
+            </Space>
             <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
               代理/Live 详情见「全局推理」页。
             </Typography.Paragraph>

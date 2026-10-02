@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::gateway_global_settings::get_gateway_global_settings;
+use crate::gateway_global_settings::{get_gateway_global_settings, save_gateway_global_settings};
 use crate::session_db::GatewaySessionDb;
 use claw_e2b_sandbox_client::E2bSandboxClient;
 
@@ -10,6 +10,14 @@ use claw_e2b_sandbox_client::E2bSandboxClient;
 pub struct E2bObserveSettings {
     #[serde(rename = "templateId", default)]
     pub template_id: Option<String>,
+    /// Desired claw-tap image tag the observe template is built from (version source of truth).
+    /// Author: kejiqing
+    #[serde(
+        rename = "tapImageTag",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tap_image_tag: Option<String>,
     /// Desired template build id (from build script). Author: kejiqing
     #[serde(rename = "buildId", default)]
     pub build_id: Option<String>,
@@ -51,6 +59,8 @@ impl E2bObserveSettings {
 pub struct E2bObserveSettingsPublic {
     #[serde(rename = "templateId", skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
+    #[serde(rename = "tapImageTag", skip_serializing_if = "Option::is_none")]
+    pub tap_image_tag: Option<String>,
     #[serde(rename = "buildId", skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
     #[serde(rename = "imageRef", skip_serializing_if = "Option::is_none")]
@@ -177,6 +187,10 @@ pub async fn e2b_observe_settings_public_with_runtime(
         .and_then(|d| i64::try_from(d.as_millis()).ok());
     Ok(E2bObserveSettingsPublic {
         template_id: settings.template_id,
+        tap_image_tag: settings
+            .tap_image_tag
+            .clone()
+            .filter(|t| !t.trim().is_empty()),
         build_id: settings.build_id.clone().filter(|t| !t.trim().is_empty()),
         image_ref: settings.image_ref.clone().filter(|t| !t.trim().is_empty()),
         image_digest: settings
@@ -209,4 +223,78 @@ pub async fn load_e2b_observe_build_id(
         .build_id
         .map(|u| u.trim().to_string())
         .filter(|u| !u.is_empty()))
+}
+
+/// Non-empty PG `e2bObserve.tapImageTag`, if configured. Author: kejiqing
+pub async fn load_e2b_observe_tap_image_tag(
+    db: &GatewaySessionDb,
+) -> Result<Option<String>, sqlx::Error> {
+    let settings = load_e2b_observe_settings(db).await?;
+    Ok(settings
+        .tap_image_tag
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty()))
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct PutE2bObserveSettingsInput {
+    #[serde(rename = "templateId", default)]
+    pub template_id: Option<String>,
+    #[serde(rename = "tapImageTag", default)]
+    pub tap_image_tag: Option<String>,
+}
+
+/// Write `e2bObserve` desired template id / tap image tag (single source of truth for version).
+pub async fn put_e2b_observe_settings(
+    db: &GatewaySessionDb,
+    input: PutE2bObserveSettingsInput,
+) -> Result<E2bObserveSettingsPublic, String> {
+    let (mut settings, tokens, _) = get_gateway_global_settings(db)
+        .await
+        .map_err(|e| format!("load global settings: {e}"))?;
+    if let Some(tpl) = input.template_id {
+        let trimmed = tpl.trim();
+        if trimmed.is_empty() {
+            settings.e2b_observe.template_id = None;
+        } else {
+            settings.e2b_observe.template_id = Some(trimmed.to_string());
+        }
+    }
+    if let Some(tag) = input.tap_image_tag {
+        let trimmed = tag.trim();
+        if trimmed.is_empty() {
+            settings.e2b_observe.tap_image_tag = None;
+        } else {
+            settings.e2b_observe.tap_image_tag = Some(trimmed.to_string());
+        }
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    settings.e2b_observe.updated_at_ms = now;
+    save_gateway_global_settings(db, &settings, &tokens, now)
+        .await
+        .map_err(|e| format!("save global settings: {e}"))?;
+    e2b_observe_settings_public(db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observe_settings_parse_tap_image_tag() {
+        let s: E2bObserveSettings = serde_json::from_str(
+            r#"{"templateId":"tpl_a","tapImageTag":"v0.1.0","updatedAtMs":1}"#,
+        )
+        .expect("parse");
+        assert_eq!(s.tap_image_tag.as_deref(), Some("v0.1.0"));
+    }
+
+    #[test]
+    fn observe_settings_missing_tap_image_tag() {
+        let s: E2bObserveSettings =
+            serde_json::from_str(r#"{"templateId":"tpl_a","updatedAtMs":1}"#).expect("parse");
+        assert!(s.tap_image_tag.is_none());
+    }
 }

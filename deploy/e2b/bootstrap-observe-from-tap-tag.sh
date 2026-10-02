@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Bootstrap e2b core templates from an existing ACR/CI image tag (no local amd64 rustc).
-# Used by Gateway Admin POST /v1/gateway/bootstrap/publish-templates. Author: kejiqing
+# Bootstrap ONLY the observe e2b template from a claw-tap image tag (observe is decoupled from worker).
+# Used by Gateway Admin POST /v1/gateway/bootstrap/publish-observe-templates. Author: kejiqing
 #
 # Runs inside gateway container: NO nested podman/docker (userns fails).
-# Extracts claw/claude-tap from ACR via registry HTTP, then e2b debian+COPY.
+# Extracts claude-tap from ACR/GHCR via registry HTTP, then e2b debian+COPY.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -17,37 +17,27 @@ claw_region_load
 # shellcheck source=/dev/null
 source "${ROOT_DIR}/deploy/stack/lib/release-images.sh"
 
-TAG="${1:-${CLAW_IMAGE_RELEASE_TAG:-}}"
+TAG="${1:-}"
 if [[ -z "${TAG}" ]]; then
-  echo "usage: $0 <release-or-branch-tag>" >&2
-  echo "hint: tag is produced by CI/ACR (e.g. release-v1.8.11); this script only publishes to e2b." >&2
+  echo "usage: $0 <claw-tap-tag>" >&2
+  echo "hint: tag is produced by claw-tap CI (e.g. v0.1.0); this script only publishes observe." >&2
   exit 2
 fi
 
-claw_apply_release_image_tag "${TAG}"
 PREFIX="$(claw_image_registry_prefix_from_env)"
-WORKER_IMAGE="${CLAW_E2B_WORKER_IMAGE:-${PREFIX}/claw-gateway-worker:${TAG}}"
-RELAXED_IMAGE="${CLAW_E2B_WORKER_RELAXED_IMAGE:-${PREFIX}/claw-gateway-worker-relaxed:${TAG}}"
-# Observe is decoupled: publish it separately via bootstrap-observe-from-tap-tag.sh. Author: kejiqing
+TAP_IMAGE="${CLAUDE_TAP_IMAGE:-${PREFIX}/claw-tap:${TAG}}"
 
 # Writable dirs even when repo is mounted :ro into gateway. Author: kejiqing
-ART_ROOT="${CLAW_BOOTSTRAP_ARTIFACT_DIR:-/tmp/claw-bootstrap-${TAG}}"
+ART_ROOT="${CLAW_BOOTSTRAP_ARTIFACT_DIR:-/tmp/claw-observe-${TAG}}"
 mkdir -p "${ART_ROOT}/venv"
 export CLAW_E2B_VENV="${CLAW_E2B_VENV:-${ART_ROOT}/venv}"
 export HOME="${CLAW_BOOTSTRAP_HOME:-${ART_ROOT}/home}"
 mkdir -p "${HOME}"
 
-# e2bserver rejects claw-gateway-worker / claw-tap as "non-Debian" bases; scripts switch to
-# debian:bookworm-slim + COPY binary (registry HTTP extract, no nested podman).
-# Author: kejiqing
 export CLAW_E2B_TEMPLATE_BUILD_STRATEGY=from_image
-export CLAW_E2B_WORKER_IMAGE="${WORKER_IMAGE}"
-export CLAW_E2B_TEMPLATE_FROM_IMAGE="${WORKER_IMAGE}"
-export CLAW_E2B_WORKER_SKIP_LOCAL_BUILD=1
-export CLAW_E2B_WORKER_RELAXED_IMAGE="${RELAXED_IMAGE}"
-export CLAW_E2B_WORKER_RELAXED_FROM_IMAGE=1
+export CLAUDE_TAP_IMAGE="${TAP_IMAGE}"
+export CLAW_E2B_OBSERVE_SKIP_LOCAL_BUILD=1
 export CLAW_E2B_TEMPLATE_SKIP_VERIFY="${CLAW_E2B_TEMPLATE_SKIP_VERIFY:-1}"
-export CLAW_IMAGE_RELEASE_TAG="${TAG}"
 
 export E2B_API_KEY="${E2B_API_KEY:-${CLAW_E2B_API_KEY:-}}"
 export E2B_API_URL="${E2B_API_URL:-${CLAW_E2B_API_URL:-}}"
@@ -154,15 +144,11 @@ ensure_venv
 }
 
 PLATFORM="${CLAW_E2B_TEMPLATE_PLATFORM:-linux/amd64}"
-echo "==> bootstrap templates from CI tag=${TAG}" >&2
-echo "    worker_image=${WORKER_IMAGE} → debian+COPY claw (no nested podman)" >&2
-echo "    relaxed_image=${RELAXED_IMAGE} → debian+COPY claw + tools (no OVS)" >&2
+echo "==> bootstrap observe template from claw-tap tag=${TAG}" >&2
+echo "    tap_image=${TAP_IMAGE} → debian+COPY claude-tap" >&2
 echo "    e2b=${E2B_API_URL} platform=${PLATFORM}" >&2
 
-# Per-component retry: a transient failure (registry 404/manifest unknown on a tag that is
-# still propagating, pip/dns blip, e2bserver hiccup) retries only the failed component; the
-# already-succeeded ones are not re-run (each build script also skips via contentHash).
-# CLAW_E2B_COMPONENT_RETRIES (default 3), exponential-ish backoff 10s/20s/… Author: kejiqing
+# Per-component retry (same exponential backoff as the worker publish). Author: kejiqing
 COMPONENT_RETRIES="${CLAW_E2B_COMPONENT_RETRIES:-3}"
 
 run_py() {
@@ -185,17 +171,7 @@ run_py() {
   done
 }
 
-run_py "${E2B_DIR}/build-claw-worker-selfhosted.py"
-run_py "${E2B_DIR}/build-claw-worker-relaxed-selfhosted.py"
-run_py "${E2B_DIR}/build-claw-nas-api-selfhosted.py"
-
-# neuro-harness engine workers (feat/neuro-harness): images from claw-code-branch-worker (same tag as strict).
-# Author: kejiqing
-export CLAW_E2B_WORKER_OPENCODE_IMAGE="${CLAW_E2B_WORKER_OPENCODE_IMAGE:-${PREFIX}/claw-gateway-worker-opencode:${TAG}}"
-export CLAW_E2B_WORKER_APPSERVER_IMAGE="${CLAW_E2B_WORKER_APPSERVER_IMAGE:-${PREFIX}/claw-gateway-worker-appserver:${TAG}}"
-echo "    opencode_image=${CLAW_E2B_WORKER_OPENCODE_IMAGE} appserver_image=${CLAW_E2B_WORKER_APPSERVER_IMAGE}" >&2
-run_py "${E2B_DIR}/build-claw-worker-opencode-selfhosted.py"
-run_py "${E2B_DIR}/build-claw-worker-appserver-selfhosted.py"
+run_py "${E2B_DIR}/build-claw-observe-selfhosted.py"
 
 echo "" >&2
-echo "OK: bootstrap templates published for tag=${TAG} on ${E2B_API_URL}" >&2
+echo "OK: observe template published for claw-tap tag=${TAG} on ${E2B_API_URL}" >&2

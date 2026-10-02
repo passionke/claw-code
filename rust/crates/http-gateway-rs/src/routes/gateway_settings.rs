@@ -10,10 +10,12 @@ use crate::routes::app::{
     issue_gateway_admin_mcp_token_handler, list_gateway_llm_model_versions_handler,
     lookup_gateway_llm_context_window_handler, post_gateway_bootstrap_apply_deploy_env_handler,
     post_gateway_bootstrap_apply_llm_from_env_handler, post_gateway_bootstrap_complete_handler,
-    post_gateway_bootstrap_ensure_core_handler, post_gateway_bootstrap_publish_templates_handler,
-    post_gateway_bootstrap_reopen_handler, post_gateway_bootstrap_reset_handler,
-    probe_gateway_claw_tap_handler, put_gateway_active_llm_config_handler,
-    put_gateway_claw_tap_handler, put_gateway_e2b_singleton_templates_handler,
+    post_gateway_bootstrap_ensure_core_handler,
+    post_gateway_bootstrap_publish_observe_templates_handler,
+    post_gateway_bootstrap_publish_templates_handler, post_gateway_bootstrap_reopen_handler,
+    post_gateway_bootstrap_reset_handler, probe_gateway_claw_tap_handler,
+    put_gateway_active_llm_config_handler, put_gateway_claw_tap_handler,
+    put_gateway_e2b_observe_settings_handler, put_gateway_e2b_singleton_templates_handler,
     put_gateway_e2b_worker_settings_handler, put_gateway_strict_landlock_default_handler,
     reset_gateway_e2b_singleton_handler, reset_gateway_observe_tap_handler,
     revoke_gateway_admin_mcp_token_handler, test_gateway_llm_model_handler,
@@ -63,6 +65,10 @@ pub(crate) fn router() -> Router<AppState> {
                 .post(post_gateway_bootstrap_publish_templates_handler),
         )
         .route(
+            "/v1/gateway/bootstrap/publish-observe-templates",
+            post(post_gateway_bootstrap_publish_observe_templates_handler),
+        )
+        .route(
             "/v1/gateway/bootstrap/ci-image-tags",
             get(get_gateway_bootstrap_ci_image_tags_handler),
         )
@@ -89,6 +95,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/v1/gateway/global-settings/e2b-worker",
             put(put_gateway_e2b_worker_settings_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-observe",
+            put(put_gateway_e2b_observe_settings_handler),
         )
         .route(
             "/v1/gateway/global-settings/e2b-singletons/{component}/ensure",

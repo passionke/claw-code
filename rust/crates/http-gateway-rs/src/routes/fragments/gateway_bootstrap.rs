@@ -230,9 +230,31 @@ pub(crate) async fn get_gateway_bootstrap_publish_templates_handler(
     )
 )]
 pub(crate) async fn get_gateway_bootstrap_ci_image_tags_handler(
+    Query(query): Query<gateway_bootstrap_publish::BootstrapCiImageTagsQuery>,
 ) -> Result<Json<gateway_bootstrap_publish::BootstrapCiImageTagsResponse>, ApiError> {
-    let resp = gateway_bootstrap_publish::list_ci_image_tags()
+    let image_name = query.image_name.as_deref().unwrap_or("");
+    let resp = gateway_bootstrap_publish::list_ci_image_tags_for(image_name)
         .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(resp))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/gateway/bootstrap/publish-observe-templates",
+    tag = "Gateway Bootstrap",
+    operation_id = "post_gateway_bootstrap_publish_observe_templates_handler",
+    summary = "Publish only the observe template from a claw-tap image tag (async; poll GET status)",
+    request_body = gateway_bootstrap_publish::BootstrapPublishObserveInput,
+    responses(
+        (status = 200, description = "Observe publish accepted or already running", body = gateway_bootstrap_publish::BootstrapPublishTemplatesResponse),
+        (status = 400, description = "Invalid tag or missing script"),
+    )
+)]
+pub(crate) async fn post_gateway_bootstrap_publish_observe_templates_handler(
+    Json(body): Json<gateway_bootstrap_publish::BootstrapPublishObserveInput>,
+) -> Result<Json<gateway_bootstrap_publish::BootstrapPublishTemplatesResponse>, ApiError> {
+    let resp = gateway_bootstrap_publish::start_publish_observe_templates(&body)
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     Ok(Json(resp))
 }

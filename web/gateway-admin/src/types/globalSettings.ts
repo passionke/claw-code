@@ -175,6 +175,8 @@ export interface E2bNasApiSettings {
 
 export interface E2bObserveTemplateSettings {
   templateId?: string;
+  /** Desired claw-tap image tag the observe template is built from (version source of truth). */
+  tapImageTag?: string;
   buildId?: string;
   appliedBuildId?: string;
   effectiveTemplateId: string;

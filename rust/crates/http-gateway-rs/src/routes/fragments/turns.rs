@@ -46,6 +46,8 @@ pub(crate) struct GatewayTurnSummaryJson {
     gateway_id: Option<String>,
     #[serde(rename = "gatewayBase", skip_serializing_if = "Option::is_none")]
     gateway_base: Option<String>,
+    #[serde(rename = "usage", skip_serializing_if = "Option::is_none")]
+    usage: Option<agent_completion::TurnUsageAggregate>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -128,6 +130,23 @@ pub(crate) async fn list_session_turns(
         .list_turns_for_session(&session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
+    // Batch-load per-turn LLM usage once (avoids N+1 per turn). Author: kejiqing
+    let usage_rows = state
+        .session_db
+        .list_model_usage_summary_for_session(&session_id, query.proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let usage_by_turn: std::collections::BTreeMap<String, Vec<session_db::TurnModelUsageSummaryRow>> =
+        {
+            let mut m: std::collections::BTreeMap<
+                String,
+                Vec<session_db::TurnModelUsageSummaryRow>,
+            > = std::collections::BTreeMap::new();
+            for row in usage_rows {
+                m.entry(row.turn_id.clone()).or_default().push(row);
+            }
+            m
+        };
     let worker_profile = state
         .session_db
         .get_worker_profile_json(query.proj_id)
@@ -141,6 +160,9 @@ pub(crate) async fn list_session_turns(
             .into_iter()
             .map(|r| {
                 let attachments = sign_turn_attachments_for_response(r.attachments);
+                let usage = usage_by_turn
+                    .get(&r.turn_id)
+                    .map(|rows| agent_completion::build_turn_usage_aggregate(rows));
                 GatewayTurnSummaryJson {
                     turn_id: r.turn_id,
                     user_prompt: r.user_prompt,
@@ -160,6 +182,7 @@ pub(crate) async fn list_session_turns(
                     worker_exec_user: r.worker_exec_user,
                     gateway_id: r.gateway_id,
                     gateway_base: r.gateway_base,
+                    usage,
                 }
             })
             .collect(),
@@ -355,6 +378,63 @@ pub(crate) async fn get_turn_timeline(
         task_finished_at_ms: ctx.finished_at_ms,
         timeline,
     }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/sessions/{session_id}/turns/{turn_id}/usage",
+    tag = "Sessions",
+    operation_id = "get_turn_usage",
+    params(
+        ("session_id" = String, Path, description = "Gateway session id"),
+        ("turn_id" = String, Path, description = "Turn id (T_<32 hex>)"),
+        TurnToolsQuery
+    ),
+    responses(
+        (status = 200, description = "Per-turn LLM usage breakdown", body = turn_usage_api::TurnUsageResponse),
+        (status = 404, description = "Turn or session not found")
+    )
+)]
+pub(crate) async fn get_turn_usage(
+    State(state): State<AppState>,
+    AxumPath((session_id, turn_id)): AxumPath<(String, String)>,
+    Query(query): Query<TurnToolsQuery>,
+) -> Result<Json<turn_usage_api::TurnUsageResponse>, ApiError> {
+    if query.proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "proj_id must be >= 1",
+        ));
+    }
+    if !turn_id::validate_turn_id(&turn_id) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "turnId must match T_<32 lowercase hex>",
+        ));
+    }
+    let _turn_status = state
+        .session_db
+        .get_turn_status(&turn_id, &session_id, query.proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!(
+                    "turn or session not found: {turn_id} session={session_id} proj_id={}",
+                    query.proj_id
+                ),
+            )
+        })?;
+    let rows = state
+        .session_db
+        .list_model_usage_for_turn(&turn_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let summary = agent_completion::build_turn_usage_summary(&rows);
+    Ok(Json(turn_usage_api::TurnUsageResponse::from_summary(
+        session_id, turn_id, query.proj_id, summary,
+    )))
 }
 
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
