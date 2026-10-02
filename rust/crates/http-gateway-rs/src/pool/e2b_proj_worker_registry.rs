@@ -323,7 +323,7 @@ impl E2bProjWorkerRegistry {
                 e2b_template_id: t.template_id,
                 build_id: t.build_id,
                 mode: WorkerProfileMode::Strict,
-                profile_label: harness_engine::contract_profile_label(engine),
+                profile_label: t.profile_label,
                 create_alias: t.alias,
             });
         }

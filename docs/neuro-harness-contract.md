@@ -192,7 +192,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 
 ## 10. gateway 接入（`http-gateway-rs/src/pool/harness_engine.rs`）
 
-引擎相关的知识只放在这一个模块里，热点文件只加一行调用：
+引擎相关的知识只放在这一个模块里，按策略模式组织：`EngineStrategy` trait 的默认实现就是 claw 的行为（`ClawEngine` 是空实现）；opencode 和 appserver 共用 `NeuroEngine`，差异只体现在各自的静态配置里（worker 可执行文件、模板 alias、settings 段、是否要求 `/responses`、运行时所需的只读路径）。热点文件只调用 `engine.strategy().<hook>()`，不写引擎分支：
 
 | 位置 | 行为 |
 |---|---|
@@ -200,6 +200,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 | `PUT /v1/projects/{id}/role` | 非 claw 项目只能设为 `normal`，其他角色返回 400 `unsupported_by_engine`。 |
 | `PUT /v1/projects/{id}/config` | 非 claw 项目写入 `workerProfileJson.mode=relaxed` 时返回 400。 |
 | solve（`run_solve_request_docker`） | 非 claw 项目只能走 e2b 后端。`interactionMode=plan` 或带 sealedPlan 时返回 400。appserver 每次 solve 都重新校验 `/responses`。task 固定为 `interactionMode=agent`、`askUserQuestionEnabled=false`、`forceSingleTurn=true`。exec 的 bin 换成 `/usr/local/bin/neuro-{opencode,appserver}`。 |
+| strict Landlock（`prepare_task`） | 在解析出的规则（cluster 默认或项目覆盖）上追加引擎运行时需要的只读路径，追加结果写进任务文件，可以审计。opencode 追加 `/proc` 和 `/dev/urandom`：在 e2b 沙箱里重放证实，缺 `/dev/urandom` 时 Bun 崩在 `0xBBADBEEF`，缺 `/proc` 时 SIGABRT，只放 `/proc/self` 不够。appserver 不追加：默认规则下启动正常，行为与不加 Landlock 一致。claw 的规则不变。 |
 | `desired_worker_spec` | 模板取自 PG 的 `e2bWorkerOpencode` / `e2bWorkerAppserver`（`templateId` 为空时用 alias `claw-worker-{opencode,appserver}`，`buildId` 为可选 pin），固定使用 strict。contract key 的 profile 段写成 `strict+<engine>`，claw 项目的 key 不变。 |
 | 列表接口、config 接口 | 返回字段 `harnessEngine`。读取失败时返回 `null`，不回落成 claw。 |
 

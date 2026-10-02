@@ -1161,7 +1161,9 @@ pub(crate) async fn put_project_config(
         pool::harness_engine::load_project_harness_engine(&state.session_db, proj_id)
             .await
             .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    pool::harness_engine::validate_worker_profile(harness_engine, &worker_profile_json)
+    harness_engine
+        .strategy()
+        .validate_worker_profile(&worker_profile_json)
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     let worker_env_json = match &req.worker_env_json {
         Some(incoming) => incoming.clone(),

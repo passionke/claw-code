@@ -1,13 +1,15 @@
 //! Project harness engine (`claw` | `opencode` | `appserver`), fixed at project creation.
-//! The only gateway module that maps an engine to its e2b template, worker bin and capability
-//! rules; hot paths call in through one-line hooks. Contract: `docs/neuro-harness-contract.md`.
+//! The only gateway module that knows engines. Every per-engine rule lives behind
+//! [`EngineStrategy`]: claw is the pass-through strategy (trait defaults), neuro engines share
+//! [`NeuroEngine`] and differ only by their static spec. Hot paths call
+//! `engine.strategy().<hook>()`. Contract: `docs/neuro-harness-contract.md`.
 //! Author: kejiqing
 
 use gateway_solve_turn::GatewaySolveTaskFile;
 use serde::{Deserialize, Serialize};
 
 use crate::gateway_e2b_worker_settings::{e2b_worker_build_id, E2bWorkerSettings};
-use crate::gateway_global_settings::get_gateway_global_settings;
+use crate::gateway_global_settings::{get_gateway_global_settings, GatewayGlobalSettingsStore};
 use crate::session_db::GatewaySessionDb;
 
 use super::worker_profile::{mode_from_json, WorkerProfileMode};
@@ -46,34 +48,219 @@ impl HarnessEngine {
         }
     }
 
+    /// Column default: claw projects never write `harness_engine`.
     #[must_use]
     pub fn is_claw(self) -> bool {
         self == Self::Claw
     }
 
-    /// Worker CLI inside the engine image; `None` keeps the claw bin.
-    fn worker_bin(self) -> Option<&'static str> {
+    #[must_use]
+    pub fn strategy(self) -> &'static dyn EngineStrategy {
         match self {
-            Self::Claw => None,
-            Self::Opencode => Some("/usr/local/bin/neuro-opencode"),
-            Self::Appserver => Some("/usr/local/bin/neuro-appserver"),
-        }
-    }
-
-    /// e2b template alias (also the default when PG has no `templateId`).
-    fn template_alias(self) -> Option<&'static str> {
-        match self {
-            Self::Claw => None,
-            Self::Opencode => Some("claw-worker-opencode"),
-            Self::Appserver => Some("claw-worker-appserver"),
+            Self::Claw => &ClawEngine,
+            Self::Opencode => &OPENCODE,
+            Self::Appserver => &APPSERVER,
         }
     }
 }
 
-/// Bin for `exec_solve`: the engine CLI, or the existing claw bin.
-#[must_use]
-pub fn exec_bin(engine: HarnessEngine, claw_bin: &str) -> &str {
-    engine.worker_bin().unwrap_or(claw_bin)
+/// e2b template for an engine worker (strict only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineWorkerTemplate {
+    pub template_id: String,
+    pub build_id: Option<String>,
+    pub alias: String,
+    /// `#profile=` segment of the worker contract key (claw keys unchanged).
+    pub profile_label: String,
+}
+
+/// Per-engine policy. Defaults are claw's behavior, so the claw strategy is empty.
+pub trait EngineStrategy: Sync {
+    /// Bin for `exec_solve`.
+    fn exec_bin<'a>(&self, claw_bin: &'a str) -> &'a str {
+        claw_bin
+    }
+
+    /// Own e2b template from global settings; `None` keeps the claw template logic.
+    fn worker_template(&self, _store: &GatewayGlobalSettingsStore) -> Option<EngineWorkerTemplate> {
+        None
+    }
+
+    /// Whether the effective LLM must be checked by [`Self::validate_llm_upstream`].
+    fn checks_llm_upstream(&self) -> bool {
+        false
+    }
+
+    fn validate_llm_upstream(&self, _base_model_url: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn validate_role(&self, _role: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn validate_worker_profile(
+        &self,
+        _worker_profile_json: &serde_json::Value,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Request-level gate before any work.
+    fn gate_solve_request(&self, _req: &SolveGate<'_>) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Last edit of the task file before it is shipped to the worker.
+    fn prepare_task(&self, _task: &mut GatewaySolveTaskFile) {}
+}
+
+/// Inputs of [`EngineStrategy::gate_solve_request`].
+pub struct SolveGate<'a> {
+    pub e2b_backend: bool,
+    pub interaction_mode: Option<&'a str>,
+    pub sealed_plan_id: Option<&'a str>,
+    pub sealed_plan_markdown: Option<&'a str>,
+}
+
+pub struct ClawEngine;
+
+impl EngineStrategy for ClawEngine {}
+
+/// A neuro-harness engine: an ACP agent behind `neuro-<name>` in its own strict e2b template.
+pub struct NeuroEngine {
+    name: &'static str,
+    worker_bin: &'static str,
+    /// e2b template alias, also the template when PG has no `templateId`.
+    template_alias: &'static str,
+    template_settings: fn(&GatewayGlobalSettingsStore) -> &E2bWorkerSettings,
+    /// Codex speaks only the Responses API.
+    requires_responses_upstream: bool,
+    /// Read-only paths the engine runtime needs inside the strict Landlock jail, appended to the
+    /// resolved DSL (e.g. Bun aborts without `/proc` and `/dev/urandom`).
+    landlock_runtime_ro: &'static [&'static str],
+}
+
+fn opencode_settings(s: &GatewayGlobalSettingsStore) -> &E2bWorkerSettings {
+    &s.e2b_worker_opencode
+}
+
+fn appserver_settings(s: &GatewayGlobalSettingsStore) -> &E2bWorkerSettings {
+    &s.e2b_worker_appserver
+}
+
+static OPENCODE: NeuroEngine = NeuroEngine {
+    name: "opencode",
+    worker_bin: "/usr/local/bin/neuro-opencode",
+    template_alias: "claw-worker-opencode",
+    template_settings: opencode_settings,
+    requires_responses_upstream: false,
+    landlock_runtime_ro: &["/proc", "/dev/urandom"],
+};
+
+static APPSERVER: NeuroEngine = NeuroEngine {
+    name: "appserver",
+    worker_bin: "/usr/local/bin/neuro-appserver",
+    template_alias: "claw-worker-appserver",
+    template_settings: appserver_settings,
+    requires_responses_upstream: true,
+    landlock_runtime_ro: &[],
+};
+
+impl NeuroEngine {
+    fn unsupported(&self, what: &str) -> String {
+        format!(
+            "{UNSUPPORTED_BY_ENGINE}: {what} (harnessEngine={})",
+            self.name
+        )
+    }
+}
+
+impl EngineStrategy for NeuroEngine {
+    fn exec_bin<'a>(&self, _claw_bin: &'a str) -> &'a str {
+        self.worker_bin
+    }
+
+    fn worker_template(&self, store: &GatewayGlobalSettingsStore) -> Option<EngineWorkerTemplate> {
+        let settings = (self.template_settings)(store);
+        Some(EngineWorkerTemplate {
+            template_id: settings
+                .template_id
+                .clone()
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| self.template_alias.to_string()),
+            build_id: e2b_worker_build_id(settings),
+            alias: self.template_alias.to_string(),
+            profile_label: format!("strict+{}", self.name),
+        })
+    }
+
+    fn checks_llm_upstream(&self) -> bool {
+        self.requires_responses_upstream
+    }
+
+    fn validate_llm_upstream(&self, base_model_url: &str) -> Result<(), String> {
+        if !self.requires_responses_upstream
+            || crate::gateway_tap_client::base_model_url_is_responses(base_model_url)
+        {
+            return Ok(());
+        }
+        Err(self.unsupported(&format!(
+            "LLM baseModelUrl must end with /responses, got {base_model_url:?}"
+        )))
+    }
+
+    /// Engine projects stay `normal`.
+    fn validate_role(&self, role: &str) -> Result<(), String> {
+        if role == crate::master_observer::PROJECT_ROLE_NORMAL {
+            Ok(())
+        } else {
+            Err(self.unsupported(&format!("projectRole={role}")))
+        }
+    }
+
+    /// Engine workers run strict only.
+    fn validate_worker_profile(
+        &self,
+        worker_profile_json: &serde_json::Value,
+    ) -> Result<(), String> {
+        if mode_from_json(worker_profile_json) == WorkerProfileMode::Strict {
+            Ok(())
+        } else {
+            Err(self.unsupported("workerProfileJson.mode=relaxed"))
+        }
+    }
+
+    /// Plan mode and sealed plans are claw-only; engine workers exist only as e2b templates.
+    fn gate_solve_request(&self, req: &SolveGate<'_>) -> Result<(), String> {
+        if !req.e2b_backend {
+            return Err(self.unsupported("non-e2b worker backend"));
+        }
+        if gateway_solve_turn::InteractionMode::parse(req.interaction_mode).is_plan() {
+            return Err(self.unsupported("interactionMode=plan"));
+        }
+        let set = |s: Option<&str>| s.is_some_and(|s| !s.trim().is_empty());
+        if set(req.sealed_plan_id) || set(req.sealed_plan_markdown) {
+            return Err(self.unsupported("sealedPlan"));
+        }
+        Ok(())
+    }
+
+    /// Plain agent turn, plus the runtime's read-only paths in the jail (visible in the task file).
+    fn prepare_task(&self, task: &mut GatewaySolveTaskFile) {
+        task.interaction_mode = Some("agent".to_string());
+        task.ask_user_question_enabled = Some(false);
+        task.force_single_turn = Some(true);
+        task.sealed_plan_id = None;
+        task.sealed_plan_markdown = None;
+        if let Some(dsl) = task.landlock_dsl.as_mut() {
+            for path in self.landlock_runtime_ro {
+                if !dsl.ro.iter().any(|p| p == path) {
+                    dsl.ro.push((*path).to_string());
+                }
+            }
+        }
+    }
 }
 
 pub async fn load_project_harness_engine(
@@ -117,41 +304,6 @@ pub async fn set_harness_engine_on_create(
     Ok(())
 }
 
-/// e2b template for an engine worker (strict only).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineWorkerTemplate {
-    pub template_id: String,
-    pub build_id: Option<String>,
-    pub alias: String,
-}
-
-fn engine_settings(
-    store: &crate::gateway_global_settings::GatewayGlobalSettingsStore,
-    engine: HarnessEngine,
-) -> Option<&E2bWorkerSettings> {
-    match engine {
-        HarnessEngine::Claw => None,
-        HarnessEngine::Opencode => Some(&store.e2b_worker_opencode),
-        HarnessEngine::Appserver => Some(&store.e2b_worker_appserver),
-    }
-}
-
-fn template_from_settings(
-    engine: HarnessEngine,
-    settings: &E2bWorkerSettings,
-) -> Option<EngineWorkerTemplate> {
-    let alias = engine.template_alias()?.to_string();
-    Some(EngineWorkerTemplate {
-        template_id: settings
-            .template_id
-            .clone()
-            .filter(|t| !t.trim().is_empty())
-            .unwrap_or_else(|| alias.clone()),
-        build_id: e2b_worker_build_id(settings),
-        alias,
-    })
-}
-
 /// PG `e2bWorkerOpencode` / `e2bWorkerAppserver`; `None` for claw (existing template logic).
 pub async fn engine_worker_template(
     db: &GatewaySessionDb,
@@ -163,116 +315,44 @@ pub async fn engine_worker_template(
     let (store, _, _) = get_gateway_global_settings(db)
         .await
         .map_err(|e| format!("load global settings: {e}"))?;
-    Ok(engine_settings(&store, engine).and_then(|s| template_from_settings(engine, s)))
+    Ok(engine.strategy().worker_template(&store))
 }
 
-/// `#profile=` segment of the worker contract key for engine workers (claw keys unchanged).
-#[must_use]
-pub fn contract_profile_label(engine: HarnessEngine) -> String {
-    format!("strict+{}", engine.as_str())
-}
-
-fn unsupported(what: &str, engine: HarnessEngine) -> String {
-    format!(
-        "{UNSUPPORTED_BY_ENGINE}: {what} (harnessEngine={})",
-        engine.as_str()
-    )
-}
-
-/// appserver (Codex) speaks only the Responses API: the effective upstream must be `/responses`.
-pub fn validate_llm_upstream(engine: HarnessEngine, base_model_url: &str) -> Result<(), String> {
-    if engine != HarnessEngine::Appserver {
-        return Ok(());
-    }
-    if crate::gateway_tap_client::base_model_url_is_responses(base_model_url) {
-        Ok(())
-    } else {
-        Err(unsupported(
-            &format!("LLM baseModelUrl must end with /responses, got {base_model_url:?}"),
-            engine,
-        ))
-    }
-}
-
-/// [`validate_llm_upstream`] against the project's effective LLM (project override, else cluster).
+/// [`EngineStrategy::validate_llm_upstream`] against the project's effective LLM
+/// (project override, else cluster).
 pub async fn check_project_llm_upstream(
     db: &GatewaySessionDb,
     engine: HarnessEngine,
     proj_id: i64,
 ) -> Result<(), String> {
-    if engine != HarnessEngine::Appserver {
+    let strategy = engine.strategy();
+    if !strategy.checks_llm_upstream() {
         return Ok(());
     }
     let runtime = crate::gateway_project_llm::load_effective_llm_runtime(db, proj_id)
         .await
         .map_err(|e| format!("load effective LLM for proj {proj_id}: {e}"))?
         .ok_or_else(|| format!("no active LLM for proj {proj_id}"))?;
-    validate_llm_upstream(engine, &runtime.base_model_url)
-}
-
-/// Non-claw projects stay `normal`.
-pub fn validate_role(engine: HarnessEngine, role: &str) -> Result<(), String> {
-    if engine.is_claw() || role == crate::master_observer::PROJECT_ROLE_NORMAL {
-        Ok(())
-    } else {
-        Err(unsupported(&format!("projectRole={role}"), engine))
-    }
-}
-
-/// Non-claw projects run strict workers only.
-pub fn validate_worker_profile(
-    engine: HarnessEngine,
-    worker_profile_json: &serde_json::Value,
-) -> Result<(), String> {
-    if engine.is_claw() || mode_from_json(worker_profile_json) == WorkerProfileMode::Strict {
-        Ok(())
-    } else {
-        Err(unsupported("workerProfileJson.mode=relaxed", engine))
-    }
-}
-
-/// Request-level gate before any work: plan mode and sealed plans are claw-only; engine workers
-/// exist only as e2b templates.
-pub fn gate_solve_request(
-    engine: HarnessEngine,
-    e2b_backend: bool,
-    interaction_mode: Option<&str>,
-    sealed_plan_id: Option<&str>,
-    sealed_plan_markdown: Option<&str>,
-) -> Result<(), String> {
-    if engine.is_claw() {
-        return Ok(());
-    }
-    if !e2b_backend {
-        return Err(unsupported("non-e2b worker backend", engine));
-    }
-    if gateway_solve_turn::InteractionMode::parse(interaction_mode).is_plan() {
-        return Err(unsupported("interactionMode=plan", engine));
-    }
-    if sealed_plan_id.is_some_and(|s| !s.trim().is_empty())
-        || sealed_plan_markdown.is_some_and(|s| !s.trim().is_empty())
-    {
-        return Err(unsupported("sealedPlan", engine));
-    }
-    Ok(())
-}
-
-/// Engine tasks always run as a plain agent turn.
-pub fn trim_task(engine: HarnessEngine, task: &mut GatewaySolveTaskFile) {
-    if engine.is_claw() {
-        return;
-    }
-    task.interaction_mode = Some("agent".to_string());
-    task.ask_user_question_enabled = Some(false);
-    task.force_single_turn = Some(true);
-    task.sealed_plan_id = None;
-    task.sealed_plan_markdown = None;
+    strategy.validate_llm_upstream(&runtime.base_model_url)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn gate(
+        e2b: bool,
+        mode: Option<&'static str>,
+        sealed: Option<&'static str>,
+    ) -> SolveGate<'static> {
+        SolveGate {
+            e2b_backend: e2b,
+            interaction_mode: mode,
+            sealed_plan_id: sealed,
+            sealed_plan_markdown: None,
+        }
+    }
 
     #[test]
     fn parse_and_bins() {
@@ -286,65 +366,88 @@ mod tests {
             HarnessEngine::Opencode
         );
         assert!(HarnessEngine::parse(Some("codex")).is_err());
+        let bin = |e: HarnessEngine| e.strategy().exec_bin("/usr/local/bin/claw").to_string();
+        assert_eq!(bin(HarnessEngine::Claw), "/usr/local/bin/claw");
         assert_eq!(
-            exec_bin(HarnessEngine::Claw, "/usr/local/bin/claw"),
-            "/usr/local/bin/claw"
-        );
-        assert_eq!(
-            exec_bin(HarnessEngine::Appserver, "/usr/local/bin/claw"),
+            bin(HarnessEngine::Appserver),
             "/usr/local/bin/neuro-appserver"
         );
         assert_eq!(
-            exec_bin(HarnessEngine::Opencode, "claw"),
+            bin(HarnessEngine::Opencode),
             "/usr/local/bin/neuro-opencode"
         );
     }
 
     #[test]
     fn template_defaults_to_alias_and_pins_build() {
-        let t =
-            template_from_settings(HarnessEngine::Opencode, &E2bWorkerSettings::default()).unwrap();
+        let mut store = GatewayGlobalSettingsStore::default();
+        let t = HarnessEngine::Opencode
+            .strategy()
+            .worker_template(&store)
+            .unwrap();
         assert_eq!(t.template_id, "claw-worker-opencode");
         assert_eq!(t.alias, "claw-worker-opencode");
         assert_eq!(t.build_id, None);
-        let s: E2bWorkerSettings =
+        assert_eq!(t.profile_label, "strict+opencode");
+        store.e2b_worker_appserver =
             serde_json::from_value(json!({"templateId":"tpl_x","buildId":"b1"})).unwrap();
-        let t = template_from_settings(HarnessEngine::Appserver, &s).unwrap();
+        let t = HarnessEngine::Appserver
+            .strategy()
+            .worker_template(&store)
+            .unwrap();
         assert_eq!(t.template_id, "tpl_x");
         assert_eq!(t.build_id.as_deref(), Some("b1"));
         assert_eq!(t.alias, "claw-worker-appserver");
-        assert!(template_from_settings(HarnessEngine::Claw, &s).is_none());
-        assert_eq!(
-            contract_profile_label(HarnessEngine::Opencode),
-            "strict+opencode"
-        );
+        assert!(HarnessEngine::Claw
+            .strategy()
+            .worker_template(&store)
+            .is_none());
     }
 
     #[test]
     fn appserver_requires_responses_upstream() {
-        let e = HarnessEngine::Appserver;
-        assert!(validate_llm_upstream(e, "https://api.openai.com/v1/responses").is_ok());
-        assert!(validate_llm_upstream(e, "https://api.openai.com/v1/responses/").is_ok());
-        assert!(validate_llm_upstream(e, "https://h/v1/RESPONSES?x=1").is_ok());
-        let err = validate_llm_upstream(e, "https://api.x.ai/v1/chat/completions").unwrap_err();
+        let s = HarnessEngine::Appserver.strategy();
+        assert!(s.checks_llm_upstream());
+        assert!(s
+            .validate_llm_upstream("https://api.openai.com/v1/responses")
+            .is_ok());
+        assert!(s
+            .validate_llm_upstream("https://api.openai.com/v1/responses/")
+            .is_ok());
+        assert!(s
+            .validate_llm_upstream("https://h/v1/RESPONSES?x=1")
+            .is_ok());
+        let err = s
+            .validate_llm_upstream("https://api.x.ai/v1/chat/completions")
+            .unwrap_err();
         assert!(err.starts_with("unsupported_by_engine:"), "{err}");
-        assert!(validate_llm_upstream(e, "https://api.x.ai/v1").is_err());
-        assert!(validate_llm_upstream(HarnessEngine::Opencode, "https://x/v1").is_ok());
-        assert!(validate_llm_upstream(HarnessEngine::Claw, "https://x/v1").is_ok());
+        assert!(s.validate_llm_upstream("https://api.x.ai/v1").is_err());
+        for e in [HarnessEngine::Opencode, HarnessEngine::Claw] {
+            assert!(!e.strategy().checks_llm_upstream());
+            assert!(e.strategy().validate_llm_upstream("https://x/v1").is_ok());
+        }
     }
 
     #[test]
     fn role_and_profile_rules() {
-        assert!(validate_role(HarnessEngine::Opencode, "normal").is_ok());
-        assert!(validate_role(HarnessEngine::Opencode, "steerable").is_err());
-        assert!(validate_role(HarnessEngine::Claw, "master").is_ok());
-        assert!(
-            validate_worker_profile(HarnessEngine::Appserver, &json!({"mode":"strict"})).is_ok()
-        );
-        assert!(
-            validate_worker_profile(HarnessEngine::Appserver, &json!({"mode":"relaxed"})).is_err()
-        );
-        assert!(validate_worker_profile(HarnessEngine::Claw, &json!({"mode":"relaxed"})).is_ok());
+        let oc = HarnessEngine::Opencode.strategy();
+        assert!(oc.validate_role("normal").is_ok());
+        assert!(oc.validate_role("steerable").is_err());
+        assert!(HarnessEngine::Claw
+            .strategy()
+            .validate_role("master")
+            .is_ok());
+        let app = HarnessEngine::Appserver.strategy();
+        assert!(app
+            .validate_worker_profile(&json!({"mode":"strict"}))
+            .is_ok());
+        assert!(app
+            .validate_worker_profile(&json!({"mode":"relaxed"}))
+            .is_err());
+        assert!(HarnessEngine::Claw
+            .strategy()
+            .validate_worker_profile(&json!({"mode":"relaxed"}))
+            .is_ok());
     }
 
     /// Engine workers append the same `runtime::Session` JSONL as claw (user msg, then the
@@ -395,24 +498,49 @@ mod tests {
     }
 
     #[test]
-    fn solve_gate_and_trim() {
-        let e = HarnessEngine::Opencode;
-        assert!(gate_solve_request(e, true, Some("agent"), None, None).is_ok());
-        assert!(gate_solve_request(e, true, Some("plan"), None, None)
+    fn solve_gate_and_prepare_task() {
+        let oc = HarnessEngine::Opencode.strategy();
+        assert!(oc
+            .gate_solve_request(&gate(true, Some("agent"), None))
+            .is_ok());
+        assert!(oc
+            .gate_solve_request(&gate(true, Some("plan"), None))
             .unwrap_err()
             .contains("interactionMode=plan"));
-        assert!(gate_solve_request(e, true, None, Some("p1"), None).is_err());
-        assert!(gate_solve_request(e, false, None, None, None).is_err());
-        assert!(gate_solve_request(HarnessEngine::Claw, false, Some("plan"), None, None).is_ok());
+        assert!(oc
+            .gate_solve_request(&gate(true, None, Some("p1")))
+            .is_err());
+        assert!(oc.gate_solve_request(&gate(false, None, None)).is_err());
+        assert!(HarnessEngine::Claw
+            .strategy()
+            .gate_solve_request(&gate(false, Some("plan"), None))
+            .is_ok());
 
-        let mut task: GatewaySolveTaskFile = serde_json::from_value(json!({
+        let task_json = json!({
             "requestId":"r","userPrompt":"p","turnId":"t",
-            "askUserQuestionEnabled":true,"forceSingleTurn":false
-        }))
-        .unwrap();
-        trim_task(e, &mut task);
+            "askUserQuestionEnabled":true,"forceSingleTurn":false,
+            "landlockDsl": gateway_solve_turn::default_landlock_dsl(),
+            "landlockDslSource":"systemDefault"
+        });
+        let mut task: GatewaySolveTaskFile = serde_json::from_value(task_json.clone()).unwrap();
+        oc.prepare_task(&mut task);
+        oc.prepare_task(&mut task);
         assert_eq!(task.interaction_mode.as_deref(), Some("agent"));
         assert_eq!(task.ask_user_question_enabled, Some(false));
         assert_eq!(task.force_single_turn, Some(true));
+        let ro = &task.landlock_dsl.as_ref().unwrap().ro;
+        for p in ["/proc", "/dev/urandom"] {
+            assert_eq!(
+                ro.iter().filter(|x| *x == p).count(),
+                1,
+                "{p} once in {ro:?}"
+            );
+        }
+        gateway_solve_turn::validate_landlock_dsl(task.landlock_dsl.as_ref().unwrap()).unwrap();
+
+        let mut claw_task: GatewaySolveTaskFile = serde_json::from_value(task_json).unwrap();
+        let before = serde_json::to_value(&claw_task).unwrap();
+        HarnessEngine::Claw.strategy().prepare_task(&mut claw_task);
+        assert_eq!(serde_json::to_value(&claw_task).unwrap(), before);
     }
 }

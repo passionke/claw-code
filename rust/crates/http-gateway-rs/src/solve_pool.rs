@@ -125,14 +125,15 @@ pub(crate) async fn run_solve_request_docker(
     let engine = harness_engine::load_project_harness_engine(&state.session_db, req.proj_id)
         .await
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    harness_engine::gate_solve_request(
-        engine,
-        pool_id == E2B_POOL_ID,
-        req.interaction_mode.as_deref(),
-        req.sealed_plan_id.as_deref(),
-        req.sealed_plan_markdown.as_deref(),
-    )
-    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    engine
+        .strategy()
+        .gate_solve_request(&harness_engine::SolveGate {
+            e2b_backend: pool_id == E2B_POOL_ID,
+            interaction_mode: req.interaction_mode.as_deref(),
+            sealed_plan_id: req.sealed_plan_id.as_deref(),
+            sealed_plan_markdown: req.sealed_plan_markdown.as_deref(),
+        })
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     harness_engine::check_project_llm_upstream(&state.session_db, engine, req.proj_id)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
@@ -329,7 +330,7 @@ pub(crate) async fn run_solve_request_docker(
         responses_stream: req.responses_stream,
         thinking_enabled,
     };
-    harness_engine::trim_task(engine, &mut task);
+    engine.strategy().prepare_task(&mut task);
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -491,7 +492,9 @@ pub(crate) async fn run_solve_request_docker(
     let exec_fut = pool.exec_solve(
         lease_cleanup.lease.as_ref().expect("lease set for exec"),
         GATEWAY_SOLVE_TASK_FILE,
-        harness_engine::exec_bin(engine, claw_bin_for_pool_exec(&state.cfg)),
+        engine
+            .strategy()
+            .exec_bin(claw_bin_for_pool_exec(&state.cfg)),
         Some(request_id.as_str()),
         &turn_id,
         timeout_seconds,
