@@ -163,10 +163,30 @@ echo "    relaxed_image=${RELAXED_IMAGE} → debian+COPY claw + tools (no OVS)" 
 echo "    tap_image=${TAP_IMAGE} → debian+COPY claude-tap" >&2
 echo "    e2b=${E2B_API_URL} platform=${PLATFORM}" >&2
 
+# Per-component retry: a transient failure (registry 404/manifest unknown on a tag that is
+# still propagating, pip/dns blip, e2bserver hiccup) retries only the failed component; the
+# already-succeeded ones are not re-run (each build script also skips via contentHash).
+# CLAW_E2B_COMPONENT_RETRIES (default 3), exponential-ish backoff 10s/20s/… Author: kejiqing
+COMPONENT_RETRIES="${CLAW_E2B_COMPONENT_RETRIES:-3}"
+
 run_py() {
-  echo "" >&2
-  echo "======== $(date -Iseconds) $* ========" >&2
-  "${PY}" "$@"
+  local attempt=1
+  local wait_s
+  while true; do
+    echo "" >&2
+    echo "======== $(date -Iseconds) $* (attempt ${attempt}/${COMPONENT_RETRIES}) ========" >&2
+    if "${PY}" "$@"; then
+      return 0
+    fi
+    if [[ "${attempt}" -ge "${COMPONENT_RETRIES}" ]]; then
+      echo "error: $* failed after ${attempt} attempts" >&2
+      return 1
+    fi
+    wait_s=$((attempt * 10))
+    echo "warn: $* failed; retry ${attempt}/${COMPONENT_RETRIES} in ${wait_s}s" >&2
+    sleep "${wait_s}"
+    attempt=$((attempt + 1))
+  done
 }
 
 run_py "${E2B_DIR}/build-claw-worker-selfhosted.py"
