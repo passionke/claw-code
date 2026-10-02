@@ -186,11 +186,13 @@ pub struct ProjectFcWorkerRow {
     pub in_use_count: i32,
     /// Soft expiry for stale busy counts (ms since epoch). Author: kejiqing
     pub in_use_until_ms: i64,
-    /// Gateway lifecycle: `running` | `sleeping`. Author: kejiqing
+    /// Gateway lifecycle: `running` | `sleeping` | `invalid`. Author: kejiqing
     pub lifecycle_state: String,
     pub last_idle_at_ms: i64,
     /// Scope MCP bind snapshot (`values` + rendered `mcpServers`). Author: kejiqing
     pub mcp_bind_json: Value,
+    /// Populated when `lifecycle_state=invalid` (RCA); cleared on successful recreate upsert.
+    pub invalid_reason: String,
 }
 
 /// PG `slot_index` (non-negative) → registry `u32`.
@@ -560,6 +562,7 @@ fn row_to_project_fc_worker(row: &sqlx::postgres::PgRow) -> Result<ProjectFcWork
             .try_get::<Json<Value>, _>("mcp_bind_json")
             .map(|j| j.0)
             .unwrap_or_else(|_| json!({})),
+        invalid_reason: row.try_get("invalid_reason").unwrap_or_default(),
     })
 }
 
@@ -1906,7 +1909,7 @@ impl GatewaySessionDb {
             .await
     }
 
-    /// Scope-aware worker lookup (`scope_key` empty = singleton). Author: kejiqing
+    /// Scope-aware worker lookup (`scope_key` empty = singleton). Live only. Author: kejiqing
     pub async fn get_project_e2b_worker_scoped(
         &self,
         proj_id: i64,
@@ -1915,9 +1918,10 @@ impl GatewaySessionDb {
     ) -> Result<Option<ProjectFcWorkerRow>, SqlxError> {
         let row = sqlx::query(
             r"SELECT proj_id, scope_key, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms,
-                      in_use_count, in_use_until_ms, lifecycle_state, last_idle_at_ms, mcp_bind_json
+                      in_use_count, in_use_until_ms, lifecycle_state, last_idle_at_ms, mcp_bind_json, invalid_reason
                FROM project_e2b_worker
-               WHERE cluster_id = $1 AND proj_id = $2 AND scope_key = $3 AND slot_index = $4",
+               WHERE cluster_id = $1 AND proj_id = $2 AND scope_key = $3 AND slot_index = $4
+                 AND lifecycle_state IN ('running', 'sleeping')",
         )
         .bind(self.cluster_id())
         .bind(proj_id)
@@ -1945,10 +1949,10 @@ impl GatewaySessionDb {
     ) -> Result<Vec<ProjectFcWorkerRow>, SqlxError> {
         let rows = sqlx::query(
             r"SELECT proj_id, scope_key, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms,
-                      in_use_count, in_use_until_ms, lifecycle_state, last_idle_at_ms, mcp_bind_json
+                      in_use_count, in_use_until_ms, lifecycle_state, last_idle_at_ms, mcp_bind_json, invalid_reason
                FROM project_e2b_worker
                WHERE cluster_id = $1 AND proj_id = $2
-               ORDER BY scope_key ASC, slot_index ASC",
+               ORDER BY scope_key ASC, slot_index ASC, updated_at_ms DESC",
         )
         .bind(self.cluster_id())
         .bind(proj_id)
@@ -1957,16 +1961,17 @@ impl GatewaySessionDb {
         rows.iter().map(row_to_project_fc_worker).collect()
     }
 
-    /// Singleton project slots only (`scope_key=''`). Author: kejiqing
+    /// Singleton project slots only (`scope_key=''`). Live only. Author: kejiqing
     pub async fn list_project_e2b_singleton_workers(
         &self,
         proj_id: i64,
     ) -> Result<Vec<ProjectFcWorkerRow>, SqlxError> {
         let rows = sqlx::query(
             r"SELECT proj_id, scope_key, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms,
-                      in_use_count, in_use_until_ms, lifecycle_state, last_idle_at_ms, mcp_bind_json
+                      in_use_count, in_use_until_ms, lifecycle_state, last_idle_at_ms, mcp_bind_json, invalid_reason
                FROM project_e2b_worker
                WHERE cluster_id = $1 AND proj_id = $2 AND scope_key = ''
+                 AND lifecycle_state IN ('running', 'sleeping')
                ORDER BY slot_index ASC",
         )
         .bind(self.cluster_id())
@@ -1976,11 +1981,12 @@ impl GatewaySessionDb {
         rows.iter().map(row_to_project_fc_worker).collect()
     }
 
-    /// Count scope workers for one project (`scope_key <> ''`). Author: kejiqing
+    /// Count live scope workers for one project (`scope_key <> ''`). Author: kejiqing
     pub async fn count_project_e2b_scope_workers(&self, proj_id: i64) -> Result<i64, SqlxError> {
         let n: i64 = sqlx::query_scalar(
             r"SELECT COUNT(*)::bigint FROM project_e2b_worker
-               WHERE cluster_id = $1 AND proj_id = $2 AND scope_key <> ''",
+               WHERE cluster_id = $1 AND proj_id = $2 AND scope_key <> ''
+                 AND lifecycle_state IN ('running', 'sleeping')",
         )
         .bind(self.cluster_id())
         .bind(proj_id)
@@ -1996,8 +2002,9 @@ impl GatewaySessionDb {
         sqlx::query(
             r"INSERT INTO project_e2b_worker (
                  proj_id, cluster_id, scope_key, slot_index, sandbox_id, worker_id, template_id, handle_json,
-                 updated_at_ms, in_use_count, in_use_until_ms, lifecycle_state, last_idle_at_ms, mcp_bind_json
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                 updated_at_ms, in_use_count, in_use_until_ms, lifecycle_state, last_idle_at_ms, mcp_bind_json,
+                 invalid_reason
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                ON CONFLICT (cluster_id, proj_id, scope_key, slot_index) DO UPDATE SET
                  sandbox_id = EXCLUDED.sandbox_id,
                  worker_id = EXCLUDED.worker_id,
@@ -2006,7 +2013,10 @@ impl GatewaySessionDb {
                  updated_at_ms = EXCLUDED.updated_at_ms,
                  lifecycle_state = EXCLUDED.lifecycle_state,
                  last_idle_at_ms = EXCLUDED.last_idle_at_ms,
-                 mcp_bind_json = EXCLUDED.mcp_bind_json",
+                 mcp_bind_json = EXCLUDED.mcp_bind_json,
+                 invalid_reason = EXCLUDED.invalid_reason,
+                 in_use_count = EXCLUDED.in_use_count,
+                 in_use_until_ms = EXCLUDED.in_use_until_ms",
         )
         .bind(row.proj_id)
         .bind(self.cluster_id())
@@ -2022,6 +2032,7 @@ impl GatewaySessionDb {
         .bind(&row.lifecycle_state)
         .bind(row.last_idle_at_ms)
         .bind(Json(&row.mcp_bind_json))
+        .bind(&row.invalid_reason)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -2164,6 +2175,40 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    /// Soft-invalidate a worker row for RCA (prefer over DELETE). Author: kejiqing
+    ///
+    /// Sets `lifecycle_state=invalid`, stores reason, clears busy. Next create upserts over the
+    /// same PK; durable trail is also written to `worker_rotation_log` by the caller.
+    pub async fn invalidate_project_e2b_worker_slot_scoped(
+        &self,
+        proj_id: i64,
+        scope_key: &str,
+        slot_index: i32,
+        reason: &str,
+    ) -> Result<(), SqlxError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            r"UPDATE project_e2b_worker
+               SET lifecycle_state = 'invalid',
+                   invalid_reason = $5,
+                   in_use_count = 0,
+                   in_use_until_ms = 0,
+                   last_idle_at_ms = 0,
+                   updated_at_ms = $6
+               WHERE cluster_id = $1 AND proj_id = $2 AND scope_key = $3 AND slot_index = $4
+                 AND lifecycle_state <> 'invalid'",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .bind(scope_key)
+        .bind(slot_index)
+        .bind(reason)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Idle scope workers eligible for pause. Author: kejiqing
     pub async fn list_idle_scope_workers_for_pause(
         &self,
@@ -2171,7 +2216,7 @@ impl GatewaySessionDb {
     ) -> Result<Vec<ProjectFcWorkerRow>, SqlxError> {
         let rows = sqlx::query(
             r"SELECT proj_id, scope_key, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms,
-                      in_use_count, in_use_until_ms, lifecycle_state, last_idle_at_ms, mcp_bind_json
+                      in_use_count, in_use_until_ms, lifecycle_state, last_idle_at_ms, mcp_bind_json, invalid_reason
                FROM project_e2b_worker
                WHERE cluster_id = $1
                  AND scope_key <> ''
@@ -2428,7 +2473,10 @@ impl GatewaySessionDb {
 
     pub async fn list_project_e2b_worker_sandbox_ids(&self) -> Result<Vec<String>, SqlxError> {
         let rows = sqlx::query_scalar::<_, String>(
-            "SELECT sandbox_id FROM project_e2b_worker WHERE cluster_id = $1 ORDER BY proj_id",
+            r"SELECT sandbox_id FROM project_e2b_worker
+               WHERE cluster_id = $1
+                 AND lifecycle_state IN ('running', 'sleeping')
+               ORDER BY proj_id",
         )
         .bind(self.cluster_id())
         .fetch_all(&self.pool)
