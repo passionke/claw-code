@@ -30,10 +30,10 @@ pub const WARM_PROJ_ROLE: &str = "warm-proj";
 /// Keep lists must include **scope** workers as well as singleton slots — both use
 /// `clawRole=warm-proj`. Author: kejiqing
 #[must_use]
-pub fn warm_proj_sandbox_kept(
+pub fn warm_proj_sandbox_kept<S: ::std::hash::BuildHasher>(
     proj_id: i64,
     sandbox_id: &str,
-    keep_by_proj: &HashMap<i64, Vec<String>>,
+    keep_by_proj: &HashMap<i64, Vec<String>, S>,
 ) -> bool {
     keep_by_proj
         .get(&proj_id)
