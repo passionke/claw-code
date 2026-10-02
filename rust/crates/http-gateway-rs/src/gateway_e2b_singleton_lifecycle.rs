@@ -24,9 +24,7 @@ use crate::gateway_e2b_observe_settings::e2b_observe_template_from_env;
 use crate::gateway_e2b_worker_settings::e2b_project_worker_renew_interval_secs_from_env;
 use crate::gateway_global_settings::{get_gateway_global_settings, load_active_llm_runtime};
 use crate::gateway_tap_client::{tap_client_from_base_model_url, DEFAULT_TAP_CLIENT};
-use crate::pool::interactive_backend::{
-    e2b_observe_is_enabled, interactive_backend_is_e2b,
-};
+use crate::pool::interactive_backend::{e2b_observe_is_enabled, interactive_backend_is_e2b};
 use crate::session_db::GatewaySessionDb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, utoipa::ToSchema)]
