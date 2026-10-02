@@ -298,6 +298,8 @@ export interface BootstrapTemplateEntry {
   key: string;
   alias: string;
   buildId?: string;
+  imageRef?: string;
+  imageDigest?: string;
   ready: boolean;
 }
 

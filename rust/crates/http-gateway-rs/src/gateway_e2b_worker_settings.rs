@@ -53,6 +53,16 @@ pub struct E2bWorkerSettings {
         skip_serializing_if = "Option::is_none"
     )]
     pub content_hash: Option<String>,
+    /// Source CI/ACR image the e2b template was derived from. Author: kejiqing
+    #[serde(rename = "imageRef", default, skip_serializing_if = "Option::is_none")]
+    pub image_ref: Option<String>,
+    /// Registry manifest digest of `imageRef` (empty when the lookup failed). Author: kejiqing
+    #[serde(
+        rename = "imageDigest",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub image_digest: Option<String>,
     #[serde(rename = "poolSize", default)]
     pub pool_size: Option<u32>,
     #[serde(rename = "alias", default)]
@@ -77,6 +87,10 @@ pub struct E2bWorkerSettingsPublic {
     pub template_id: Option<String>,
     #[serde(rename = "buildId", skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
+    #[serde(rename = "imageRef", skip_serializing_if = "Option::is_none")]
+    pub image_ref: Option<String>,
+    #[serde(rename = "imageDigest", skip_serializing_if = "Option::is_none")]
+    pub image_digest: Option<String>,
     #[serde(rename = "poolSize")]
     pub pool_size: u32,
     /// Env `CLAW_E2B_POOL_SIZE_CAP` (Admin write rejects values above this).
@@ -102,6 +116,11 @@ pub fn e2b_worker_settings_public(settings: &E2bWorkerSettings) -> E2bWorkerSett
             .clone()
             .filter(|t| !t.trim().is_empty()),
         build_id: settings.build_id.clone().filter(|t| !t.trim().is_empty()),
+        image_ref: settings.image_ref.clone().filter(|t| !t.trim().is_empty()),
+        image_digest: settings
+            .image_digest
+            .clone()
+            .filter(|t| !t.trim().is_empty()),
         pool_size: clamp_strict_worker_pool_size(
             settings
                 .pool_size

@@ -23,6 +23,16 @@ pub struct E2bNasApiSettings {
         skip_serializing_if = "Option::is_none"
     )]
     pub content_hash: Option<String>,
+    /// Base image the nas-api template is derived from. Author: kejiqing
+    #[serde(rename = "imageRef", default, skip_serializing_if = "Option::is_none")]
+    pub image_ref: Option<String>,
+    /// Registry manifest digest of `imageRef` (empty when the lookup failed). Author: kejiqing
+    #[serde(
+        rename = "imageDigest",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub image_digest: Option<String>,
     /// Build id of the running singleton sandbox (set on create). Author: kejiqing
     #[serde(rename = "appliedBuildId", default)]
     pub applied_build_id: Option<String>,
@@ -48,6 +58,10 @@ pub struct E2bNasApiSettingsPublic {
     pub template_id: Option<String>,
     #[serde(rename = "buildId", skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
+    #[serde(rename = "imageRef", skip_serializing_if = "Option::is_none")]
+    pub image_ref: Option<String>,
+    #[serde(rename = "imageDigest", skip_serializing_if = "Option::is_none")]
+    pub image_digest: Option<String>,
     #[serde(rename = "appliedBuildId", skip_serializing_if = "Option::is_none")]
     pub applied_build_id: Option<String>,
     #[serde(rename = "effectiveTemplateId")]
@@ -161,6 +175,8 @@ pub async fn e2b_nas_api_settings_public_with_runtime(
     Ok(E2bNasApiSettingsPublic {
         template_id: s.template_id.clone(),
         build_id: s.build_id.clone().filter(|t| !t.trim().is_empty()),
+        image_ref: s.image_ref.clone().filter(|t| !t.trim().is_empty()),
+        image_digest: s.image_digest.clone().filter(|t| !t.trim().is_empty()),
         applied_build_id: s.applied_build_id.clone().filter(|t| !t.trim().is_empty()),
         effective_template_id,
         base_url: s.base_url.clone(),

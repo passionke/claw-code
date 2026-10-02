@@ -1,4 +1,4 @@
-import { Alert, AutoComplete, Button, Form, Space, Table, Tag, Typography, message } from "antd";
+import { Alert, AutoComplete, Button, Form, Space, Table, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
@@ -56,6 +56,8 @@ export default function TemplateBuildStep({
     return snap.templateEntries.map((e) => ({
       ...e,
       buildId: undefined,
+      imageRef: undefined,
+      imageDigest: undefined,
       ready: false,
     }));
   }, [jobRunning, snap.templateEntries]);
@@ -265,6 +267,28 @@ export default function TemplateBuildStep({
             title: "buildId",
             dataIndex: "buildId",
             render: (v: string | undefined) => (jobRunning ? "—" : v ?? "—"),
+          },
+          {
+            title: "来源镜像",
+            dataIndex: "imageRef",
+            ellipsis: { showTitle: false },
+            render: (v: string | undefined) =>
+              jobRunning || !v ? "—" : (
+                <Tooltip title={v}>
+                  <span>{v}</span>
+                </Tooltip>
+              ),
+          },
+          {
+            title: "镜像 Digest",
+            dataIndex: "imageDigest",
+            ellipsis: { showTitle: false },
+            render: (v: string | undefined) =>
+              jobRunning || !v ? "—" : (
+                <Tooltip title={v}>
+                  <span>{v.length > 19 ? `${v.slice(0, 19)}…` : v}</span>
+                </Tooltip>
+              ),
           },
           {
             title: "状态",

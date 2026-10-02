@@ -7,6 +7,7 @@ import gzip
 import io
 import json
 import os
+import sys
 import tarfile
 import urllib.error
 import urllib.parse
@@ -227,18 +228,21 @@ def _pick_platform_manifest(index: dict, platform: str) -> str:
     raise RuntimeError(f"no manifest for platform={platform!r} in index")
 
 
-def _manifest_for_image(registry: str, repository: str, tag: str, platform: str, headers: dict[str, str]) -> dict:
-    ref = tag[1:] if tag.startswith("@") else tag
-    path = _registry_url(
-        registry, f"/v2/{repository}/manifests/{urllib.parse.quote(ref, safe=':@')}"
-    )
-    accept = (
+def _manifest_accept() -> str:
+    return (
         "application/vnd.oci.image.index.v1+json,"
         "application/vnd.docker.distribution.manifest.list.v2+json,"
         "application/vnd.oci.image.manifest.v1+json,"
         "application/vnd.docker.distribution.manifest.v2+json"
     )
-    hdrs = {**headers, "Accept": accept}
+
+
+def _manifest_for_image(registry: str, repository: str, tag: str, platform: str, headers: dict[str, str]) -> dict:
+    ref = tag[1:] if tag.startswith("@") else tag
+    path = _registry_url(
+        registry, f"/v2/{repository}/manifests/{urllib.parse.quote(ref, safe=':@')}"
+    )
+    hdrs = {**headers, "Accept": _manifest_accept()}
     manifest, _ = _http_json(path, hdrs)
     media = str(manifest.get("mediaType") or "")
     if "manifest.list" in media or "image.index" in media or "manifests" in manifest:
@@ -246,6 +250,46 @@ def _manifest_for_image(registry: str, repository: str, tag: str, platform: str,
         path2 = _registry_url(registry, f"/v2/{repository}/manifests/{digest}")
         manifest, _ = _http_json(path2, hdrs)
     return manifest
+
+
+def image_digest(image_ref: str, *, platform: str = "linux/amd64") -> str:
+    """Resolve the manifest digest for `image_ref` via registry HTTP.
+
+    Multi-platform index → the linux/<arch> child manifest digest (what a pull actually
+    resolves to); single manifest → its `Docker-Content-Digest`. Raises RuntimeError on
+    failure so callers can fall back to an empty digest without breaking the build.
+    Author: kejiqing
+    """
+    registry, repository, tag = parse_image_ref(image_ref)
+    headers = _auth_headers(registry, repository)
+    ref = tag[1:] if tag.startswith("@") else tag
+    path = _registry_url(
+        registry, f"/v2/{repository}/manifests/{urllib.parse.quote(ref, safe=':@')}"
+    )
+    hdrs = {**headers, "Accept": _manifest_accept()}
+    manifest, resp_headers = _http_json(path, hdrs)
+    media = str(manifest.get("mediaType") or "")
+    if "manifest.list" in media or "image.index" in media or "manifests" in manifest:
+        return _pick_platform_manifest(manifest, platform)
+    digest = resp_headers.get("docker-content-digest", "")
+    if not digest:
+        raise RuntimeError(f"no docker-content-digest header for {image_ref!r}")
+    return digest
+
+
+def try_image_digest(image_ref: str, *, platform: str = "linux/amd64") -> str:
+    """Best-effort manifest digest for `image_ref`; returns '' on any failure.
+
+    Never raises — a digest lookup is metadata, not a build gate. Author: kejiqing
+    """
+    if not image_ref or not image_ref.strip():
+        return ""
+    try:
+        return image_digest(image_ref, platform=platform)
+    except Exception as exc:  # noqa: BLE001 — metadata lookup must not fail the build
+        print(f"warn: image_digest({image_ref!r}) failed: {exc}", file=sys.stderr)
+        return ""
+
 
 
 def _ungzip_if_needed(blob: bytes) -> bytes:

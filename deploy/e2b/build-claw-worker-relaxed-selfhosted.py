@@ -23,7 +23,7 @@ from e2b_template_registry import (
 )
 from e2b_template_build import build_template_with_retry
 from e2b_template_content_hash import digest_tree, try_skip_unchanged
-from registry_extract import extract_file_from_image
+from registry_extract import extract_file_from_image, try_image_digest
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
@@ -153,7 +153,7 @@ def _relaxed_dockerfile() -> str:
     )
 
 
-def _persist_pg(alias: str, build, content_digest: str) -> None:
+def _persist_pg(alias: str, build, content_digest: str, image_ref: str) -> None:
     now_ms = int(time.time() * 1000)
     try:
         from e2b_pg_settings import merge_settings_json_key
@@ -165,6 +165,8 @@ def _persist_pg(alias: str, build, content_digest: str) -> None:
                 "buildId": build.build_id,
                 "contentHash": content_digest,
                 "alias": alias,
+                "imageRef": image_ref,
+                "imageDigest": try_image_digest(image_ref),
                 "updatedAtMs": now_ms,
             },
             now_ms=now_ms,
@@ -246,7 +248,8 @@ def main() -> int:
 
     print(f"template_id: {build.template_id}")
     print(f"build_id: {build.build_id}")
-    _persist_pg(alias, build, content_digest)
+    source_image = _env("CLAW_E2B_WORKER_RELAXED_IMAGE") or _worker_base_image()
+    _persist_pg(alias, build, content_digest, source_image)
     print(
         "hint: rebuild only updates PG; new build is used after gateway restart, "
         "manual worker reset, or when the sandbox is dead"

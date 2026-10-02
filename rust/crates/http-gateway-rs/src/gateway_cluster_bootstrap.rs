@@ -52,6 +52,10 @@ pub struct BootstrapTemplateEntry {
     pub alias: String,
     #[serde(rename = "buildId", skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
+    #[serde(rename = "imageRef", skip_serializing_if = "Option::is_none")]
+    pub image_ref: Option<String>,
+    #[serde(rename = "imageDigest", skip_serializing_if = "Option::is_none")]
+    pub image_digest: Option<String>,
     pub ready: bool,
 }
 
@@ -170,12 +174,16 @@ fn template_entries_from_settings(
             key: "e2bObserve".into(),
             alias: "claw-observe".into(),
             build_id: observe.build_id.clone(),
+            image_ref: observe.image_ref.clone(),
+            image_digest: observe.image_digest.clone(),
             ready: build_id_ready(observe.build_id.as_ref()),
         },
         BootstrapTemplateEntry {
             key: "e2bNasApi".into(),
             alias: "claw-nas-api".into(),
             build_id: nas_api.build_id.clone(),
+            image_ref: nas_api.image_ref.clone(),
+            image_digest: nas_api.image_digest.clone(),
             ready: build_id_ready(nas_api.build_id.as_ref()),
         },
         BootstrapTemplateEntry {
@@ -186,6 +194,8 @@ fn template_entries_from_settings(
                 .filter(|a| !a.trim().is_empty())
                 .unwrap_or_else(|| "claw-worker".into()),
             build_id: worker.build_id.clone(),
+            image_ref: worker.image_ref.clone(),
+            image_digest: worker.image_digest.clone(),
             ready: build_id_ready(worker.build_id.as_ref()),
         },
         BootstrapTemplateEntry {
@@ -196,6 +206,8 @@ fn template_entries_from_settings(
                 .filter(|a| !a.trim().is_empty())
                 .unwrap_or_else(|| "claw-worker-relaxed".into()),
             build_id: worker_relaxed.build_id.clone(),
+            image_ref: worker_relaxed.image_ref.clone(),
+            image_digest: worker_relaxed.image_digest.clone(),
             ready: build_id_ready(worker_relaxed.build_id.as_ref()),
         },
     ]

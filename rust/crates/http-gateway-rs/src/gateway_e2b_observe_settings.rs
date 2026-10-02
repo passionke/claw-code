@@ -20,6 +20,16 @@ pub struct E2bObserveSettings {
         skip_serializing_if = "Option::is_none"
     )]
     pub content_hash: Option<String>,
+    /// Source CI/ACR image the observe template was derived from. Author: kejiqing
+    #[serde(rename = "imageRef", default, skip_serializing_if = "Option::is_none")]
+    pub image_ref: Option<String>,
+    /// Registry manifest digest of `imageRef` (empty when the lookup failed). Author: kejiqing
+    #[serde(
+        rename = "imageDigest",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub image_digest: Option<String>,
     /// Build id of the running observe sandbox (set on create). Author: kejiqing
     #[serde(rename = "appliedBuildId", default)]
     pub applied_build_id: Option<String>,
@@ -43,6 +53,10 @@ pub struct E2bObserveSettingsPublic {
     pub template_id: Option<String>,
     #[serde(rename = "buildId", skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
+    #[serde(rename = "imageRef", skip_serializing_if = "Option::is_none")]
+    pub image_ref: Option<String>,
+    #[serde(rename = "imageDigest", skip_serializing_if = "Option::is_none")]
+    pub image_digest: Option<String>,
     #[serde(rename = "appliedBuildId", skip_serializing_if = "Option::is_none")]
     pub applied_build_id: Option<String>,
     #[serde(rename = "effectiveTemplateId")]
@@ -164,6 +178,11 @@ pub async fn e2b_observe_settings_public_with_runtime(
     Ok(E2bObserveSettingsPublic {
         template_id: settings.template_id,
         build_id: settings.build_id.clone().filter(|t| !t.trim().is_empty()),
+        image_ref: settings.image_ref.clone().filter(|t| !t.trim().is_empty()),
+        image_digest: settings
+            .image_digest
+            .clone()
+            .filter(|t| !t.trim().is_empty()),
         applied_build_id: settings
             .applied_build_id
             .clone()
