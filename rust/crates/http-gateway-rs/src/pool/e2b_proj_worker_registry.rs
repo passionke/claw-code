@@ -244,6 +244,16 @@ fn needs_recreate(stored: &str, desired: &str, image_refresh: bool, sandbox_aliv
     image_refresh && image_build_refresh_needed(stored, desired)
 }
 
+/// Scope sleeping → wake: recreate when contract or build is behind desired.
+///
+/// Unlike singleton R1 (`needs_recreate` with `image_refresh=false`), scope may catch up on
+/// build at **resume** only — never while Running/busy. Author: kejiqing
+#[must_use]
+fn scope_wake_should_recreate(stored_contract: &str, desired_contract: &str) -> bool {
+    contract_requires_rotation(stored_contract, desired_contract)
+        || image_build_refresh_needed(stored_contract, desired_contract)
+}
+
 struct WorkerSpec {
     e2b_template_id: String,
     build_id: Option<String>,
@@ -365,6 +375,20 @@ impl E2bProjWorkerRegistry {
                 })
             }
         }
+    }
+
+    /// Desired worker contract for proj (same source as create/reconcile). Author: kejiqing
+    async fn desired_contract_for_proj(&self, proj_id: i64) -> Result<String, String> {
+        let spec = self.desired_worker_spec(proj_id).await?;
+        let db = self.session_db().await?;
+        desired_worker_contract(
+            db.as_ref(),
+            &spec.e2b_template_id,
+            spec.build_id.as_deref(),
+            proj_id,
+            &spec.profile_label,
+        )
+        .await
     }
 
     async fn desired_pool_size(&self, proj_id: i64) -> Result<u32, String> {
@@ -1011,47 +1035,63 @@ impl E2bProjWorkerRegistry {
                     return Ok((handle, existing.worker_id, 0));
                 }
                 ScopeWorkerAction::Resume => {
-                    match self
-                        .client
-                        .resume_sandbox(&existing.sandbox_id, self.worker_ttl_secs)
-                        .await
-                    {
-                        Ok(handle) => {
-                            let handle_json = E2bSandboxClient::handle_to_json(&handle);
-                            db.update_project_e2b_worker_lifecycle(
-                                proj_id,
-                                scope_key,
-                                0,
-                                "running",
-                                Some(&handle_json),
-                            )
+                    // Sleeping → wake: catch up image/contract before resume (busy path untouched).
+                    // Author: kejiqing
+                    let desired = self.desired_contract_for_proj(proj_id).await?;
+                    if scope_wake_should_recreate(&existing.template_id, &desired) {
+                        self.invalidate_dead_scope_worker(
+                            proj_id,
+                            scope_key,
+                            0,
+                            &existing.sandbox_id,
+                            &existing.worker_id,
+                            &existing.template_id,
+                            "scope_wake_image_or_contract",
+                        )
+                        .await?;
+                    } else {
+                        match self
+                            .client
+                            .resume_sandbox(&existing.sandbox_id, self.worker_ttl_secs)
                             .await
-                            .map_err(|e| format!("update scope lifecycle after resume: {e}"))?;
-                            self.cache_worker(
-                                key.clone(),
-                                handle.clone(),
-                                existing.worker_id.clone(),
-                                existing.template_id.clone(),
-                            )
-                            .await;
-                            self.bump_scope_lease(proj_id, scope_key, 0).await;
-                            return Ok((handle, existing.worker_id, 0));
-                        }
-                        Err(e) => {
-                            debug_assert_eq!(
-                                decide_scope_after_resume_failure(),
-                                ScopeWorkerAction::Invalidate
-                            );
-                            self.invalidate_dead_scope_worker(
-                                proj_id,
-                                scope_key,
-                                0,
-                                &existing.sandbox_id,
-                                &existing.worker_id,
-                                &existing.template_id,
-                                &format!("resume_failed:{e}"),
-                            )
-                            .await?;
+                        {
+                            Ok(handle) => {
+                                let handle_json = E2bSandboxClient::handle_to_json(&handle);
+                                db.update_project_e2b_worker_lifecycle(
+                                    proj_id,
+                                    scope_key,
+                                    0,
+                                    "running",
+                                    Some(&handle_json),
+                                )
+                                .await
+                                .map_err(|e| format!("update scope lifecycle after resume: {e}"))?;
+                                self.cache_worker(
+                                    key.clone(),
+                                    handle.clone(),
+                                    existing.worker_id.clone(),
+                                    existing.template_id.clone(),
+                                )
+                                .await;
+                                self.bump_scope_lease(proj_id, scope_key, 0).await;
+                                return Ok((handle, existing.worker_id, 0));
+                            }
+                            Err(e) => {
+                                debug_assert_eq!(
+                                    decide_scope_after_resume_failure(),
+                                    ScopeWorkerAction::Invalidate
+                                );
+                                self.invalidate_dead_scope_worker(
+                                    proj_id,
+                                    scope_key,
+                                    0,
+                                    &existing.sandbox_id,
+                                    &existing.worker_id,
+                                    &existing.template_id,
+                                    &format!("resume_failed:{e}"),
+                                )
+                                .await?;
+                            }
                         }
                     }
                 }
@@ -1231,6 +1271,25 @@ impl E2bProjWorkerRegistry {
         match decide_scope_probe_only(probe) {
             ScopeWorkerAction::Reuse => Ok(ScopeWorkerReady::Ready),
             ScopeWorkerAction::Resume => {
+                // Cache-hit resume: same wake gate as acquire (image/contract catch-up).
+                // Author: kejiqing
+                let (worker_id, template_id) = self
+                    .scope_worker_ids_from_cache_or_db(proj_id, scope_key, slot_index)
+                    .await;
+                let desired = self.desired_contract_for_proj(proj_id).await?;
+                if scope_wake_should_recreate(&template_id, &desired) {
+                    self.invalidate_dead_scope_worker(
+                        proj_id,
+                        scope_key,
+                        slot_index,
+                        sandbox_id,
+                        &worker_id,
+                        &template_id,
+                        "scope_wake_image_or_contract",
+                    )
+                    .await?;
+                    return Ok(ScopeWorkerReady::Dropped);
+                }
                 match self
                     .client
                     .resume_sandbox(sandbox_id, self.worker_ttl_secs)
@@ -1260,9 +1319,6 @@ impl E2bProjWorkerRegistry {
                             decide_scope_after_resume_failure(),
                             ScopeWorkerAction::Invalidate
                         );
-                        let (worker_id, template_id) = self
-                            .scope_worker_ids_from_cache_or_db(proj_id, scope_key, slot_index)
-                            .await;
                         self.invalidate_dead_scope_worker(
                             proj_id,
                             scope_key,
@@ -2058,5 +2114,27 @@ mod tests {
             "sbx-scope-fda",
             &keep
         ));
+    }
+
+    #[test]
+    fn scope_wake_recreates_on_build_mismatch() {
+        let old = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let new = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(scope_wake_should_recreate(&old, &new));
+        // Singleton runtime R1 would NOT recreate for build alone:
+        assert!(!needs_recreate(&old, &new, false, true));
+    }
+
+    #[test]
+    fn scope_wake_resumes_when_build_and_contract_match() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        assert!(!scope_wake_should_recreate(&a, &a));
+    }
+
+    #[test]
+    fn scope_wake_recreates_on_home_rev_change() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev-1", "strict");
+        let b = worker_contract_key("tpl_a", Some("b1"), "rev-2", "strict");
+        assert!(scope_wake_should_recreate(&a, &b));
     }
 }
