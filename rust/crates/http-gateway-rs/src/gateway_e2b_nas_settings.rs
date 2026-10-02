@@ -1,9 +1,7 @@
-//! Admin read-only e2b NAS view (e2b GET /health + nas-api gate). Author: kejiqing
+//! Admin read-only e2b NAS view (e2b GET /health). Author: kejiqing
 
 use claw_e2b_sandbox_client::E2bNasPlatform;
 use serde::Serialize;
-
-use crate::pool::interactive_backend::E2bNasApiSingleton;
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -19,6 +17,7 @@ pub struct E2bNasSettingsPublic {
     pub sandbox_inject: Option<String>,
     #[serde(rename = "mountSource", skip_serializing_if = "Option::is_none")]
     pub mount_source: Option<String>,
+    /// Always true: nas-api is required in e2b mode (no env off-switch).
     #[serde(rename = "nasApiEnabled")]
     pub nas_api_enabled: bool,
     #[serde(rename = "layoutActive")]
@@ -29,7 +28,6 @@ pub struct E2bNasSettingsPublic {
 /// Snapshot for Admin `GET /v1/gateway/global-settings` → `e2bNas`.
 #[must_use]
 pub fn e2b_nas_settings_public(platform: Option<&E2bNasPlatform>) -> E2bNasSettingsPublic {
-    let nas_api_enabled = E2bNasApiSingleton::enabled_from_env();
     let (e2b_host_mount_root, e2b_nas_ready, sandbox_inject, mount_source) = match platform {
         Some(p) => (
             p.host_mount_root.clone().unwrap_or_default(),
@@ -39,14 +37,14 @@ pub fn e2b_nas_settings_public(platform: Option<&E2bNasPlatform>) -> E2bNasSetti
         ),
         None => (String::new(), false, None, None),
     };
-    let layout_active = nas_api_enabled && e2b_nas_ready;
+    let layout_active = e2b_nas_ready;
     E2bNasSettingsPublic {
         read_only: true,
         e2b_host_mount_root,
         e2b_nas_ready,
         sandbox_inject,
         mount_source,
-        nas_api_enabled,
+        nas_api_enabled: true,
         layout_active,
         configured: layout_active,
     }
