@@ -5,10 +5,21 @@
 #
 # <tag> must already exist as the strict worker in ACR (claw-code-branch-worker / release flow)
 # and come from the same commit as `branch`. e2b templates: deploy/e2b/bootstrap-templates-from-ci-tag.sh <tag>.
-# Manual only (`workflow_dispatch`). Runner: [self-hosted, home-ubt]. Uses the ACR claw-rust-compile image.
+# Triggers: push to feat/neuro-harness (workflow_dispatch needs the file on the default branch, which this
+# experimental branch does not touch) with tag = branch-feat-neuro-harness, or manual dispatch once on main.
+# Run claw-code-branch-worker for the same commit first so the strict base matches.
+# Runner: [self-hosted, home-ubt]. Uses the ACR claw-rust-compile image.
 name: neuro-harness-worker
 
 on:
+  push:
+    branches: [feat/neuro-harness]
+    paths:
+      - "rust/crates/neuro-harness/**"
+      - "deploy/neuro-harness/**"
+      - "deploy/stack/Containerfile.gateway-worker-opencode"
+      - "deploy/stack/Containerfile.gateway-worker-appserver"
+      - ".github/workflows/neuro-harness-worker.yaml"
   workflow_dispatch:
     inputs:
       tag:
@@ -68,7 +79,7 @@ jobs:
         env:
           PREFIX: ${{ steps.reg.outputs.image_prefix }}
           CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || 'branch-feat-neuro-harness' }}
         run: |
           set -euo pipefail
           # shellcheck source=/dev/null
@@ -92,7 +103,7 @@ jobs:
         env:
           CONTAINER_BASE_REGISTRY: ${{ steps.images.outputs.container_base_registry }}
           STRICT: ${{ steps.images.outputs.strict_worker }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || 'branch-feat-neuro-harness' }}
         run: |
           set -euo pipefail
           docker pull "${STRICT}"
@@ -101,7 +112,7 @@ jobs:
       - name: Push engine images → ACR (skopeo v2s2)
         env:
           PREFIX: ${{ steps.reg.outputs.image_prefix }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || 'branch-feat-neuro-harness' }}
           SHA12: ${{ steps.images.outputs.sha12 }}
         run: |
           set -euo pipefail
