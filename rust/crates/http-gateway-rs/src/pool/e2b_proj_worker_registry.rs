@@ -23,7 +23,7 @@ use crate::gateway_e2b_lifecycle_decision::{
     decide_lifecycle_action, decide_scope_after_resume_failure, decide_scope_existing_worker,
     decide_scope_probe_only, lifecycle_probe_registry, scope_drop_detail,
     scope_invalidate_audit_reason, scope_sandbox_probe, worker_slot_probe_key, LifecycleAction,
-    LifecycleDecisionInput, ProbeVerdict, ScopeSandboxProbe, ScopeWorkerAction, PROBE_MAX_ATTEMPTS,
+    LifecycleDecisionInput, ProbeVerdict, ScopeWorkerAction, PROBE_MAX_ATTEMPTS,
 };
 use crate::gateway_e2b_worker_settings::{
     e2b_project_worker_renew_interval_secs_from_env, e2b_project_worker_ttl_secs_from_env,
@@ -1883,6 +1883,7 @@ fn select_least_lease_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway_e2b_lifecycle_decision::ScopeSandboxProbe;
 
     /// e2b alias for relaxed worker; PG may store `tpl_*` for the same template.
     const RELAXED_WORKER_ALIAS: &str = "claw-worker-relaxed";
