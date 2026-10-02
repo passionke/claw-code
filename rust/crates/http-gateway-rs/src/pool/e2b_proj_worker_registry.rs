@@ -23,7 +23,7 @@ use crate::gateway_e2b_lifecycle_decision::{
     decide_lifecycle_action, decide_scope_after_resume_failure, decide_scope_existing_worker,
     decide_scope_probe_only, lifecycle_probe_registry, scope_drop_detail,
     scope_invalidate_audit_reason, scope_sandbox_probe, worker_slot_probe_key, LifecycleAction,
-    LifecycleDecisionInput, ProbeVerdict, ScopeWorkerAction, PROBE_MAX_ATTEMPTS,
+    LifecycleDecisionInput, ProbeVerdict, ScopeSandboxProbe, ScopeWorkerAction, PROBE_MAX_ATTEMPTS,
 };
 use crate::gateway_e2b_worker_settings::{
     e2b_project_worker_renew_interval_secs_from_env, e2b_project_worker_ttl_secs_from_env,
@@ -2123,6 +2123,8 @@ mod tests {
         assert!(scope_wake_should_recreate(&old, &new));
         // Singleton runtime R1 would NOT recreate for build alone:
         assert!(!needs_recreate(&old, &new, false, true));
+        // Startup image_refresh window: both agree to recreate.
+        assert!(needs_recreate(&old, &new, true, true));
     }
 
     #[test]
@@ -2136,5 +2138,49 @@ mod tests {
         let a = worker_contract_key("tpl_a", Some("b1"), "rev-1", "strict");
         let b = worker_contract_key("tpl_a", Some("b1"), "rev-2", "strict");
         assert!(scope_wake_should_recreate(&a, &b));
+    }
+
+    #[test]
+    fn scope_wake_recreates_on_profile_change() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let b = worker_contract_key("tpl_a", Some("b1"), "rev", "relaxed");
+        assert!(scope_wake_should_recreate(&a, &b));
+    }
+
+    #[test]
+    fn scope_wake_recreates_legacy_row_without_build_pin() {
+        let legacy = worker_contract_key("tpl_a", None, "rev", "strict");
+        let desired = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(scope_wake_should_recreate(&legacy, &desired));
+    }
+
+    #[test]
+    fn scope_wake_no_image_recreate_when_desired_build_empty() {
+        let stored = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let desired_no_pin = worker_contract_key("tpl_a", None, "rev", "strict");
+        assert!(
+            !scope_wake_should_recreate(&stored, &desired_no_pin),
+            "empty desired build pin must not force image catch-up on wake"
+        );
+        assert!(!image_build_refresh_needed(&stored, &desired_no_pin));
+    }
+
+    /// Invariant: wake contract check is only entered on Resume, never on Reuse (busy/running).
+    #[test]
+    fn scope_wake_gate_only_applies_when_lifecycle_says_resume() {
+        let stale = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let desired = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(
+            scope_wake_should_recreate(&stale, &desired),
+            "contracts diverge — would recreate IF on Resume path"
+        );
+        let reuse = decide_scope_existing_worker("running", ScopeSandboxProbe::Running);
+        assert_eq!(reuse, ScopeWorkerAction::Reuse);
+        assert!(
+            !matches!(reuse, ScopeWorkerAction::Resume),
+            "Running must not enter wake gate (caller skips scope_wake_should_recreate)"
+        );
+        let resume = decide_scope_existing_worker("sleeping", ScopeSandboxProbe::Paused);
+        assert_eq!(resume, ScopeWorkerAction::Resume);
     }
 }
