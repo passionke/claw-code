@@ -182,7 +182,7 @@ case "${CLAW_E2B_NAS_API:-1}" in
     ;;
 esac
 
-# neuro-harness engine workers (feat/neuro-harness): images from .github/workflows/neuro-harness-worker.yaml.
+# neuro-harness engine workers (feat/neuro-harness): images from claw-code-branch-worker (same tag as strict).
 # Author: kejiqing
 export CLAW_E2B_WORKER_OPENCODE_IMAGE="${CLAW_E2B_WORKER_OPENCODE_IMAGE:-${PREFIX}/claw-gateway-worker-opencode:${TAG}}"
 export CLAW_E2B_WORKER_APPSERVER_IMAGE="${CLAW_E2B_WORKER_APPSERVER_IMAGE:-${PREFIX}/claw-gateway-worker-appserver:${TAG}}"

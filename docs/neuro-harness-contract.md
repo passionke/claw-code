@@ -211,13 +211,13 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
   - `linux-compile.sh` 对它单独调用一次 `cargo build --manifest-path crates/neuro-harness/Cargo.toml`，使用同一个 `CARGO_TARGET_DIR`。
   - `.githooks/pre-push` 发现自带 `Cargo.lock` 的 crate 时，用 `--manifest-path` 单独执行 fmt、clippy（`--all-targets -D warnings`）和 test，不会因此触发 workspace 全量检查。
   - 本地产物位于 `rust/crates/neuro-harness/target/`。
-  - 已知缺口：`rust-ci.yml` 的 `cargo test --workspace` 不覆盖这个 crate，目前只靠 pre-push 和 `neuro-harness-worker.yaml` 的编译覆盖。
+  - 已知缺口：`rust-ci.yml` 的 `cargo test --workspace` 不覆盖这个 crate，目前只靠 pre-push 和 `claw-code-branch-worker` 的编译覆盖。
 - `deploy/stack/lib/linux-compile.sh`：产物统一由 `CLAW_LINUX_RELEASE_BINS` 列出，包括 `claw`、`http-gateway-rs`、`neuro-opencode`、`neuro-appserver`。
 - npm 源统一用 `claw_npm_registry`（`deploy/stack/lib/claw-region.sh`）：region 为 `china` 时用 `registry.npmmirror.com`，其他情况用 `registry.npmjs.org`。已实测：同一份 lockfile 用 `npm ci --registry=https://registry.npmmirror.com` 安装时，全部从 npmmirror 下载，integrity 校验通过（npm 默认 `replace-registry-host=npmjs`）。
 - `Containerfile.gateway-worker-opencode`：`FROM claw-gateway-worker:<tag>`。opencode 用 glibc 平台包 `opencode-linux-{x64,arm64}@1.18.34`。与计划的偏差：计划写的是 musl 包，但 worker 基础镜像是 Debian bookworm（glibc），没有 musl 的动态加载器。tgz 的 sha512 integrity 写死在 `ARG` 里，构建时用 node 计算后比对；npmjs 与 npmmirror 的值一致。
 - `Containerfile.gateway-worker-appserver`：`FROM claw-gateway-worker:<tag>`，`node` 取自 `node:22-bookworm-slim`。不用 bookworm 自带的 Node 18：codex-acp 依赖的 `open@11` 要求 Node ≥ 20。codex-acp 目录由 `npm ci --omit=dev --ignore-scripts` 按 `deploy/neuro-harness/codex-acp/package-lock.json` 安装（lockfile 中所有包都有 integrity；所有依赖都没有 install 脚本）。
 - `deploy/neuro-harness/build-worker-images.sh <strict-worker-image> <tag>`：构建两个镜像并做冒烟检查。检查项：`neuro-*` 不带参数时退出码为 2（证明二进制能加载），`opencode --version`，`node --version`，`codex --version`。CI 和本地都走这个脚本。
-- `.github/workflows/neuro-harness-worker.yaml`：push 到 `feat/neuro-harness` 时触发（只看 neuro-harness 相关路径），tag 固定为 `branch-feat-neuro-harness`。原因：`workflow_dispatch` 要求 workflow 文件已在默认分支上，否则 dispatch 返回 404，而实验分支不改 main。push 前应先对同一 commit 跑 `claw-code-branch-worker`，保证 strict 基础镜像一致。文件进入 main 后也可以手动触发并指定 `tag`。在 home-ubt 上依次编译、构建、冒烟检查，然后推送 `claw-gateway-worker-{opencode,appserver}:<tag>` 和 `:dev-<sha12>` 到 ACR。
+- 标准路径：手动触发 `claw-code-branch-worker`（分支选 `feat/neuro-harness`），一个 tag `branch-feat-neuro-harness` 产出 bootstrap 需要的全部镜像：`claw-code`、strict worker，以及在 job `build-and-push-derived-workers` 中 `FROM` 同 tag strict 构建的 `claw-gateway-worker-{relaxed,opencode,appserver}`（并推 `:dev-<sha12>`）。然后 Admin publish-templates 填这个 tag 一次完成，不需要 env 覆盖。
 - e2b：`build-claw-worker-{opencode,appserver}-selfhosted.py` 的实现都在 `e2b_engine_worker.py`。模板 = strict worker 模板（Dockerfile、start/ready 命令相同）+ 从引擎镜像经 registry HTTP 提取的 `/usr/local/bin` 和 `/usr/local/lib/neuro-engines`。构建完成后写入 PG 的 `e2bWorkerOpencode` / `e2bWorkerAppserver`；写入失败直接报错，不吞掉。`bootstrap-templates-from-ci-tag.sh` 在最后执行这两步：如果该 tag 没有引擎镜像，bootstrap 会在 claw 模板全部完成之后失败。
 
 ## 12. 实验分支须知

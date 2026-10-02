@@ -298,11 +298,98 @@ jobs:
             ./deploy/stack/lib/ci-home-ubt-post-image-cleanup.sh
           fi
 
+  # Images derived FROM the strict worker of the same tag, so one tag carries everything
+  # deploy/e2b/bootstrap-templates-from-ci-tag.sh publishes. Author: kejiqing
+  build-and-push-derived-workers:
+    needs:
+      - resolve-tag
+      - build-and-push
+    runs-on: [self-hosted, home-ubt]
+    environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
+    env:
+      # home-ubt is in China: claw_npm_registry → registry.npmmirror.com
+      region: china
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.checkout_ref }}
+
+      - name: Self-hosted workspace prep
+        run: bash deploy/stack/lib/ci-self-hosted-workspace-prep.sh
+
+      - name: Restore linux artifacts from local stash
+        run: |
+          set -euo pipefail
+          SRC="${HOME}/claw-ci-artifacts/${{ github.run_id }}/release"
+          test -d "${SRC}"
+          mkdir -p deploy/stack/.linux-artifacts
+          cp -a "${SRC}" deploy/stack/.linux-artifacts/release
+
+      - name: Verify ACR_REGISTRY
+        id: reg
+        env:
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+        run: |
+          set -euo pipefail
+          echo "login_host=${ACR_REGISTRY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.reg.outputs.login_host }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build relaxed + engine workers (FROM ACR strict)
+        env:
+          PREFIX: ${{ steps.reg.outputs.image_prefix }}
+          BRANCH_TAG: ${{ needs.resolve-tag.outputs.branch_tag }}
+          CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
+        run: |
+          set -euo pipefail
+          STRICT="${PREFIX}/claw-gateway-worker:${BRANCH_TAG}"
+          docker pull "${STRICT}"
+          ./deploy/stack/lib/container-build.sh docker deploy/stack/Containerfile.gateway-worker-relaxed \
+            --build-arg "WORKER_BASE_IMAGE=${STRICT}" \
+            -t "claw-gateway-worker-relaxed:${BRANCH_TAG}"
+          CONTAINER_BASE_REGISTRY="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}" \
+            bash deploy/neuro-harness/build-worker-images.sh "${STRICT}" "${BRANCH_TAG}"
+
+      - name: Push derived workers → ACR
+        env:
+          PREFIX: ${{ steps.reg.outputs.image_prefix }}
+          BRANCH_TAG: ${{ needs.resolve-tag.outputs.branch_tag }}
+          DEV_TAG: ${{ needs.resolve-tag.outputs.dev_tag }}
+        run: |
+          set -euo pipefail
+          chmod +x ./deploy/stack/lib/ci-push-acr-skopeo.sh
+          for package in claw-gateway-worker-relaxed claw-gateway-worker-opencode claw-gateway-worker-appserver; do
+            ./deploy/stack/lib/ci-push-acr-skopeo.sh \
+              "${package}:${BRANCH_TAG}" \
+              "${PREFIX}/${package}:${BRANCH_TAG}" \
+              "${PREFIX}/${package}:${DEV_TAG}"
+          done
+
+      - name: Drop local artifact stash
+        if: always()
+        run: rm -rf "${HOME}/claw-ci-artifacts/${{ github.run_id }}" 2>/dev/null || true
+
+      - name: Self-hosted workspace cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -rf "${GITHUB_WORKSPACE}/deploy/stack/.linux-artifacts" 2>/dev/null || true
+          chmod +x ./deploy/stack/lib/ci-home-ubt-post-image-cleanup.sh
+          ./deploy/stack/lib/ci-home-ubt-post-image-cleanup.sh
+
   summary:
     name: deploy hint
     needs:
       - resolve-tag
       - build-and-push
+      - build-and-push-derived-workers
     runs-on: ubuntu-latest
     if: always() && needs.resolve-tag.result == 'success'
     steps:
