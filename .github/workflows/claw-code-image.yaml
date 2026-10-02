@@ -3,7 +3,7 @@
 #
 # Chain (push tag refs/tags/release-v*):
 #   rust-compile-image → linux-compile-once → build-and-push →
-#   build-and-push-relaxed-worker
+#   build-and-push-relaxed-worker (relaxed + opencode + appserver engine workers)
 # ACR personal edition needs skopeo --format v2s2 (see deploy/stack/lib/ci-push-acr-skopeo.sh).
 # Runner: [self-hosted, home-ubt] only.
 #
@@ -332,6 +332,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Restore linux artifacts from local stash
+        run: |
+          set -euo pipefail
+          SRC="${HOME}/claw-ci-artifacts/${{ github.run_id }}/release"
+          test -d "${SRC}"
+          mkdir -p deploy/stack/.linux-artifacts
+          cp -a "${SRC}" deploy/stack/.linux-artifacts/release
+
       - name: Verify ACR_REGISTRY
         id: reg
         env:
@@ -348,10 +356,11 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: Build claw-gateway-worker-relaxed (local FROM ACR strict)
+      - name: Build relaxed + engine workers (local FROM ACR strict)
         env:
           PREFIX: ${{ steps.reg.outputs.image_prefix }}
           RELEASE_TAG: ${{ github.ref_name }}
+          CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
         run: |
           set -euo pipefail
           # shellcheck source=/dev/null
@@ -364,8 +373,12 @@ jobs:
             --build-arg "WORKER_BASE_IMAGE=${STRICT}" \
             --build-arg "CLAW_USE_CN_APT_MIRROR=${CLAW_USE_CN_APT_MIRROR:-0}" \
             -t "${LOCAL}"
+          # Engine workers (opencode + appserver) FROM the same strict image; neuro-* binaries
+          # come from the stashed linux artifacts. build-worker-images.sh also smoke-checks them.
+          CONTAINER_BASE_REGISTRY="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}" \
+            bash deploy/neuro-harness/build-worker-images.sh "${STRICT}" "${RELEASE_TAG}"
 
-      - name: Push relaxed worker → ACR (skopeo v2s2)
+      - name: Push relaxed + engine workers → ACR (skopeo v2s2)
         env:
           PREFIX: ${{ steps.reg.outputs.image_prefix }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -373,11 +386,13 @@ jobs:
           set -euo pipefail
           chmod +x ./deploy/stack/lib/ci-push-acr-skopeo.sh
           SHA12="${GITHUB_SHA:0:12}"
-          ./deploy/stack/lib/ci-push-acr-skopeo.sh \
-            "claw-gateway-worker-relaxed:${RELEASE_TAG}" \
-            "${PREFIX}/claw-gateway-worker-relaxed:${RELEASE_TAG}" \
-            "${PREFIX}/claw-gateway-worker-relaxed:sha-${SHA12}" \
-            "${PREFIX}/claw-gateway-worker-relaxed:latest"
+          for package in claw-gateway-worker-relaxed claw-gateway-worker-opencode claw-gateway-worker-appserver; do
+            ./deploy/stack/lib/ci-push-acr-skopeo.sh \
+              "${package}:${RELEASE_TAG}" \
+              "${PREFIX}/${package}:${RELEASE_TAG}" \
+              "${PREFIX}/${package}:sha-${SHA12}" \
+              "${PREFIX}/${package}:latest"
+          done
 
       - name: Verify relaxed worker tools
         env:
