@@ -21,8 +21,8 @@ use tracing::{info, warn};
 
 use crate::gateway_e2b_lifecycle_decision::{
     decide_lifecycle_action, decide_scope_after_resume_failure, decide_scope_existing_worker,
-    decide_scope_probe_only, lifecycle_probe_registry, scope_invalidate_audit_reason,
-    scope_drop_detail, scope_sandbox_probe, worker_slot_probe_key, LifecycleAction,
+    decide_scope_probe_only, lifecycle_probe_registry, scope_drop_detail,
+    scope_invalidate_audit_reason, scope_sandbox_probe, worker_slot_probe_key, LifecycleAction,
     LifecycleDecisionInput, ProbeVerdict, ScopeWorkerAction, PROBE_MAX_ATTEMPTS,
 };
 use crate::gateway_e2b_worker_settings::{
@@ -1298,11 +1298,7 @@ impl E2bProjWorkerRegistry {
         }
         if let Ok(db) = self.session_db().await {
             if let Ok(Some(row)) = db
-                .get_project_e2b_worker_scoped(
-                    proj_id,
-                    scope_key,
-                    e2b_worker_slot_i32(slot_index),
-                )
+                .get_project_e2b_worker_scoped(proj_id, scope_key, e2b_worker_slot_i32(slot_index))
                 .await
             {
                 return (row.worker_id, row.template_id);

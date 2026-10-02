@@ -407,14 +407,8 @@ mod tests {
 
     #[test]
     fn scope_probe_paused_wins_over_running() {
-        assert_eq!(
-            scope_sandbox_probe(true, true),
-            ScopeSandboxProbe::Paused
-        );
-        assert_eq!(
-            scope_sandbox_probe(false, true),
-            ScopeSandboxProbe::Running
-        );
+        assert_eq!(scope_sandbox_probe(true, true), ScopeSandboxProbe::Paused);
+        assert_eq!(scope_sandbox_probe(false, true), ScopeSandboxProbe::Running);
         assert_eq!(scope_sandbox_probe(false, false), ScopeSandboxProbe::Dead);
         assert_eq!(scope_sandbox_probe(true, false), ScopeSandboxProbe::Paused);
     }
@@ -422,8 +416,7 @@ mod tests {
     /// FDA / pre: PG still `running` while e2b `killed` must drop, not hard-fail.
     #[test]
     fn scope_fda_pg_running_e2b_killed_drops() {
-        let action =
-            decide_scope_existing_worker("running", ScopeSandboxProbe::Dead);
+        let action = decide_scope_existing_worker("running", ScopeSandboxProbe::Dead);
         assert_eq!(action, ScopeWorkerAction::Invalidate);
         assert_eq!(
             scope_drop_detail("running", ScopeSandboxProbe::Dead),
