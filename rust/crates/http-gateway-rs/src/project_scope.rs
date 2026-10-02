@@ -184,39 +184,6 @@ pub fn render_mcp_servers_from_extra_session(
     Ok(render_mcp_template(template, &values))
 }
 
-/// Compare request scope identity to stored MCP bind snapshot (`mcp_bind_json.values`).
-///
-/// Only keys in `current` (scope identity) are enforced. Extra keys left in a legacy
-/// snapshot are ignored so token-like fields never participate in worker identity.
-/// Author: kejiqing
-pub fn mcp_bind_values_match(
-    stored: &Value,
-    current: &BTreeMap<String, String>,
-) -> Result<(), String> {
-    let Some(prev) = stored.get("values").and_then(Value::as_object) else {
-        return Ok(());
-    };
-    if prev.is_empty() {
-        return Ok(());
-    }
-    let mut mismatches = Vec::new();
-    for (key, want) in current {
-        match prev.get(key).and_then(Value::as_str) {
-            Some(have) if have == want => {}
-            Some(have) => mismatches.push(format!("{key}: bound={have:?} request={want:?}")),
-            None => mismatches.push(format!("{key}: missing in bind snapshot")),
-        }
-    }
-    if mismatches.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "scope MCP bind key mismatch: {}",
-            mismatches.join("; ")
-        ))
-    }
-}
-
 #[must_use]
 pub fn mcp_bind_is_initialized(stored: &Value) -> bool {
     stored
@@ -359,16 +326,6 @@ mod tests {
     }
 
     #[test]
-    fn bind_mismatch_reports_keys() {
-        let stored = json!({"values": {"tenant": "a", "uid": "1"}});
-        let mut cur = BTreeMap::new();
-        cur.insert("tenant".into(), "b".into());
-        cur.insert("uid".into(), "1".into());
-        let err = mcp_bind_values_match(&stored, &cur).unwrap_err();
-        assert!(err.contains("tenant"));
-    }
-
-    #[test]
     fn template_render_values_include_non_scope_placeholders() {
         // Author: kejiqing — userToken is not a scopeKey but must still resolve.
         let template = json!({
@@ -432,21 +389,5 @@ mod tests {
         let extra = json!({"tenantId": "t-1", "uid": "u-1"});
         let err = mcp_template_render_values(&template, Some(&extra)).unwrap_err();
         assert!(err.contains("userToken"));
-    }
-
-    #[test]
-    fn bind_match_ignores_legacy_extra_snapshot_keys() {
-        // Snapshot may carry leftover non-scope fields; identity check only uses current keys.
-        let stored = json!({
-            "values": {
-                "tenantId": "t-1",
-                "uid": "u-1",
-                "userToken": "ut_old"
-            }
-        });
-        let mut cur = BTreeMap::new();
-        cur.insert("tenantId".into(), "t-1".into());
-        cur.insert("uid".into(), "u-1".into());
-        mcp_bind_values_match(&stored, &cur).unwrap();
     }
 }
