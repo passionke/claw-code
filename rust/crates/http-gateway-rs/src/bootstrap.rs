@@ -78,13 +78,6 @@ pub async fn run() {
             );
         }
     }
-    // e2b without NAS: CLAW_E2B_NAS_API=0 skips claw-nas-api singleton (local workspace only).
-    if e2b_client.is_some() && !pool::E2bNasApiSingleton::enabled_from_env() {
-        tracing::info!(
-            target: "claw_e2b_nas",
-            "CLAW_E2B_NAS_API=0 — nas-api singleton disabled; workspace without NFS"
-        );
-    }
     let nas_api = Arc::new(pool::E2bNasApiSingleton::new());
     let nas_layout = pool::NasLayoutBackend::new(Arc::clone(&nas_api));
     let pool_clients =

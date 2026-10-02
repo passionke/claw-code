@@ -24,9 +24,7 @@ use crate::gateway_e2b_observe_settings::e2b_observe_template_from_env;
 use crate::gateway_e2b_worker_settings::e2b_project_worker_renew_interval_secs_from_env;
 use crate::gateway_global_settings::{get_gateway_global_settings, load_active_llm_runtime};
 use crate::gateway_tap_client::{tap_client_from_base_model_url, DEFAULT_TAP_CLIENT};
-use crate::pool::interactive_backend::{
-    e2b_observe_is_enabled, interactive_backend_is_e2b, E2bNasApiSingleton,
-};
+use crate::pool::interactive_backend::{e2b_observe_is_enabled, interactive_backend_is_e2b};
 use crate::session_db::GatewaySessionDb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, utoipa::ToSchema)]
@@ -509,14 +507,6 @@ async fn ensure_nas_api(
     image_refresh: bool,
     best_effort: bool,
 ) -> Result<E2bSingletonOutcome, String> {
-    if !E2bNasApiSingleton::enabled_from_env() {
-        return Ok(E2bSingletonOutcome {
-            sandbox_id: None,
-            base_url: None,
-            traffic_reachable: true,
-            message: Some("nas-api disabled".into()),
-        });
-    }
     let cluster_id = gateway_cluster_id()?;
     let port = nas_api_port();
     // Create by alias on the *current* e2b cluster; PG tpl_* drifts after host moves. Author: kejiqing
@@ -848,9 +838,6 @@ pub async fn reset_e2b_singleton(
 }
 
 fn verify_nas_api_strict(outcome: &E2bSingletonOutcome) -> Result<(), String> {
-    if !E2bNasApiSingleton::enabled_from_env() {
-        return Ok(());
-    }
     let sid = outcome
         .sandbox_id
         .as_deref()
@@ -905,15 +892,13 @@ pub async fn ensure_e2b_singletons_on_startup_strict(
         })
         .await?;
     verify_nas_api_strict(&nas)?;
-    if E2bNasApiSingleton::enabled_from_env() {
-        info!(
-            target: "claw_e2b_singleton",
-            component = "nas-api",
-            sandbox_id = ?nas.sandbox_id,
-            base_url = ?nas.base_url,
-            "nas-api singleton ready (startup strict)"
-        );
-    }
+    info!(
+        target: "claw_e2b_singleton",
+        component = "nas-api",
+        sandbox_id = ?nas.sandbox_id,
+        base_url = ?nas.base_url,
+        "nas-api singleton ready (startup strict)"
+    );
     let observe = db
         .with_e2b_singleton_role_lock(SINGLETON_ROLE_OBSERVE, || async {
             ensure_observe(db, client, true, false).await
