@@ -299,6 +299,76 @@ pub fn warm_singleton_shortfall(pool_size: u32, states: &[SingletonWorkerState])
     pool_size.saturating_sub(usable)
 }
 
+/// Per-worker action warm decides for one tick. This is the decision layer — the async
+/// executor only carries these out, so the whole matrix is unit-testable without a live e2b
+/// client or PG. Author: kejiqing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarmWorkerAction {
+    /// running+alive: renew TTL (keep, counts toward fullness).
+    Renew,
+    /// running but sandbox dead: retire (kill) + delete row (shortfall recreates).
+    KillAndDelete,
+    /// invalid and sandbox gone: reap the PG row (no kill — already dead).
+    ReapInvalid,
+    /// invalid but sandbox alive (in-flight request), or sleeping: leave alone.
+    Leave,
+}
+
+/// Plan warm actions for a project's singleton workers from `(lifecycle_state, alive)` pairs,
+/// returning per-worker actions (parallel to input) plus the create shortfall.
+/// Author: kejiqing
+#[must_use]
+pub fn plan_warm_actions(
+    pool_size: u32,
+    workers: &[(String, bool)],
+) -> (Vec<WarmWorkerAction>, u32) {
+    let mut actions = Vec::with_capacity(workers.len());
+    let mut states = Vec::with_capacity(workers.len());
+    for (state, alive) in workers {
+        let classified = classify_singleton_worker(state, *alive);
+        states.push(classified);
+        match classified {
+            SingletonWorkerState::Usable => actions.push(WarmWorkerAction::Renew),
+            SingletonWorkerState::Dead => actions.push(WarmWorkerAction::KillAndDelete),
+            SingletonWorkerState::Invalid => {
+                if *alive {
+                    actions.push(WarmWorkerAction::Leave);
+                } else {
+                    actions.push(WarmWorkerAction::ReapInvalid);
+                }
+            }
+            SingletonWorkerState::Sleeping => actions.push(WarmWorkerAction::Leave),
+        }
+    }
+    (actions, warm_singleton_shortfall(pool_size, &states))
+}
+
+/// Indices (into `rows`) of workers that reconcile must mark invalid for `desired_contract`
+/// (version switch). Never includes already-invalid rows; never returns a kill action — reconcile
+/// only marks invalid, warm fills the pool. Author: kejiqing
+#[must_use]
+pub fn plan_reconcile_invalidations(
+    desired_contract: &str,
+    rows: &[ProjectFcWorkerRow],
+) -> Vec<usize> {
+    rows.iter()
+        .enumerate()
+        .filter(|(_, r)| r.lifecycle_state != "invalid")
+        .filter(|(_, r)| reconcile_should_invalidate(&r.template_id, desired_contract))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Smallest non-negative slot index not present in `used`. Author: kejiqing
+#[must_use]
+pub fn next_free_slot(used: &std::collections::HashSet<u32>) -> u32 {
+    let mut slot = 0u32;
+    while used.contains(&slot) {
+        slot += 1;
+    }
+    slot
+}
+
 struct WorkerSpec {
     e2b_template_id: String,
     build_id: Option<String>,
@@ -499,10 +569,8 @@ impl E2bProjWorkerRegistry {
             .list_project_e2b_workers(proj_id)
             .await
             .map_err(|e| format!("list_project_e2b_workers: {e}"))?;
-        for row in rows.iter().filter(|r| r.lifecycle_state != "invalid") {
-            if !reconcile_should_invalidate(&row.template_id, &desired) {
-                continue;
-            }
+        for idx in plan_reconcile_invalidations(&desired, &rows) {
+            let row = &rows[idx];
             db.invalidate_project_e2b_worker_slot_scoped(
                 proj_id,
                 &row.scope_key,
@@ -1693,13 +1761,18 @@ impl E2bProjWorkerRegistry {
         let singleton: Vec<&ProjectFcWorkerRow> =
             rows.iter().filter(|r| r.scope_key.is_empty()).collect();
 
-        let mut states: Vec<SingletonWorkerState> = Vec::with_capacity(singleton.len());
+        // Probe liveness once, then let the pure planner decide actions + shortfall.
+        let mut probes: Vec<(String, bool)> = Vec::with_capacity(singleton.len());
         for row in &singleton {
             let alive = self.client.sandbox_running(&row.sandbox_id).await
                 || self.client.sandbox_paused(&row.sandbox_id).await;
-            let state = classify_singleton_worker(&row.lifecycle_state, alive);
-            match state {
-                SingletonWorkerState::Usable => {
+            probes.push((row.lifecycle_state.clone(), alive));
+        }
+        let (actions, shortfall) = plan_warm_actions(pool_size, &probes);
+
+        for (row, action) in singleton.iter().zip(actions) {
+            match action {
+                WarmWorkerAction::Renew => {
                     if let Err(e) = self
                         .client
                         .renew_sandbox_ttl_secs(&row.sandbox_id, self.worker_ttl_secs)
@@ -1714,31 +1787,23 @@ impl E2bProjWorkerRegistry {
                         );
                     }
                 }
-                SingletonWorkerState::Dead => {
-                    // Dead running worker: kill (no-op if already gone) + delete, so shortfall
-                    // below recreates it.
+                WarmWorkerAction::KillAndDelete => {
                     self.retire_worker_sandbox(proj_id, &row.sandbox_id).await;
                     db.delete_project_e2b_worker_slot(proj_id, row.slot_index)
                         .await
                         .map_err(|e| format!("delete dead slot {}: {e}", row.slot_index))?;
                 }
-                SingletonWorkerState::Invalid => {
-                    // In-flight version switch: leave the sandbox alone. Reap the row only once
-                    // the sandbox is actually gone (natural TTL / finished request).
-                    if !alive {
-                        db.delete_project_e2b_worker_slot(proj_id, row.slot_index)
-                            .await
-                            .map_err(|e| format!("reap invalid slot {}: {e}", row.slot_index))?;
-                    }
+                WarmWorkerAction::ReapInvalid => {
+                    db.delete_project_e2b_worker_slot(proj_id, row.slot_index)
+                        .await
+                        .map_err(|e| format!("reap invalid slot {}: {e}", row.slot_index))?;
                 }
-                SingletonWorkerState::Sleeping => {}
+                WarmWorkerAction::Leave => {}
             }
-            states.push(state);
         }
 
         // Fill shortfall with fresh slots (invalid occupies its slot; slots may transiently
         // exceed pool_size until the invalid row is reaped).
-        let shortfall = warm_singleton_shortfall(pool_size, &states);
         for _ in 0..shortfall {
             let slot = self.next_free_singleton_slot(proj_id).await?;
             self.create_and_persist_slot(proj_id, "", slot, &spec)
@@ -1760,11 +1825,7 @@ impl E2bProjWorkerRegistry {
             .filter(|r| r.scope_key.is_empty())
             .map(|r| e2b_worker_slot_u32(r.slot_index))
             .collect();
-        let mut slot = 0u32;
-        while used.contains(&slot) {
-            slot += 1;
-        }
-        Ok(slot)
+        Ok(next_free_slot(&used))
     }
 
     /// Pause idle scope workers when past per-project `idleSleepSecs`. Author: kejiqing
@@ -2465,5 +2526,133 @@ mod tests {
         // More usable than pool_size (transient extra slot) never underflows.
         let states = [SingletonWorkerState::Usable, SingletonWorkerState::Usable];
         assert_eq!(warm_singleton_shortfall(1, &states), 0);
+    }
+
+    // ---- warm action planning (decision layer) ----
+
+    fn st(s: &str) -> String {
+        s.to_string()
+    }
+
+    #[test]
+    fn plan_warm_renews_usable_only() {
+        // W6: only running+alive get Renew; dead gets KillAndDelete; invalid-alive gets Leave.
+        let (actions, shortfall) = plan_warm_actions(
+            2,
+            &[
+                (st("running"), true),
+                (st("running"), false),
+                (st("invalid"), true),
+                (st("sleeping"), true),
+            ],
+        );
+        assert_eq!(
+            actions,
+            vec![
+                WarmWorkerAction::Renew,
+                WarmWorkerAction::KillAndDelete,
+                WarmWorkerAction::Leave,
+                WarmWorkerAction::Leave,
+            ]
+        );
+        // Only 1 usable → shortfall 1.
+        assert_eq!(shortfall, 1);
+    }
+
+    #[test]
+    fn plan_warm_reaps_invalid_dead_slot() {
+        // invalid + sandbox gone → ReapInvalid (delete row, no kill).
+        let (actions, shortfall) =
+            plan_warm_actions(1, &[(st("invalid"), false), (st("running"), true)]);
+        assert_eq!(
+            actions,
+            vec![WarmWorkerAction::ReapInvalid, WarmWorkerAction::Renew]
+        );
+        assert_eq!(shortfall, 0);
+    }
+
+    #[test]
+    fn plan_warm_full_has_zero_shortfall() {
+        // W1: two usable + poolSize 2 → no create.
+        let (actions, shortfall) =
+            plan_warm_actions(2, &[(st("running"), true), (st("running"), true)]);
+        assert_eq!(
+            actions,
+            vec![WarmWorkerAction::Renew, WarmWorkerAction::Renew]
+        );
+        assert_eq!(shortfall, 0);
+    }
+
+    #[test]
+    fn plan_warm_invalid_does_not_count_toward_fullness() {
+        // W4: invalid occupies a slot, never counts → shortfall creates a fresh slot.
+        let (actions, shortfall) =
+            plan_warm_actions(1, &[(st("running"), true), (st("invalid"), true)]);
+        assert_eq!(
+            actions,
+            vec![WarmWorkerAction::Renew, WarmWorkerAction::Leave]
+        );
+        assert_eq!(shortfall, 0);
+        // Same but no usable → invalid does not satisfy poolSize.
+        let (_, shortfall2) = plan_warm_actions(1, &[(st("invalid"), true)]);
+        assert_eq!(shortfall2, 1);
+    }
+
+    // ---- reconcile planning (by_buildid, no kill action) ----
+
+    fn row_with(template: &str, lifecycle: &str) -> ProjectFcWorkerRow {
+        ProjectFcWorkerRow {
+            proj_id: 1,
+            scope_key: String::new(),
+            slot_index: 0,
+            sandbox_id: "sbx".into(),
+            worker_id: "w".into(),
+            template_id: template.to_string(),
+            handle_json: json!({}),
+            updated_at_ms: 0,
+            in_use_count: 0,
+            in_use_until_ms: 0,
+            lifecycle_state: lifecycle.to_string(),
+            last_idle_at_ms: 0,
+            mcp_bind_json: json!({}),
+            invalid_reason: String::new(),
+        }
+    }
+
+    #[test]
+    fn plan_reconcile_marks_only_stale_build() {
+        let desired = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        let stale = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let rows = vec![row_with(&stale, "running"), row_with(&desired, "running")];
+        let idx = plan_reconcile_invalidations(&desired, &rows);
+        assert_eq!(idx, vec![0]);
+    }
+
+    #[test]
+    fn plan_reconcile_skips_already_invalid() {
+        let desired = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        let stale = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let rows = vec![row_with(&stale, "invalid")];
+        assert!(plan_reconcile_invalidations(&desired, &rows).is_empty());
+    }
+
+    #[test]
+    fn plan_reconcile_marks_legacy_no_pin() {
+        let desired = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        let legacy = worker_contract_key("tpl_a", None, "rev", "strict");
+        let rows = vec![row_with(&legacy, "running")];
+        assert_eq!(plan_reconcile_invalidations(&desired, &rows), vec![0]);
+    }
+
+    #[test]
+    fn next_free_slot_skips_occupied() {
+        let used: std::collections::HashSet<u32> = [0, 1, 3].into_iter().collect();
+        assert_eq!(next_free_slot(&used), 2);
+    }
+
+    #[test]
+    fn next_free_slot_starts_at_zero() {
+        let used = std::collections::HashSet::new();
+        assert_eq!(next_free_slot(&used), 0);
     }
 }
