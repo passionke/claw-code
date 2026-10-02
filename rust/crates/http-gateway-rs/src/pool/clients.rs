@@ -64,7 +64,7 @@ impl PoolClients {
             nas_layout.clone(),
         ));
         E2bSandboxClient::spawn_lease_ticker(Arc::clone(&e2b_client));
-        E2bProjWorkerRegistry::spawn_renewal_ticker(Arc::clone(&e2b_workers));
+        E2bProjWorkerRegistry::spawn_warm_ticker(Arc::clone(&e2b_workers));
         E2bProjWorkerRegistry::spawn_scope_idle_pause_ticker(Arc::clone(&e2b_workers));
 
         let e2b_pool = Arc::new(E2bOrchestratedPool::new(
@@ -267,9 +267,9 @@ impl PoolClients {
         self.e2b_interactive.bind_session_db(db).await;
     }
 
-    /// Startup reconcile: ensure every project's worker exists on e2b and matches template.
+    /// Startup version switch: mark workers on an older buildId invalid (no kill, no create).
     pub async fn reconcile_project_workers_on_startup(&self) -> Result<(), String> {
-        self.e2b_workers.reconcile_all_on_startup().await
+        self.e2b_workers.reconcile_version_switch().await
     }
 
     /// Reconcile all strict project worker pools (e.g. after Admin poolSize change).
