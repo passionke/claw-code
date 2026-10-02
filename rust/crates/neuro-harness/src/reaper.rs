@@ -17,11 +17,13 @@ pub fn adopt_orphans() {
 #[must_use]
 pub fn reap_children(grace: Duration) -> bool {
     use rustix::io::Errno;
-    use rustix::process::{waitpid, WaitOptions};
+    use rustix::process::{wait, WaitOptions};
 
     let deadline = Instant::now() + grace;
     loop {
-        match waitpid(None, WaitOptions::NOHANG) {
+        // `wait` is waitpid(-1): the engine runs in its own process group, which
+        // `waitpid(None)` (pid 0, caller's group only) never sees.
+        match wait(WaitOptions::NOHANG) {
             Ok(Some(_)) | Err(Errno::INTR) => {}
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             Ok(None) => return false,
@@ -37,12 +39,19 @@ mod tests {
     #[test]
     #[allow(clippy::zombie_processes)] // reaping them is what is under test
     fn reaps_exited_children_and_reports_live_ones() {
-        let done = std::process::Command::new("true").spawn().unwrap();
+        use std::os::unix::process::CommandExt as _;
+
+        // Own process group, like the ACP engine child.
+        let done = std::process::Command::new("true")
+            .process_group(0)
+            .spawn()
+            .unwrap();
         assert!(reap_children(Duration::from_secs(2)));
         drop(done);
 
         let mut live = std::process::Command::new("sleep")
             .arg("5")
+            .process_group(0)
             .spawn()
             .unwrap();
         assert!(!reap_children(Duration::from_millis(50)));
