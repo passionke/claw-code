@@ -20,8 +20,10 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
 use crate::gateway_e2b_lifecycle_decision::{
-    decide_lifecycle_action, lifecycle_probe_registry, worker_slot_probe_key, LifecycleAction,
-    LifecycleDecisionInput, ProbeVerdict, PROBE_MAX_ATTEMPTS,
+    decide_lifecycle_action, decide_scope_after_resume_failure, decide_scope_existing_worker,
+    decide_scope_probe_only, lifecycle_probe_registry, scope_drop_detail,
+    scope_invalidate_audit_reason, scope_sandbox_probe, worker_slot_probe_key, LifecycleAction,
+    LifecycleDecisionInput, ProbeVerdict, ScopeWorkerAction, PROBE_MAX_ATTEMPTS,
 };
 use crate::gateway_e2b_worker_settings::{
     e2b_project_worker_renew_interval_secs_from_env, e2b_project_worker_ttl_secs_from_env,
@@ -73,6 +75,13 @@ fn scope_slot_key(proj_id: i64, scope_key: &str, slot_index: u32) -> WorkerSlotK
         scope_key: scope_key.to_string(),
         slot_index,
     }
+}
+
+/// Outcome of probing a scope worker before lease. Author: kejiqing
+enum ScopeWorkerReady {
+    Ready,
+    /// PG row + cache cleared; caller must create.
+    Dropped,
 }
 
 /// Split `{template}` or `{template}@{buildId}` head. Author: kejiqing
@@ -818,6 +827,7 @@ impl E2bProjWorkerRegistry {
             lifecycle_state: "running".to_string(),
             last_idle_at_ms: 0,
             mcp_bind_json: json!({}),
+            invalid_reason: String::new(),
         };
         db.upsert_project_e2b_worker(&row)
             .await
@@ -922,6 +932,9 @@ impl E2bProjWorkerRegistry {
     }
 
     /// Scope-role solve: one worker per `(proj_id, scope_key)` at slot 0. Author: kejiqing
+    ///
+    /// Dead / unresumable sandboxes are treated as missing: drop PG row + cache, then create
+    /// (same end state as admin retire → next solve creates). Does not copy warm reconcile.
     pub async fn acquire_for_scope_solve(
         &self,
         proj_id: i64,
@@ -933,25 +946,31 @@ impl E2bProjWorkerRegistry {
         let db = self.session_db().await?;
         let key = scope_slot_key(proj_id, scope_key, 0);
 
-        // Warm cache hit: verify running / resume if paused.
+        // Cache hit: verify running / resume if paused; dead → drop and fall through to create.
         {
             let guard = self.workers.lock().await;
             if let Some(rt) = guard.get(&key) {
                 let sandbox_id = rt.handle.sandbox_id.clone();
                 drop(guard);
-                self.ensure_scope_worker_running(proj_id, scope_key, 0, &sandbox_id)
-                    .await?;
-                let guard = self.workers.lock().await;
-                let rt = guard.get(&key).ok_or_else(|| {
-                    format!(
-                        "scope worker missing after warm verify proj_{proj_id} scope={scope_key}"
-                    )
-                })?;
-                let handle = rt.handle.clone();
-                let worker_id = rt.worker_id.clone();
-                drop(guard);
-                self.bump_scope_lease(proj_id, scope_key, 0).await;
-                return Ok((handle, worker_id, 0));
+                match self
+                    .ensure_scope_worker_ready(proj_id, scope_key, 0, &sandbox_id)
+                    .await?
+                {
+                    ScopeWorkerReady::Ready => {
+                        let guard = self.workers.lock().await;
+                        let rt = guard.get(&key).ok_or_else(|| {
+                            format!(
+                                "scope worker missing after warm verify proj_{proj_id} scope={scope_key}"
+                            )
+                        })?;
+                        let handle = rt.handle.clone();
+                        let worker_id = rt.worker_id.clone();
+                        drop(guard);
+                        self.bump_scope_lease(proj_id, scope_key, 0).await;
+                        return Ok((handle, worker_id, 0));
+                    }
+                    ScopeWorkerReady::Dropped => {}
+                }
             }
         }
 
@@ -961,50 +980,88 @@ impl E2bProjWorkerRegistry {
             .map_err(|e| format!("get project_e2b_worker scoped: {e}"))?;
 
         if let Some(existing) = row {
-            let need_resume = existing.lifecycle_state == "sleeping"
-                || self.client.sandbox_paused(&existing.sandbox_id).await;
-            if need_resume {
-                let handle = self
-                    .client
-                    .resume_sandbox(&existing.sandbox_id, self.worker_ttl_secs)
-                    .await
-                    .map_err(|e| format!("resume scope worker: {e}"))?;
-                let handle_json = E2bSandboxClient::handle_to_json(&handle);
-                db.update_project_e2b_worker_lifecycle(
-                    proj_id,
-                    scope_key,
-                    0,
-                    "running",
-                    Some(&handle_json),
-                )
-                .await
-                .map_err(|e| format!("update scope lifecycle after resume: {e}"))?;
-                self.cache_worker(
-                    key.clone(),
-                    handle.clone(),
-                    existing.worker_id.clone(),
-                    existing.template_id.clone(),
-                )
-                .await;
-                self.bump_scope_lease(proj_id, scope_key, 0).await;
-                return Ok((handle, existing.worker_id, 0));
+            let paused = self.client.sandbox_paused(&existing.sandbox_id).await;
+            let running = if paused {
+                false
+            } else {
+                self.client.sandbox_running(&existing.sandbox_id).await
+            };
+            let probe = scope_sandbox_probe(paused, running);
+            match decide_scope_existing_worker(&existing.lifecycle_state, probe) {
+                ScopeWorkerAction::Reuse => {
+                    let handle = E2bSandboxClient::handle_from_json(&existing.handle_json)?;
+                    self.cache_worker(
+                        key.clone(),
+                        handle.clone(),
+                        existing.worker_id.clone(),
+                        existing.template_id.clone(),
+                    )
+                    .await;
+                    self.bump_scope_lease(proj_id, scope_key, 0).await;
+                    return Ok((handle, existing.worker_id, 0));
+                }
+                ScopeWorkerAction::Resume => {
+                    match self
+                        .client
+                        .resume_sandbox(&existing.sandbox_id, self.worker_ttl_secs)
+                        .await
+                    {
+                        Ok(handle) => {
+                            let handle_json = E2bSandboxClient::handle_to_json(&handle);
+                            db.update_project_e2b_worker_lifecycle(
+                                proj_id,
+                                scope_key,
+                                0,
+                                "running",
+                                Some(&handle_json),
+                            )
+                            .await
+                            .map_err(|e| format!("update scope lifecycle after resume: {e}"))?;
+                            self.cache_worker(
+                                key.clone(),
+                                handle.clone(),
+                                existing.worker_id.clone(),
+                                existing.template_id.clone(),
+                            )
+                            .await;
+                            self.bump_scope_lease(proj_id, scope_key, 0).await;
+                            return Ok((handle, existing.worker_id, 0));
+                        }
+                        Err(e) => {
+                            debug_assert_eq!(
+                                decide_scope_after_resume_failure(),
+                                ScopeWorkerAction::Invalidate
+                            );
+                            self.invalidate_dead_scope_worker(
+                                proj_id,
+                                scope_key,
+                                0,
+                                &existing.sandbox_id,
+                                &existing.worker_id,
+                                &existing.template_id,
+                                &format!("resume_failed:{e}"),
+                            )
+                            .await?;
+                        }
+                    }
+                }
+                ScopeWorkerAction::Invalidate => {
+                    let detail = scope_drop_detail(&existing.lifecycle_state, probe);
+                    self.invalidate_dead_scope_worker(
+                        proj_id,
+                        scope_key,
+                        0,
+                        &existing.sandbox_id,
+                        &existing.worker_id,
+                        &existing.template_id,
+                        detail,
+                    )
+                    .await?;
+                }
             }
-            // Running in PG but not in cache: verify + cache.
-            self.ensure_scope_worker_running(proj_id, scope_key, 0, &existing.sandbox_id)
-                .await?;
-            let handle = E2bSandboxClient::handle_from_json(&existing.handle_json)?;
-            self.cache_worker(
-                key.clone(),
-                handle.clone(),
-                existing.worker_id.clone(),
-                existing.template_id.clone(),
-            )
-            .await;
-            self.bump_scope_lease(proj_id, scope_key, 0).await;
-            return Ok((handle, existing.worker_id, 0));
         }
 
-        // Missing: enforce cap then create.
+        // Missing (or just soft-invalidated): enforce cap then create (upsert clears invalid).
         let count = db
             .count_project_e2b_scope_workers(proj_id)
             .await
@@ -1146,43 +1203,165 @@ impl E2bProjWorkerRegistry {
         self.reconcile_proj_slot(proj_id, slot_index, false).await
     }
 
-    async fn ensure_scope_worker_running(
+    /// Verify scope worker is usable; on dead/unresumable drop PG+cache as missing. Author: kejiqing
+    async fn ensure_scope_worker_ready(
         &self,
         proj_id: i64,
         scope_key: &str,
         slot_index: u32,
         sandbox_id: &str,
-    ) -> Result<(), String> {
-        if self.client.sandbox_paused(sandbox_id).await {
-            let handle = self
-                .client
-                .resume_sandbox(sandbox_id, self.worker_ttl_secs)
-                .await
-                .map_err(|e| format!("resume paused scope worker: {e}"))?;
-            if let Ok(db) = self.session_db().await {
-                let handle_json = E2bSandboxClient::handle_to_json(&handle);
-                let _ = db
-                    .update_project_e2b_worker_lifecycle(
-                        proj_id,
-                        scope_key,
-                        e2b_worker_slot_i32(slot_index),
-                        "running",
-                        Some(&handle_json),
-                    )
+    ) -> Result<ScopeWorkerReady, String> {
+        let paused = self.client.sandbox_paused(sandbox_id).await;
+        let running = if paused {
+            false
+        } else {
+            self.client.sandbox_running(sandbox_id).await
+        };
+        let probe = scope_sandbox_probe(paused, running);
+        match decide_scope_probe_only(probe) {
+            ScopeWorkerAction::Reuse => Ok(ScopeWorkerReady::Ready),
+            ScopeWorkerAction::Resume => {
+                match self
+                    .client
+                    .resume_sandbox(sandbox_id, self.worker_ttl_secs)
+                    .await
+                {
+                    Ok(handle) => {
+                        if let Ok(db) = self.session_db().await {
+                            let handle_json = E2bSandboxClient::handle_to_json(&handle);
+                            let _ = db
+                                .update_project_e2b_worker_lifecycle(
+                                    proj_id,
+                                    scope_key,
+                                    e2b_worker_slot_i32(slot_index),
+                                    "running",
+                                    Some(&handle_json),
+                                )
+                                .await;
+                        }
+                        let key = scope_slot_key(proj_id, scope_key, slot_index);
+                        if let Some(rt) = self.workers.lock().await.get_mut(&key) {
+                            rt.handle = handle;
+                        }
+                        Ok(ScopeWorkerReady::Ready)
+                    }
+                    Err(e) => {
+                        debug_assert_eq!(
+                            decide_scope_after_resume_failure(),
+                            ScopeWorkerAction::Invalidate
+                        );
+                        let (worker_id, template_id) = self
+                            .scope_worker_ids_from_cache_or_db(proj_id, scope_key, slot_index)
+                            .await;
+                        self.invalidate_dead_scope_worker(
+                            proj_id,
+                            scope_key,
+                            slot_index,
+                            sandbox_id,
+                            &worker_id,
+                            &template_id,
+                            &format!("resume_paused_failed:{e}"),
+                        )
+                        .await?;
+                        Ok(ScopeWorkerReady::Dropped)
+                    }
+                }
+            }
+            ScopeWorkerAction::Invalidate => {
+                let (worker_id, template_id) = self
+                    .scope_worker_ids_from_cache_or_db(proj_id, scope_key, slot_index)
                     .await;
+                self.invalidate_dead_scope_worker(
+                    proj_id,
+                    scope_key,
+                    slot_index,
+                    sandbox_id,
+                    &worker_id,
+                    &template_id,
+                    scope_drop_detail("running", probe),
+                )
+                .await?;
+                Ok(ScopeWorkerReady::Dropped)
             }
-            let key = scope_slot_key(proj_id, scope_key, slot_index);
-            if let Some(rt) = self.workers.lock().await.get_mut(&key) {
-                rt.handle = handle;
+        }
+    }
+
+    async fn scope_worker_ids_from_cache_or_db(
+        &self,
+        proj_id: i64,
+        scope_key: &str,
+        slot_index: u32,
+    ) -> (String, String) {
+        let key = scope_slot_key(proj_id, scope_key, slot_index);
+        if let Some(rt) = self.workers.lock().await.get(&key) {
+            return (rt.worker_id.clone(), rt.template_id.clone());
+        }
+        if let Ok(db) = self.session_db().await {
+            if let Ok(Some(row)) = db
+                .get_project_e2b_worker_scoped(proj_id, scope_key, e2b_worker_slot_i32(slot_index))
+                .await
+            {
+                return (row.worker_id, row.template_id);
             }
-            return Ok(());
         }
-        if self.client.sandbox_running(sandbox_id).await {
-            return Ok(());
-        }
-        Err(format!(
-            "scope worker sandbox {sandbox_id} not running for proj_{proj_id} scope={scope_key}"
-        ))
+        (String::new(), String::new())
+    }
+
+    /// Soft-invalidate dead scope worker so acquire can create (retain row for RCA). Author: kejiqing
+    async fn invalidate_dead_scope_worker(
+        &self,
+        proj_id: i64,
+        scope_key: &str,
+        slot_index: u32,
+        sandbox_id: &str,
+        worker_id: &str,
+        template_id: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        warn!(
+            target: "claw_e2b_proj_worker",
+            proj_id,
+            scope_key = %scope_key,
+            sandbox_id = %sandbox_id,
+            reason = %reason,
+            "scope worker dead/unresumable; invalidating PG row for recreate"
+        );
+        self.retire_worker_sandbox(proj_id, sandbox_id).await;
+        let db = self.session_db().await?;
+        let audit = scope_invalidate_audit_reason(reason, scope_key);
+        audit_rotation(
+            db.as_ref(),
+            WorkerRotationEvent {
+                proj_id,
+                event: "invalidated".to_string(),
+                sandbox_id: Some(sandbox_id.to_string()),
+                worker_id: if worker_id.is_empty() {
+                    None
+                } else {
+                    Some(worker_id.to_string())
+                },
+                template_id: if template_id.is_empty() {
+                    None
+                } else {
+                    Some(template_id.to_string())
+                },
+                reason: Some(audit.clone()),
+                at_ms: chrono::Utc::now().timestamp_millis(),
+            },
+        )
+        .await;
+        db.invalidate_project_e2b_worker_slot_scoped(
+            proj_id,
+            scope_key,
+            e2b_worker_slot_i32(slot_index),
+            &audit,
+        )
+        .await
+        .map_err(|e| format!("invalidate dead scope worker: {e}"))?;
+        let key = scope_slot_key(proj_id, scope_key, slot_index);
+        self.workers.lock().await.remove(&key);
+        self.leases.lock().await.remove(&key);
+        Ok(())
     }
 
     async fn acquire_slot(
