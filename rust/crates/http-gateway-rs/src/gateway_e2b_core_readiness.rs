@@ -9,7 +9,7 @@ use crate::gateway_e2b_nas_api_settings::{
 use crate::gateway_e2b_observe_settings::{
     e2b_observe_settings_public, e2b_observe_settings_public_with_runtime, E2bObserveSettingsPublic,
 };
-use crate::pool::interactive_backend::{e2b_observe_is_enabled, E2bNasApiSingleton};
+use crate::pool::interactive_backend::e2b_observe_is_enabled;
 use crate::session_db::GatewaySessionDb;
 use claw_e2b_sandbox_client::E2bSandboxClient;
 
@@ -25,12 +25,9 @@ pub struct E2bCoreReadinessSnapshot {
     pub claw_tap_cluster: ClawTapClusterSnapshot,
 }
 
-/// nas-api is required when `CLAW_E2B_NAS_API` is enabled (default in e2b mode).
+/// nas-api is always required in e2b mode. Author: kejiqing
 #[must_use]
 pub fn nas_api_component_ready(s: &E2bNasApiSettingsPublic) -> bool {
-    if !E2bNasApiSingleton::enabled_from_env() {
-        return true;
-    }
     s.online
 }
 
@@ -60,7 +57,7 @@ fn first_blocking_reason(
     observe: &E2bObserveSettingsPublic,
     claw_tap: &ClawTapClusterSnapshot,
 ) -> Option<String> {
-    if E2bNasApiSingleton::enabled_from_env() && !nas_api_component_ready(nas_api) {
+    if !nas_api_component_ready(nas_api) {
         return nas_api
             .last_error
             .clone()

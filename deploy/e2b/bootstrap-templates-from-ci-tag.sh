@@ -172,15 +172,7 @@ run_py() {
 run_py "${E2B_DIR}/build-claw-worker-selfhosted.py"
 run_py "${E2B_DIR}/build-claw-worker-relaxed-selfhosted.py"
 run_py "${E2B_DIR}/build-claw-observe-selfhosted.py"
-
-case "${CLAW_E2B_NAS_API:-1}" in
-  0|false|no|off|FALSE|NO|OFF)
-    echo "==> skip nas-api (CLAW_E2B_NAS_API=0)" >&2
-    ;;
-  *)
-    run_py "${E2B_DIR}/build-claw-nas-api-selfhosted.py"
-    ;;
-esac
+run_py "${E2B_DIR}/build-claw-nas-api-selfhosted.py"
 
 # neuro-harness engine workers (feat/neuro-harness): images from claw-code-branch-worker (same tag as strict).
 # Author: kejiqing

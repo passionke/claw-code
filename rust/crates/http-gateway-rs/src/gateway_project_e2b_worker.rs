@@ -28,6 +28,12 @@ pub struct ProjectE2bWorkerUrls {
 pub struct ProjectE2bWorkerInfo {
     #[serde(rename = "slotIndex")]
     pub slot_index: i32,
+    #[serde(rename = "scopeKey", skip_serializing_if = "String::is_empty")]
+    pub scope_key: String,
+    #[serde(rename = "lifecycleState")]
+    pub lifecycle_state: String,
+    #[serde(rename = "invalidReason", skip_serializing_if = "String::is_empty")]
+    pub invalid_reason: String,
     #[serde(rename = "activeLeases", skip_serializing_if = "Option::is_none")]
     pub active_leases: Option<u32>,
     #[serde(rename = "sandboxId")]
@@ -120,6 +126,9 @@ async fn build_worker_info(
     let urls = worker_urls(client, &handle);
     Ok(ProjectE2bWorkerInfo {
         slot_index: row.slot_index,
+        scope_key: row.scope_key.clone(),
+        lifecycle_state: row.lifecycle_state.clone(),
+        invalid_reason: row.invalid_reason.clone(),
         active_leases: Some(active_leases),
         sandbox_id: row.sandbox_id.clone(),
         worker_id: row.worker_id.clone(),

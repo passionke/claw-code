@@ -323,16 +323,4 @@ impl E2bNasApiSingleton {
     pub async fn verify_endpoint_configured(&self) -> Result<(), String> {
         self.base_url().await.map(|_| ())
     }
-
-    /// `CLAW_E2B_NAS_API` gate: unset/`1`/`true` → enabled; `0`/`false`/`no`/`off` → disabled.
-    #[must_use]
-    pub fn enabled_from_env() -> bool {
-        !matches!(
-            std::env::var("CLAW_E2B_NAS_API")
-                .ok()
-                .map(|v| v.trim().to_ascii_lowercase())
-                .as_deref(),
-            Some("0" | "false" | "no" | "off")
-        )
-    }
 }

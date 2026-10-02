@@ -20,8 +20,10 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
 use crate::gateway_e2b_lifecycle_decision::{
-    decide_lifecycle_action, lifecycle_probe_registry, worker_slot_probe_key, LifecycleAction,
-    LifecycleDecisionInput, ProbeVerdict, PROBE_MAX_ATTEMPTS,
+    decide_lifecycle_action, decide_scope_after_resume_failure, decide_scope_existing_worker,
+    decide_scope_probe_only, lifecycle_probe_registry, scope_drop_detail,
+    scope_invalidate_audit_reason, scope_sandbox_probe, worker_slot_probe_key, LifecycleAction,
+    LifecycleDecisionInput, ProbeVerdict, ScopeWorkerAction, PROBE_MAX_ATTEMPTS,
 };
 use crate::gateway_e2b_worker_settings::{
     e2b_project_worker_renew_interval_secs_from_env, e2b_project_worker_ttl_secs_from_env,
@@ -74,6 +76,25 @@ fn scope_slot_key(proj_id: i64, scope_key: &str, slot_index: u32) -> WorkerSlotK
         scope_key: scope_key.to_string(),
         slot_index,
     }
+}
+
+/// Build orphan-reap keep map from live PG workers (singleton + scope). Author: kejiqing
+fn keep_by_proj_from_live_workers(rows: &[ProjectFcWorkerRow]) -> HashMap<i64, Vec<String>> {
+    let mut keep_by_proj: HashMap<i64, Vec<String>> = HashMap::new();
+    for row in rows {
+        keep_by_proj
+            .entry(row.proj_id)
+            .or_default()
+            .push(row.sandbox_id.clone());
+    }
+    keep_by_proj
+}
+
+/// Outcome of probing a scope worker before lease. Author: kejiqing
+enum ScopeWorkerReady {
+    Ready,
+    /// PG row + cache cleared; caller must create.
+    Dropped,
 }
 
 /// Split `{template}` or `{template}@{buildId}` head. Author: kejiqing
@@ -224,6 +245,16 @@ fn needs_recreate(stored: &str, desired: &str, image_refresh: bool, sandbox_aliv
     image_refresh && image_build_refresh_needed(stored, desired)
 }
 
+/// Scope sleeping → wake: recreate when contract or build is behind desired.
+///
+/// Unlike singleton R1 (`needs_recreate` with `image_refresh=false`), scope may catch up on
+/// build at **resume** only — never while Running/busy. Author: kejiqing
+#[must_use]
+fn scope_wake_should_recreate(stored_contract: &str, desired_contract: &str) -> bool {
+    contract_requires_rotation(stored_contract, desired_contract)
+        || image_build_refresh_needed(stored_contract, desired_contract)
+}
+
 struct WorkerSpec {
     e2b_template_id: String,
     build_id: Option<String>,
@@ -361,6 +392,20 @@ impl E2bProjWorkerRegistry {
         }
     }
 
+    /// Desired worker contract for proj (same source as create/reconcile). Author: kejiqing
+    async fn desired_contract_for_proj(&self, proj_id: i64) -> Result<String, String> {
+        let spec = self.desired_worker_spec(proj_id).await?;
+        let db = self.session_db().await?;
+        desired_worker_contract(
+            db.as_ref(),
+            &spec.e2b_template_id,
+            spec.build_id.as_deref(),
+            proj_id,
+            &spec.profile_label,
+        )
+        .await
+    }
+
     async fn desired_pool_size(&self, proj_id: i64) -> Result<u32, String> {
         let db = self.session_db().await?;
         load_desired_worker_pool_size(db.as_ref(), proj_id).await
@@ -436,16 +481,12 @@ impl E2bProjWorkerRegistry {
         let Ok(db) = self.session_db().await else {
             return;
         };
+        // Keep **all** live workers (singleton + scope). Scope sandboxes also carry
+        // clawRole=warm-proj; singleton-only keep lists kill them on gateway restart/release.
+        // Author: kejiqing
         let mut keep_by_proj: HashMap<i64, Vec<String>> = HashMap::new();
-        if let Ok(proj_ids) = db.list_project_config_proj_ids().await {
-            for proj_id in proj_ids {
-                if let Ok(rows) = db.list_project_e2b_singleton_workers(proj_id).await {
-                    let ids: Vec<String> = rows.into_iter().map(|r| r.sandbox_id).collect();
-                    if !ids.is_empty() {
-                        keep_by_proj.insert(proj_id, ids);
-                    }
-                }
-            }
+        if let Ok(rows) = db.list_cluster_e2b_live_workers().await {
+            keep_by_proj = keep_by_proj_from_live_workers(&rows);
         }
         match self
             .client
@@ -749,8 +790,10 @@ impl E2bProjWorkerRegistry {
             .get_project_e2b_worker(proj_id, e2b_worker_slot_i32(slot_index))
             .await
         {
+            // Keep live singleton + scope workers for this proj (same clawRole=warm-proj).
+            // Author: kejiqing
             let keep: Vec<String> = db
-                .list_project_e2b_singleton_workers(proj_id)
+                .list_project_e2b_live_workers(proj_id)
                 .await
                 .unwrap_or_default()
                 .into_iter()
@@ -829,6 +872,7 @@ impl E2bProjWorkerRegistry {
             lifecycle_state: "running".to_string(),
             last_idle_at_ms: 0,
             mcp_bind_json: json!({}),
+            invalid_reason: String::new(),
         };
         db.upsert_project_e2b_worker(&row)
             .await
@@ -933,6 +977,9 @@ impl E2bProjWorkerRegistry {
     }
 
     /// Scope-role solve: one worker per `(proj_id, scope_key)` at slot 0. Author: kejiqing
+    ///
+    /// Dead / unresumable sandboxes are treated as missing: drop PG row + cache, then create
+    /// (same end state as admin retire → next solve creates). Does not copy warm reconcile.
     pub async fn acquire_for_scope_solve(
         &self,
         proj_id: i64,
@@ -944,25 +991,31 @@ impl E2bProjWorkerRegistry {
         let db = self.session_db().await?;
         let key = scope_slot_key(proj_id, scope_key, 0);
 
-        // Warm cache hit: verify running / resume if paused.
+        // Cache hit: verify running / resume if paused; dead → drop and fall through to create.
         {
             let guard = self.workers.lock().await;
             if let Some(rt) = guard.get(&key) {
                 let sandbox_id = rt.handle.sandbox_id.clone();
                 drop(guard);
-                self.ensure_scope_worker_running(proj_id, scope_key, 0, &sandbox_id)
-                    .await?;
-                let guard = self.workers.lock().await;
-                let rt = guard.get(&key).ok_or_else(|| {
-                    format!(
-                        "scope worker missing after warm verify proj_{proj_id} scope={scope_key}"
-                    )
-                })?;
-                let handle = rt.handle.clone();
-                let worker_id = rt.worker_id.clone();
-                drop(guard);
-                self.bump_scope_lease(proj_id, scope_key, 0).await;
-                return Ok((handle, worker_id, 0));
+                match self
+                    .ensure_scope_worker_ready(proj_id, scope_key, 0, &sandbox_id)
+                    .await?
+                {
+                    ScopeWorkerReady::Ready => {
+                        let guard = self.workers.lock().await;
+                        let rt = guard.get(&key).ok_or_else(|| {
+                            format!(
+                                "scope worker missing after warm verify proj_{proj_id} scope={scope_key}"
+                            )
+                        })?;
+                        let handle = rt.handle.clone();
+                        let worker_id = rt.worker_id.clone();
+                        drop(guard);
+                        self.bump_scope_lease(proj_id, scope_key, 0).await;
+                        return Ok((handle, worker_id, 0));
+                    }
+                    ScopeWorkerReady::Dropped => {}
+                }
             }
         }
 
@@ -972,50 +1025,104 @@ impl E2bProjWorkerRegistry {
             .map_err(|e| format!("get project_e2b_worker scoped: {e}"))?;
 
         if let Some(existing) = row {
-            let need_resume = existing.lifecycle_state == "sleeping"
-                || self.client.sandbox_paused(&existing.sandbox_id).await;
-            if need_resume {
-                let handle = self
-                    .client
-                    .resume_sandbox(&existing.sandbox_id, self.worker_ttl_secs)
-                    .await
-                    .map_err(|e| format!("resume scope worker: {e}"))?;
-                let handle_json = E2bSandboxClient::handle_to_json(&handle);
-                db.update_project_e2b_worker_lifecycle(
-                    proj_id,
-                    scope_key,
-                    0,
-                    "running",
-                    Some(&handle_json),
-                )
-                .await
-                .map_err(|e| format!("update scope lifecycle after resume: {e}"))?;
-                self.cache_worker(
-                    key.clone(),
-                    handle.clone(),
-                    existing.worker_id.clone(),
-                    existing.template_id.clone(),
-                )
-                .await;
-                self.bump_scope_lease(proj_id, scope_key, 0).await;
-                return Ok((handle, existing.worker_id, 0));
+            let paused = self.client.sandbox_paused(&existing.sandbox_id).await;
+            let running = if paused {
+                false
+            } else {
+                self.client.sandbox_running(&existing.sandbox_id).await
+            };
+            let probe = scope_sandbox_probe(paused, running);
+            match decide_scope_existing_worker(&existing.lifecycle_state, probe) {
+                ScopeWorkerAction::Reuse => {
+                    let handle = E2bSandboxClient::handle_from_json(&existing.handle_json)?;
+                    self.cache_worker(
+                        key.clone(),
+                        handle.clone(),
+                        existing.worker_id.clone(),
+                        existing.template_id.clone(),
+                    )
+                    .await;
+                    self.bump_scope_lease(proj_id, scope_key, 0).await;
+                    return Ok((handle, existing.worker_id, 0));
+                }
+                ScopeWorkerAction::Resume => {
+                    // Sleeping → wake: catch up image/contract before resume (busy path untouched).
+                    // Author: kejiqing
+                    let desired = self.desired_contract_for_proj(proj_id).await?;
+                    if scope_wake_should_recreate(&existing.template_id, &desired) {
+                        self.invalidate_dead_scope_worker(
+                            proj_id,
+                            scope_key,
+                            0,
+                            &existing.sandbox_id,
+                            &existing.worker_id,
+                            &existing.template_id,
+                            "scope_wake_image_or_contract",
+                        )
+                        .await?;
+                    } else {
+                        match self
+                            .client
+                            .resume_sandbox(&existing.sandbox_id, self.worker_ttl_secs)
+                            .await
+                        {
+                            Ok(handle) => {
+                                let handle_json = E2bSandboxClient::handle_to_json(&handle);
+                                db.update_project_e2b_worker_lifecycle(
+                                    proj_id,
+                                    scope_key,
+                                    0,
+                                    "running",
+                                    Some(&handle_json),
+                                )
+                                .await
+                                .map_err(|e| format!("update scope lifecycle after resume: {e}"))?;
+                                self.cache_worker(
+                                    key.clone(),
+                                    handle.clone(),
+                                    existing.worker_id.clone(),
+                                    existing.template_id.clone(),
+                                )
+                                .await;
+                                self.bump_scope_lease(proj_id, scope_key, 0).await;
+                                return Ok((handle, existing.worker_id, 0));
+                            }
+                            Err(e) => {
+                                debug_assert_eq!(
+                                    decide_scope_after_resume_failure(),
+                                    ScopeWorkerAction::Invalidate
+                                );
+                                self.invalidate_dead_scope_worker(
+                                    proj_id,
+                                    scope_key,
+                                    0,
+                                    &existing.sandbox_id,
+                                    &existing.worker_id,
+                                    &existing.template_id,
+                                    &format!("resume_failed:{e}"),
+                                )
+                                .await?;
+                            }
+                        }
+                    }
+                }
+                ScopeWorkerAction::Invalidate => {
+                    let detail = scope_drop_detail(&existing.lifecycle_state, probe);
+                    self.invalidate_dead_scope_worker(
+                        proj_id,
+                        scope_key,
+                        0,
+                        &existing.sandbox_id,
+                        &existing.worker_id,
+                        &existing.template_id,
+                        detail,
+                    )
+                    .await?;
+                }
             }
-            // Running in PG but not in cache: verify + cache.
-            self.ensure_scope_worker_running(proj_id, scope_key, 0, &existing.sandbox_id)
-                .await?;
-            let handle = E2bSandboxClient::handle_from_json(&existing.handle_json)?;
-            self.cache_worker(
-                key.clone(),
-                handle.clone(),
-                existing.worker_id.clone(),
-                existing.template_id.clone(),
-            )
-            .await;
-            self.bump_scope_lease(proj_id, scope_key, 0).await;
-            return Ok((handle, existing.worker_id, 0));
         }
 
-        // Missing: enforce cap then create.
+        // Missing (or just soft-invalidated): enforce cap then create (upsert clears invalid).
         let count = db
             .count_project_e2b_scope_workers(proj_id)
             .await
@@ -1157,43 +1264,181 @@ impl E2bProjWorkerRegistry {
         self.reconcile_proj_slot(proj_id, slot_index, false).await
     }
 
-    async fn ensure_scope_worker_running(
+    /// Verify scope worker is usable; on dead/unresumable drop PG+cache as missing. Author: kejiqing
+    async fn ensure_scope_worker_ready(
         &self,
         proj_id: i64,
         scope_key: &str,
         slot_index: u32,
         sandbox_id: &str,
-    ) -> Result<(), String> {
-        if self.client.sandbox_paused(sandbox_id).await {
-            let handle = self
-                .client
-                .resume_sandbox(sandbox_id, self.worker_ttl_secs)
-                .await
-                .map_err(|e| format!("resume paused scope worker: {e}"))?;
-            if let Ok(db) = self.session_db().await {
-                let handle_json = E2bSandboxClient::handle_to_json(&handle);
-                let _ = db
-                    .update_project_e2b_worker_lifecycle(
+    ) -> Result<ScopeWorkerReady, String> {
+        let paused = self.client.sandbox_paused(sandbox_id).await;
+        let running = if paused {
+            false
+        } else {
+            self.client.sandbox_running(sandbox_id).await
+        };
+        let probe = scope_sandbox_probe(paused, running);
+        match decide_scope_probe_only(probe) {
+            ScopeWorkerAction::Reuse => Ok(ScopeWorkerReady::Ready),
+            ScopeWorkerAction::Resume => {
+                // Cache-hit resume: same wake gate as acquire (image/contract catch-up).
+                // Author: kejiqing
+                let (worker_id, template_id) = self
+                    .scope_worker_ids_from_cache_or_db(proj_id, scope_key, slot_index)
+                    .await;
+                let desired = self.desired_contract_for_proj(proj_id).await?;
+                if scope_wake_should_recreate(&template_id, &desired) {
+                    self.invalidate_dead_scope_worker(
                         proj_id,
                         scope_key,
-                        e2b_worker_slot_i32(slot_index),
-                        "running",
-                        Some(&handle_json),
+                        slot_index,
+                        sandbox_id,
+                        &worker_id,
+                        &template_id,
+                        "scope_wake_image_or_contract",
                     )
+                    .await?;
+                    return Ok(ScopeWorkerReady::Dropped);
+                }
+                match self
+                    .client
+                    .resume_sandbox(sandbox_id, self.worker_ttl_secs)
+                    .await
+                {
+                    Ok(handle) => {
+                        if let Ok(db) = self.session_db().await {
+                            let handle_json = E2bSandboxClient::handle_to_json(&handle);
+                            let _ = db
+                                .update_project_e2b_worker_lifecycle(
+                                    proj_id,
+                                    scope_key,
+                                    e2b_worker_slot_i32(slot_index),
+                                    "running",
+                                    Some(&handle_json),
+                                )
+                                .await;
+                        }
+                        let key = scope_slot_key(proj_id, scope_key, slot_index);
+                        if let Some(rt) = self.workers.lock().await.get_mut(&key) {
+                            rt.handle = handle;
+                        }
+                        Ok(ScopeWorkerReady::Ready)
+                    }
+                    Err(e) => {
+                        debug_assert_eq!(
+                            decide_scope_after_resume_failure(),
+                            ScopeWorkerAction::Invalidate
+                        );
+                        self.invalidate_dead_scope_worker(
+                            proj_id,
+                            scope_key,
+                            slot_index,
+                            sandbox_id,
+                            &worker_id,
+                            &template_id,
+                            &format!("resume_paused_failed:{e}"),
+                        )
+                        .await?;
+                        Ok(ScopeWorkerReady::Dropped)
+                    }
+                }
+            }
+            ScopeWorkerAction::Invalidate => {
+                let (worker_id, template_id) = self
+                    .scope_worker_ids_from_cache_or_db(proj_id, scope_key, slot_index)
                     .await;
+                self.invalidate_dead_scope_worker(
+                    proj_id,
+                    scope_key,
+                    slot_index,
+                    sandbox_id,
+                    &worker_id,
+                    &template_id,
+                    scope_drop_detail("running", probe),
+                )
+                .await?;
+                Ok(ScopeWorkerReady::Dropped)
             }
-            let key = scope_slot_key(proj_id, scope_key, slot_index);
-            if let Some(rt) = self.workers.lock().await.get_mut(&key) {
-                rt.handle = handle;
+        }
+    }
+
+    async fn scope_worker_ids_from_cache_or_db(
+        &self,
+        proj_id: i64,
+        scope_key: &str,
+        slot_index: u32,
+    ) -> (String, String) {
+        let key = scope_slot_key(proj_id, scope_key, slot_index);
+        if let Some(rt) = self.workers.lock().await.get(&key) {
+            return (rt.worker_id.clone(), rt.template_id.clone());
+        }
+        if let Ok(db) = self.session_db().await {
+            if let Ok(Some(row)) = db
+                .get_project_e2b_worker_scoped(proj_id, scope_key, e2b_worker_slot_i32(slot_index))
+                .await
+            {
+                return (row.worker_id, row.template_id);
             }
-            return Ok(());
         }
-        if self.client.sandbox_running(sandbox_id).await {
-            return Ok(());
-        }
-        Err(format!(
-            "scope worker sandbox {sandbox_id} not running for proj_{proj_id} scope={scope_key}"
-        ))
+        (String::new(), String::new())
+    }
+
+    /// Soft-invalidate dead scope worker so acquire can create (retain row for RCA). Author: kejiqing
+    async fn invalidate_dead_scope_worker(
+        &self,
+        proj_id: i64,
+        scope_key: &str,
+        slot_index: u32,
+        sandbox_id: &str,
+        worker_id: &str,
+        template_id: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        warn!(
+            target: "claw_e2b_proj_worker",
+            proj_id,
+            scope_key = %scope_key,
+            sandbox_id = %sandbox_id,
+            reason = %reason,
+            "scope worker dead/unresumable; invalidating PG row for recreate"
+        );
+        self.retire_worker_sandbox(proj_id, sandbox_id).await;
+        let db = self.session_db().await?;
+        let audit = scope_invalidate_audit_reason(reason, scope_key);
+        audit_rotation(
+            db.as_ref(),
+            WorkerRotationEvent {
+                proj_id,
+                event: "invalidated".to_string(),
+                sandbox_id: Some(sandbox_id.to_string()),
+                worker_id: if worker_id.is_empty() {
+                    None
+                } else {
+                    Some(worker_id.to_string())
+                },
+                template_id: if template_id.is_empty() {
+                    None
+                } else {
+                    Some(template_id.to_string())
+                },
+                reason: Some(audit.clone()),
+                at_ms: chrono::Utc::now().timestamp_millis(),
+            },
+        )
+        .await;
+        db.invalidate_project_e2b_worker_slot_scoped(
+            proj_id,
+            scope_key,
+            e2b_worker_slot_i32(slot_index),
+            &audit,
+        )
+        .await
+        .map_err(|e| format!("invalidate dead scope worker: {e}"))?;
+        let key = scope_slot_key(proj_id, scope_key, slot_index);
+        self.workers.lock().await.remove(&key);
+        self.leases.lock().await.remove(&key);
+        Ok(())
     }
 
     async fn acquire_slot(
@@ -1649,6 +1894,7 @@ fn select_least_lease_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway_e2b_lifecycle_decision::ScopeSandboxProbe;
 
     /// e2b alias for relaxed worker; PG may store `tpl_*` for the same template.
     const RELAXED_WORKER_ALIAS: &str = "claw-worker-relaxed";
@@ -1835,5 +2081,118 @@ mod tests {
         let leases = HashMap::from([(0, 0), (1, 0)]);
         assert_eq!(select_least_lease_slot(2, &present, &leases, 0), 0);
         assert_eq!(select_least_lease_slot(2, &present, &leases, 1), 1);
+    }
+
+    fn live_row(proj_id: i64, scope_key: &str, sandbox_id: &str) -> ProjectFcWorkerRow {
+        ProjectFcWorkerRow {
+            proj_id,
+            scope_key: scope_key.to_string(),
+            slot_index: 0,
+            sandbox_id: sandbox_id.to_string(),
+            worker_id: "w".into(),
+            template_id: "tpl".into(),
+            handle_json: json!({}),
+            updated_at_ms: 0,
+            in_use_count: 0,
+            in_use_until_ms: 0,
+            lifecycle_state: "running".into(),
+            last_idle_at_ms: 0,
+            mcp_bind_json: json!({}),
+            invalid_reason: String::new(),
+        }
+    }
+
+    /// Regression: release/startup orphan reap must keep scope workers, not only singleton.
+    #[test]
+    fn startup_orphan_keep_includes_scope_workers() {
+        let rows = vec![
+            live_row(3024, "", "sbx-singleton"),
+            live_row(3024, "fda-role", "sbx-scope-fda"),
+            live_row(1001, "", "sbx-other"),
+        ];
+        let keep = keep_by_proj_from_live_workers(&rows);
+        let ids = keep.get(&3024).expect("proj 3024 keep");
+        assert!(ids.contains(&"sbx-singleton".to_string()));
+        assert!(
+            ids.contains(&"sbx-scope-fda".to_string()),
+            "scope sandbox must be in keep or release restart kills it"
+        );
+        assert_eq!(
+            keep.get(&1001).map(Vec::as_slice),
+            Some(["sbx-other".to_string()].as_slice())
+        );
+        assert!(claw_e2b_sandbox_client::warm_proj_sandbox_kept(
+            3024,
+            "sbx-scope-fda",
+            &keep
+        ));
+    }
+
+    #[test]
+    fn scope_wake_recreates_on_build_mismatch() {
+        let old = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let new = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(scope_wake_should_recreate(&old, &new));
+        // Singleton runtime R1 would NOT recreate for build alone:
+        assert!(!needs_recreate(&old, &new, false, true));
+        // Startup image_refresh window: both agree to recreate.
+        assert!(needs_recreate(&old, &new, true, true));
+    }
+
+    #[test]
+    fn scope_wake_resumes_when_build_and_contract_match() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        assert!(!scope_wake_should_recreate(&a, &a));
+    }
+
+    #[test]
+    fn scope_wake_recreates_on_home_rev_change() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev-1", "strict");
+        let b = worker_contract_key("tpl_a", Some("b1"), "rev-2", "strict");
+        assert!(scope_wake_should_recreate(&a, &b));
+    }
+
+    #[test]
+    fn scope_wake_recreates_on_profile_change() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let b = worker_contract_key("tpl_a", Some("b1"), "rev", "relaxed");
+        assert!(scope_wake_should_recreate(&a, &b));
+    }
+
+    #[test]
+    fn scope_wake_recreates_legacy_row_without_build_pin() {
+        let legacy = worker_contract_key("tpl_a", None, "rev", "strict");
+        let desired = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(scope_wake_should_recreate(&legacy, &desired));
+    }
+
+    #[test]
+    fn scope_wake_no_image_recreate_when_desired_build_empty() {
+        let stored = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let desired_no_pin = worker_contract_key("tpl_a", None, "rev", "strict");
+        assert!(
+            !scope_wake_should_recreate(&stored, &desired_no_pin),
+            "empty desired build pin must not force image catch-up on wake"
+        );
+        assert!(!image_build_refresh_needed(&stored, &desired_no_pin));
+    }
+
+    /// Invariant: wake contract check is only entered on Resume, never on Reuse (busy/running).
+    #[test]
+    fn scope_wake_gate_only_applies_when_lifecycle_says_resume() {
+        let stale = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let desired = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(
+            scope_wake_should_recreate(&stale, &desired),
+            "contracts diverge — would recreate IF on Resume path"
+        );
+        let reuse = decide_scope_existing_worker("running", ScopeSandboxProbe::Running);
+        assert_eq!(reuse, ScopeWorkerAction::Reuse);
+        assert!(
+            !matches!(reuse, ScopeWorkerAction::Resume),
+            "Running must not enter wake gate (caller skips scope_wake_should_recreate)"
+        );
+        let resume = decide_scope_existing_worker("sleeping", ScopeSandboxProbe::Paused);
+        assert_eq!(resume, ScopeWorkerAction::Resume);
     }
 }

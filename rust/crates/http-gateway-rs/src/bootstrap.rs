@@ -78,13 +78,6 @@ pub async fn run() {
             );
         }
     }
-    // e2b without NAS: CLAW_E2B_NAS_API=0 skips claw-nas-api singleton (local workspace only).
-    if e2b_client.is_some() && !pool::E2bNasApiSingleton::enabled_from_env() {
-        tracing::info!(
-            target: "claw_e2b_nas",
-            "CLAW_E2B_NAS_API=0 — nas-api singleton disabled; workspace without NFS"
-        );
-    }
     let nas_api = Arc::new(pool::E2bNasApiSingleton::new());
     let nas_layout = pool::NasLayoutBackend::new(Arc::clone(&nas_api));
     let pool_clients =
@@ -287,26 +280,44 @@ pub async fn run() {
 
     let llm_runtime: gateway_llm_config_sync::LlmRuntimeHandle =
         Arc::new(tokio::sync::RwLock::new(None));
-    let bootstrap_mode = match crate::gateway_cluster_bootstrap::cluster_needs_bootstrap(
-        session_db.as_ref(),
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            warn!(
-                target: "claw_gateway_bootstrap",
-                error = %e,
-                "bootstrap status check failed; assuming normal startup"
-            );
-            false
-        }
-    };
 
-    if bootstrap_mode {
+    // Ensure nas-api/observe when PG templates+LLM are ready — independent of Admin wizard
+    // `needs_bootstrap` (that gate used client=None and skipped ensure forever). Author: kejiqing
+    let may_ensure =
+        match crate::gateway_cluster_bootstrap::cluster_startup_may_ensure_singletons_from_db(
+            session_db.as_ref(),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    target: "claw_gateway_bootstrap",
+                    error = %e,
+                    "startup ensure-gate check failed; treating as cold start (skip strict ensure)"
+                );
+                false
+            }
+        };
+
+    if may_ensure {
+        // Invariant: strict singleton ensure MUST run before project-worker reconcile
+        // (reconcile calls nas-api). Do not gate this on cluster_needs_bootstrap(None,None).
         info!(
             target: "claw_gateway_bootstrap",
-            "cluster needs bootstrap — deferring strict e2b singleton ensure"
+            "templates+LLM ready — ensuring e2b core singletons before project worker reconcile"
+        );
+        if let Err(e) = pool_clients
+            .ensure_e2b_singletons_on_startup_strict(session_db.as_ref())
+            .await
+        {
+            eprintln!("http-gateway-rs: e2b core singleton ensure failed (nas-api / observe): {e}");
+            std::process::exit(1);
+        }
+    } else {
+        info!(
+            target: "claw_gateway_bootstrap",
+            "cold start (templates or LLM not ready) — skip strict singleton ensure; try env LLM"
         );
         if let Ok(resp) =
             crate::gateway_cluster_bootstrap::apply_llm_from_env(session_db.as_ref(), &llm_runtime)
@@ -320,12 +331,6 @@ pub async fn run() {
                 );
             }
         }
-    } else if let Err(e) = pool_clients
-        .ensure_e2b_singletons_on_startup_strict(session_db.as_ref())
-        .await
-    {
-        eprintln!("http-gateway-rs: e2b core singleton ensure failed (nas-api / observe): {e}");
-        std::process::exit(1);
     }
     if let Err(e) = pool_clients.reconcile_project_workers_on_startup().await {
         eprintln!("http-gateway-rs: project worker startup switch failed: {e}");
@@ -373,6 +378,27 @@ pub async fn run() {
     {
         *state.claw_tap_cluster.write().await = Some(cluster);
     }
+
+    // Pick background loop from status WITH e2b client + claw_tap (not None,None).
+    // Author: kejiqing
+    let e2b_client = state.pool_clients.e2b_sandbox_client().map(|c| c.as_ref());
+    let bootstrap_mode = match crate::gateway_cluster_bootstrap::cluster_bootstrap_status(
+        state.session_db.as_ref(),
+        e2b_client,
+        Some(&state.claw_tap_cluster),
+    )
+    .await
+    {
+        Ok(snap) => snap.needs_bootstrap,
+        Err(e) => {
+            warn!(
+                target: "claw_gateway_bootstrap",
+                error = %e,
+                "post-ensure bootstrap status failed; using startup ensure-gate as fallback"
+            );
+            !may_ensure
+        }
+    };
 
     if bootstrap_mode {
         gateway_cluster_bootstrap::spawn_bootstrap_reconcile_loop(

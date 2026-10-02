@@ -21,7 +21,7 @@ use crate::gateway_global_settings::{
     self, get_gateway_global_settings, put_active_llm_config, PutActiveLlmConfigInput,
 };
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
-use crate::pool::interactive_backend::{interactive_backend_is_e2b, E2bNasApiSingleton};
+use crate::pool::interactive_backend::interactive_backend_is_e2b;
 use crate::pool::PoolClients;
 use crate::session_db::GatewaySessionDb;
 use claw_e2b_sandbox_client::E2bSandboxClient;
@@ -159,17 +159,12 @@ fn build_id_ready(build_id: Option<&String>) -> bool {
     build_id.is_some_and(|id| !id.trim().is_empty())
 }
 
-fn nas_api_bootstrap_required() -> bool {
-    E2bNasApiSingleton::enabled_from_env()
-}
-
 fn template_entries_from_settings(
     observe: &E2bObserveSettings,
     nas_api: &E2bNasApiSettings,
     worker: &E2bWorkerSettings,
     worker_relaxed: &E2bWorkerSettings,
 ) -> Vec<BootstrapTemplateEntry> {
-    let nas_required = nas_api_bootstrap_required();
     vec![
         BootstrapTemplateEntry {
             key: "e2bObserve".into(),
@@ -181,7 +176,7 @@ fn template_entries_from_settings(
             key: "e2bNasApi".into(),
             alias: "claw-nas-api".into(),
             build_id: nas_api.build_id.clone(),
-            ready: !nas_required || build_id_ready(nas_api.build_id.as_ref()),
+            ready: build_id_ready(nas_api.build_id.as_ref()),
         },
         BootstrapTemplateEntry {
             key: "e2bWorker".into(),
@@ -209,13 +204,8 @@ fn template_entries_from_settings(
 #[must_use]
 pub fn template_build_commands(cluster_id: &str) -> Vec<BootstrapCommand> {
     let cid = cluster_id.trim();
-    let label = if nas_api_bootstrap_required() {
-        "Admin：选用 ACR/CI 镜像 tag 发布四个核心 e2b 模板"
-    } else {
-        "Admin：选用 ACR/CI 镜像 tag 发布核心 e2b 模板（无 NAS）"
-    };
     vec![BootstrapCommand {
-        label: label.into(),
+        label: "Admin：选用 ACR/CI 镜像 tag 发布四个核心 e2b 模板".into(),
         command: "POST /v1/gateway/bootstrap/publish-templates {\"imageTag\":\"release-vX.Y.Z\"}"
             .into(),
         hint: Some(format!(
@@ -267,13 +257,44 @@ fn first_incomplete_phase(phases: &[BootstrapPhaseStatus]) -> Option<String> {
     })
 }
 
-/// Lightweight bootstrap status (no e2b HTTP). Used at process startup gate.
+/// Lightweight bootstrap status (no e2b HTTP). Used for Admin/UI — **not** the startup ensure gate.
+/// Author: kejiqing
 pub async fn cluster_needs_bootstrap(db: &GatewaySessionDb) -> Result<bool, sqlx::Error> {
     if !interactive_backend_is_e2b() {
         return Ok(false);
     }
     let snap = cluster_bootstrap_status(db, None, None).await?;
     Ok(snap.needs_bootstrap)
+}
+
+/// Pure gate: may run strict nas-api/observe ensure on gateway startup.
+///
+/// Independent of Admin wizard `needs_bootstrap` (which needs an e2b client to score
+/// singletons and is wrong as an ensure skip). Author: kejiqing
+#[must_use]
+pub fn cluster_startup_may_ensure_singletons(
+    is_e2b: bool,
+    llm_ready: bool,
+    templates_ready: bool,
+) -> bool {
+    is_e2b && llm_ready && templates_ready
+}
+
+/// PG-only: templates + active LLM ready → startup must ensure core singletons before
+/// project-worker reconcile (nas-api). Author: kejiqing
+pub async fn cluster_startup_may_ensure_singletons_from_db(
+    db: &GatewaySessionDb,
+) -> Result<bool, sqlx::Error> {
+    if !interactive_backend_is_e2b() {
+        return Ok(false);
+    }
+    let llm_ok = llm_phase_complete(db).await?;
+    let templates_ok = templates_phase_complete(db).await?;
+    Ok(cluster_startup_may_ensure_singletons(
+        true,
+        llm_ok,
+        templates_ok,
+    ))
 }
 
 pub async fn cluster_bootstrap_status(
@@ -818,5 +839,14 @@ mod tests {
         ];
         let reason = first_incomplete_phase(&phases).unwrap_or_default();
         assert!(reason.contains("LLM"));
+    }
+
+    #[test]
+    fn startup_may_ensure_requires_e2b_llm_and_templates() {
+        assert!(!cluster_startup_may_ensure_singletons(false, true, true));
+        assert!(!cluster_startup_may_ensure_singletons(true, false, true));
+        assert!(!cluster_startup_may_ensure_singletons(true, true, false));
+        assert!(!cluster_startup_may_ensure_singletons(true, false, false));
+        assert!(cluster_startup_may_ensure_singletons(true, true, true));
     }
 }
