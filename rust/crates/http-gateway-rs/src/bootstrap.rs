@@ -281,44 +281,28 @@ pub async fn run() {
     let llm_runtime: gateway_llm_config_sync::LlmRuntimeHandle =
         Arc::new(tokio::sync::RwLock::new(None));
 
-    // Ensure nas-api/observe when PG templates+LLM are ready — independent of Admin wizard
-    // `needs_bootstrap` (that gate used client=None and skipped ensure forever). Author: kejiqing
-    let may_ensure =
-        match crate::gateway_cluster_bootstrap::cluster_startup_may_ensure_singletons_from_db(
-            session_db.as_ref(),
-        )
-        .await
-        {
+    // init 兜底：cluster init 标记是最高优先级。init 状态下无条件先 serve，任何
+    // ensure / reconcile / warm 都不允许把 gateway 顶死；Admin 向导（唯一完成 bootstrap 的
+    // 入口）必须可达。非 init 状态才跑 ensure + 版本切换 + warm。Author: kejiqing
+    let init_pending =
+        match gateway_cluster_bootstrap::cluster_init_pending(session_db.as_ref()).await {
             Ok(v) => v,
             Err(e) => {
                 warn!(
                     target: "claw_gateway_bootstrap",
                     error = %e,
-                    "startup ensure-gate check failed; treating as cold start (skip strict ensure)"
+                    "cluster init gate check failed; assuming normal startup"
                 );
                 false
             }
         };
 
-    if may_ensure {
-        // Invariant: strict singleton ensure MUST run before project-worker reconcile
-        // (reconcile calls nas-api). Do not gate this on cluster_needs_bootstrap(None,None).
+    if init_pending {
         info!(
             target: "claw_gateway_bootstrap",
-            "templates+LLM ready — ensuring e2b core singletons before project worker reconcile"
+            "cluster init pending — serving; defer ensure/reconcile/warm"
         );
-        if let Err(e) = pool_clients
-            .ensure_e2b_singletons_on_startup_strict(session_db.as_ref())
-            .await
-        {
-            eprintln!("http-gateway-rs: e2b core singleton ensure failed (nas-api / observe): {e}");
-            std::process::exit(1);
-        }
-    } else {
-        info!(
-            target: "claw_gateway_bootstrap",
-            "cold start (templates or LLM not ready) — skip strict singleton ensure; try env LLM"
-        );
+        // Try to apply bootstrap LLM from env (helps the background bootstrap loop proceed).
         if let Ok(resp) =
             crate::gateway_cluster_bootstrap::apply_llm_from_env(session_db.as_ref(), &llm_runtime)
                 .await
@@ -331,10 +315,24 @@ pub async fn run() {
                 );
             }
         }
-    }
-    if let Err(e) = pool_clients.reconcile_project_workers_on_startup().await {
-        eprintln!("http-gateway-rs: project worker startup switch failed: {e}");
-        std::process::exit(1);
+    } else {
+        // Invariant: strict singleton ensure MUST run before project-worker reconcile
+        // (reconcile calls nas-api). Author: kejiqing
+        info!(
+            target: "claw_gateway_bootstrap",
+            "cluster ready — ensuring e2b core singletons before project worker reconcile"
+        );
+        if let Err(e) = pool_clients
+            .ensure_e2b_singletons_on_startup_strict(session_db.as_ref())
+            .await
+        {
+            eprintln!("http-gateway-rs: e2b core singleton ensure failed (nas-api / observe): {e}");
+            std::process::exit(1);
+        }
+        if let Err(e) = pool_clients.reconcile_project_workers_on_startup().await {
+            eprintln!("http-gateway-rs: project worker startup switch failed: {e}");
+            std::process::exit(1);
+        }
     }
     info!(
         target: "claw_gateway_orchestration",
@@ -394,9 +392,9 @@ pub async fn run() {
             warn!(
                 target: "claw_gateway_bootstrap",
                 error = %e,
-                "post-ensure bootstrap status failed; using startup ensure-gate as fallback"
+                "post-ensure bootstrap status failed; using startup init gate as fallback"
             );
-            !may_ensure
+            init_pending
         }
     };
 
