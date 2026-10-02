@@ -267,13 +267,44 @@ fn first_incomplete_phase(phases: &[BootstrapPhaseStatus]) -> Option<String> {
     })
 }
 
-/// Lightweight bootstrap status (no e2b HTTP). Used at process startup gate.
+/// Lightweight bootstrap status (no e2b HTTP). Used for Admin/UI — **not** the startup ensure gate.
+/// Author: kejiqing
 pub async fn cluster_needs_bootstrap(db: &GatewaySessionDb) -> Result<bool, sqlx::Error> {
     if !interactive_backend_is_e2b() {
         return Ok(false);
     }
     let snap = cluster_bootstrap_status(db, None, None).await?;
     Ok(snap.needs_bootstrap)
+}
+
+/// Pure gate: may run strict nas-api/observe ensure on gateway startup.
+///
+/// Independent of Admin wizard `needs_bootstrap` (which needs an e2b client to score
+/// singletons and is wrong as an ensure skip). Author: kejiqing
+#[must_use]
+pub fn cluster_startup_may_ensure_singletons(
+    is_e2b: bool,
+    llm_ready: bool,
+    templates_ready: bool,
+) -> bool {
+    is_e2b && llm_ready && templates_ready
+}
+
+/// PG-only: templates + active LLM ready → startup must ensure core singletons before
+/// project-worker reconcile (nas-api). Author: kejiqing
+pub async fn cluster_startup_may_ensure_singletons_from_db(
+    db: &GatewaySessionDb,
+) -> Result<bool, sqlx::Error> {
+    if !interactive_backend_is_e2b() {
+        return Ok(false);
+    }
+    let llm_ok = llm_phase_complete(db).await?;
+    let templates_ok = templates_phase_complete(db).await?;
+    Ok(cluster_startup_may_ensure_singletons(
+        true,
+        llm_ok,
+        templates_ok,
+    ))
 }
 
 pub async fn cluster_bootstrap_status(
@@ -813,5 +844,14 @@ mod tests {
         ];
         let reason = first_incomplete_phase(&phases).unwrap_or_default();
         assert!(reason.contains("LLM"));
+    }
+
+    #[test]
+    fn startup_may_ensure_requires_e2b_llm_and_templates() {
+        assert!(!cluster_startup_may_ensure_singletons(false, true, true));
+        assert!(!cluster_startup_may_ensure_singletons(true, false, true));
+        assert!(!cluster_startup_may_ensure_singletons(true, true, false));
+        assert!(!cluster_startup_may_ensure_singletons(true, false, false));
+        assert!(cluster_startup_may_ensure_singletons(true, true, true));
     }
 }
