@@ -5,6 +5,7 @@ import { useApp } from "../../context/AppContext";
 import type {
   BootstrapCiImageTagsResponse,
   BootstrapPublishJob,
+  BootstrapPublishScope,
   BootstrapPublishTemplatesResponse,
   BootstrapTemplateEntry,
   ClusterBootstrapSnapshot,
@@ -26,6 +27,25 @@ function publishLogLines(job: BootstrapPublishJob | undefined): string[] {
   if (!job) return [];
   const anyJob = job as BootstrapPublishJob & { log_tail?: string[] };
   return anyJob.logTail ?? anyJob.log_tail ?? [];
+}
+
+const OBSERVE_KEYS = new Set(["e2bObserve"]);
+const WORKER_SET_KEYS = new Set([
+  "e2bNasApi",
+  "e2bWorker",
+  "e2bWorkerRelaxed",
+  "e2bWorkerOpencode",
+  "e2bWorkerAppserver",
+]);
+
+function scopeAffectsKey(scope: BootstrapPublishScope | undefined, key: string): boolean {
+  if (!scope) return true; // legacy: treat as all
+  if (scope === "observe") return OBSERVE_KEYS.has(key);
+  return WORKER_SET_KEYS.has(key);
+}
+
+function rowPending(job: BootstrapPublishJob | undefined, key: string): boolean {
+  return job?.phase === "running" && scopeAffectsKey(job.scope, key);
 }
 
 /**
@@ -57,16 +77,7 @@ export default function TemplateBuildStep({
   const templatesOk =
     !jobRunning && snap.phases.find((p) => p.phase === "e2b_templates")?.complete === true;
 
-  const tableRows: BootstrapTemplateEntry[] = useMemo(() => {
-    if (!jobRunning) return snap.templateEntries;
-    return snap.templateEntries.map((e) => ({
-      ...e,
-      buildId: undefined,
-      imageRef: undefined,
-      imageDigest: undefined,
-      ready: false,
-    }));
-  }, [jobRunning, snap.templateEntries]);
+  const tableRows: BootstrapTemplateEntry[] = useMemo(() => snap.templateEntries, [snap.templateEntries]);
 
   const logLines = publishLogLines(job);
 
@@ -191,10 +202,21 @@ export default function TemplateBuildStep({
 
   const jobTag = () => {
     if (!job || job.phase === "idle") return <Tag>未发布</Tag>;
-    if (job.phase === "running") return <Tag color="processing">后台发布中</Tag>;
+    if (job.phase === "running") {
+      const scopeLabel =
+        job.scope === "observe" ? "observe" : job.scope === "worker_set" ? "worker 系" : "模板";
+      return <Tag color="processing">后台发布中（{scopeLabel}）</Tag>;
+    }
     if (job.phase === "succeeded") return <Tag color="success">成功</Tag>;
     return <Tag color="error">失败</Tag>;
   };
+
+  const runningAlertMessage =
+    job?.scope === "observe"
+      ? "正在发布 observe：仅 observe 行显示发布中；worker 系状态保持不动。"
+      : job?.scope === "worker_set"
+        ? "正在发布 worker 系模板：observe 行保持不动；本页轮询 status。"
+        : "后台异步发布中：本页轮询 status，无需保持长 HTTP。";
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -202,7 +224,7 @@ export default function TemplateBuildStep({
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
           Gateway 镜像不变时，选或手填 CI/镜像 tag（含升级后的{" "}
           <Typography.Text code>claw</Typography.Text>
-          ）重打 e2b 核心模板（worker / relaxed / observe / nas-api）。与集群
+          ）重打 e2b 核心模板（worker / relaxed / nas-api / opencode / appserver）。与集群
           Init 里「制作模板」同一条 API；新 build 需项目 worker reset 或沙箱失活后才会换上。
         </Typography.Paragraph>
       ) : (
@@ -342,11 +364,7 @@ export default function TemplateBuildStep({
       ) : null}
 
       {jobRunning ? (
-        <Alert
-          type="info"
-          showIcon
-          message="后台异步发布中：组件就绪态已清空；本页轮询 status，无需保持长 HTTP。"
-        />
+        <Alert type="info" showIcon message={runningAlertMessage} />
       ) : null}
 
       {logLines.length > 0 ? (
@@ -373,14 +391,17 @@ export default function TemplateBuildStep({
           {
             title: "buildId",
             dataIndex: "buildId",
-            render: (v: string | undefined) => (jobRunning ? "—" : v ?? "—"),
+            render: (v: string | undefined, row: BootstrapTemplateEntry) =>
+              rowPending(job, row.key) ? "—" : v ?? "—",
           },
           {
             title: "来源镜像",
             dataIndex: "imageRef",
             ellipsis: { showTitle: false },
-            render: (v: string | undefined) =>
-              jobRunning || !v ? "—" : (
+            render: (v: string | undefined, row: BootstrapTemplateEntry) =>
+              rowPending(job, row.key) || !v ? (
+                "—"
+              ) : (
                 <Tooltip title={v}>
                   <span>{v}</span>
                 </Tooltip>
@@ -390,8 +411,10 @@ export default function TemplateBuildStep({
             title: "镜像 Digest",
             dataIndex: "imageDigest",
             ellipsis: { showTitle: false },
-            render: (v: string | undefined) =>
-              jobRunning || !v ? "—" : (
+            render: (v: string | undefined, row: BootstrapTemplateEntry) =>
+              rowPending(job, row.key) || !v ? (
+                "—"
+              ) : (
                 <Tooltip title={v}>
                   <span>{v.length > 19 ? `${v.slice(0, 19)}…` : v}</span>
                 </Tooltip>
@@ -400,8 +423,8 @@ export default function TemplateBuildStep({
           {
             title: "状态",
             dataIndex: "ready",
-            render: (ok: boolean) =>
-              jobRunning ? (
+            render: (ok: boolean, row: BootstrapTemplateEntry) =>
+              rowPending(job, row.key) ? (
                 <Tag color="processing">发布中</Tag>
               ) : (
                 <Tag color={ok ? "success" : "warning"}>{ok ? "就绪" : "待构建"}</Tag>

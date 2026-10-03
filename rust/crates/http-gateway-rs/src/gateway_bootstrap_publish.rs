@@ -22,9 +22,38 @@ pub enum BootstrapPublishPhase {
     Failed,
 }
 
+/// Which template rows a running publish job may blank in bootstrap status. Author: kejiqing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BootstrapPublishScope {
+    Observe,
+    WorkerSet,
+}
+
+impl BootstrapPublishScope {
+    /// Template entry keys cleared while this scope is running. Author: kejiqing
+    #[must_use]
+    pub fn affects_key(self, key: &str) -> bool {
+        match self {
+            Self::Observe => key == "e2bObserve",
+            Self::WorkerSet => matches!(
+                key,
+                "e2bNasApi"
+                    | "e2bWorker"
+                    | "e2bWorkerRelaxed"
+                    | "e2bWorkerOpencode"
+                    | "e2bWorkerAppserver"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BootstrapPublishJob {
     pub phase: BootstrapPublishPhase,
+    /// `observe` | `worker_set` — which rows UI/status may mark pending. Author: kejiqing
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<BootstrapPublishScope>,
     #[serde(rename = "imageTag", skip_serializing_if = "Option::is_none")]
     pub image_tag: Option<String>,
     #[serde(rename = "startedAtMs", skip_serializing_if = "Option::is_none")]
@@ -42,6 +71,7 @@ impl Default for BootstrapPublishJob {
     fn default() -> Self {
         Self {
             phase: BootstrapPublishPhase::Idle,
+            scope: None,
             image_tag: None,
             started_at_ms: None,
             finished_at_ms: None,
@@ -214,6 +244,7 @@ pub fn start_publish_templates(
         guard.running = true;
         guard.job = BootstrapPublishJob {
             phase: BootstrapPublishPhase::Running,
+            scope: Some(BootstrapPublishScope::WorkerSet),
             image_tag: Some(tag.clone()),
             started_at_ms: Some(now_ms()),
             finished_at_ms: None,
@@ -293,6 +324,7 @@ pub fn start_publish_observe_templates(
         guard.running = true;
         guard.job = BootstrapPublishJob {
             phase: BootstrapPublishPhase::Running,
+            scope: Some(BootstrapPublishScope::Observe),
             image_tag: Some(tag.clone()),
             started_at_ms: Some(now_ms()),
             finished_at_ms: None,
@@ -817,6 +849,14 @@ mod tests {
         })
         .expect_err("path tag");
         assert!(err.contains("bare tag"));
+    }
+
+    #[test]
+    fn scope_affects_expected_keys() {
+        assert!(BootstrapPublishScope::Observe.affects_key("e2bObserve"));
+        assert!(!BootstrapPublishScope::Observe.affects_key("e2bWorker"));
+        assert!(BootstrapPublishScope::WorkerSet.affects_key("e2bWorkerOpencode"));
+        assert!(!BootstrapPublishScope::WorkerSet.affects_key("e2bObserve"));
     }
 
     #[test]

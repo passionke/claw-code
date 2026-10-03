@@ -314,7 +314,7 @@ def main() -> int:
                 ("ready", WORKER_READY_CMD.encode()),
             ]
         )
-        if try_skip_unchanged("e2bWorker", content_digest):
+        if try_skip_unchanged("e2bWorker", content_digest, image_ref=worker_image):
             return 0
         template = Template().from_image(e2b_image)
         template = template.set_start_cmd(WORKER_START_CMD, WORKER_READY_CMD)
@@ -373,7 +373,9 @@ def main() -> int:
                     ("ready", WORKER_READY_CMD.encode()),
                 ]
             )
-            if try_skip_unchanged("e2bWorker", content_digest):
+            if try_skip_unchanged(
+                "e2bWorker", content_digest, image_ref=_worker_base_image()
+            ):
                 return 0
             template = (
                 Template(file_context_path=str(staging))

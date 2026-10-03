@@ -228,7 +228,9 @@ def main() -> int:
                 ("ready", RELAXED_READY_CMD.encode()),
             ],
         )
-        if try_skip_unchanged("e2bWorkerRelaxed", content_digest):
+        if try_skip_unchanged(
+            "e2bWorkerRelaxed", content_digest, image_ref=_env("CLAW_E2B_WORKER_RELAXED_IMAGE") or _worker_base_image()
+        ):
             return 0
         template = (
             Template(file_context_path=str(staging))

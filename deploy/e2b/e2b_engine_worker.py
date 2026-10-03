@@ -155,7 +155,7 @@ def build(engine: str) -> int:
                 ("ready", strict.WORKER_READY_CMD.encode()),
             ],
         )
-        if try_skip_unchanged(settings_key, content_digest):
+        if try_skip_unchanged(settings_key, content_digest, image_ref=image):
             return 0
         print(f"==> e2b Template.build {alias!r}: strict worker + {engine} layer from {image!r}")
         template = (
