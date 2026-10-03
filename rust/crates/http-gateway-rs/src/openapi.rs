@@ -191,6 +191,7 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::gateway_cluster_bootstrap::BootstrapApplyLlmResponse,
         crate::gateway_cluster_bootstrap::BootstrapEnsureCoreResponse,
         crate::gateway_bootstrap_publish::BootstrapPublishPhase,
+        crate::gateway_bootstrap_publish::BootstrapPublishScope,
         crate::gateway_bootstrap_publish::BootstrapPublishJob,
         crate::gateway_bootstrap_publish::BootstrapPublishTemplatesInput,
         crate::gateway_bootstrap_publish::BootstrapPublishTemplatesResponse,

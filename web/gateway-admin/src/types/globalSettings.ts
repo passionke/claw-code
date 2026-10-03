@@ -313,8 +313,12 @@ export interface BootstrapCommand {
 
 export type BootstrapPublishPhase = "idle" | "running" | "succeeded" | "failed";
 
+/** Which template rows a running job blanks — observe vs worker_set. Author: kejiqing */
+export type BootstrapPublishScope = "observe" | "worker_set";
+
 export interface BootstrapPublishJob {
   phase: BootstrapPublishPhase;
+  scope?: BootstrapPublishScope;
   imageTag?: string;
   startedAtMs?: number;
   finishedAtMs?: number;

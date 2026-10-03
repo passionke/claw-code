@@ -168,6 +168,8 @@ fn template_entries_from_settings(
     nas_api: &E2bNasApiSettings,
     worker: &E2bWorkerSettings,
     worker_relaxed: &E2bWorkerSettings,
+    worker_opencode: &E2bWorkerSettings,
+    worker_appserver: &E2bWorkerSettings,
 ) -> Vec<BootstrapTemplateEntry> {
     vec![
         BootstrapTemplateEntry {
@@ -210,19 +212,76 @@ fn template_entries_from_settings(
             image_digest: worker_relaxed.image_digest.clone(),
             ready: build_id_ready(worker_relaxed.build_id.as_ref()),
         },
+        BootstrapTemplateEntry {
+            key: "e2bWorkerOpencode".into(),
+            alias: worker_opencode
+                .alias
+                .clone()
+                .filter(|a| !a.trim().is_empty())
+                .unwrap_or_else(|| "claw-worker-opencode".into()),
+            build_id: worker_opencode.build_id.clone(),
+            image_ref: worker_opencode.image_ref.clone(),
+            image_digest: worker_opencode.image_digest.clone(),
+            ready: build_id_ready(worker_opencode.build_id.as_ref()),
+        },
+        BootstrapTemplateEntry {
+            key: "e2bWorkerAppserver".into(),
+            alias: worker_appserver
+                .alias
+                .clone()
+                .filter(|a| !a.trim().is_empty())
+                .unwrap_or_else(|| "claw-worker-appserver".into()),
+            build_id: worker_appserver.build_id.clone(),
+            image_ref: worker_appserver.image_ref.clone(),
+            image_digest: worker_appserver.image_digest.clone(),
+            ready: build_id_ready(worker_appserver.build_id.as_ref()),
+        },
     ]
+}
+
+/// While a scoped publish job runs, blank only in-scope rows so the other step stays visible.
+/// Author: kejiqing
+fn blank_template_entries_for_publish_job(
+    entries: Vec<BootstrapTemplateEntry>,
+    job: &BootstrapPublishJob,
+) -> Vec<BootstrapTemplateEntry> {
+    if job.phase != gateway_bootstrap_publish::BootstrapPublishPhase::Running {
+        return entries;
+    }
+    let Some(scope) = job.scope else {
+        // Legacy / unknown scope: keep prior conservative behavior (blank all).
+        return entries
+            .into_iter()
+            .map(|mut e| {
+                e.build_id = None;
+                e.ready = false;
+                e
+            })
+            .collect();
+    };
+    entries
+        .into_iter()
+        .map(|mut e| {
+            if scope.affects_key(&e.key) {
+                e.build_id = None;
+                e.ready = false;
+            }
+            e
+        })
+        .collect()
 }
 
 #[must_use]
 pub fn template_build_commands(cluster_id: &str) -> Vec<BootstrapCommand> {
     let cid = cluster_id.trim();
     vec![BootstrapCommand {
-        label: "Admin：选用 ACR/CI 镜像 tag 发布四个核心 e2b 模板".into(),
+        label: "Admin：选用 ACR/CI 镜像 tag 发布 e2b 模板（worker 系 + nas-api）".into(),
         command: "POST /v1/gateway/bootstrap/publish-templates {\"imageTag\":\"release-vX.Y.Z\"}"
             .into(),
         hint: Some(format!(
             "在引导页填写 CI/ACR 已有 tag（如 release-v1.8.11），点「发布模板」。\
-             Gateway 会调 e2b Template.build（worker from_image + relaxed/nas-api；observe 用已推送的 ACR 镜像）。\
+             Gateway 会调 e2b Template.build（worker / relaxed / nas-api / opencode / appserver）；\
+             observe 用第一步 claw-tap tag 单独发布。\
              CLAW_CLUSTER_ID={cid}。镜像构建由其他链路负责。"
         )),
     }]
@@ -244,6 +303,8 @@ async fn templates_phase_complete(db: &GatewaySessionDb) -> Result<bool, sqlx::E
         &settings.e2b_nas_api,
         &settings.e2b_worker,
         &settings.e2b_worker_relaxed,
+        &settings.e2b_worker_opencode,
+        &settings.e2b_worker_appserver,
     );
     Ok(entries.iter().all(|e| e.ready))
 }
@@ -256,7 +317,8 @@ fn first_incomplete_phase(phases: &[BootstrapPhaseStatus]) -> Option<String> {
             .clone()
             .unwrap_or_else(|| "active LLM not configured".into()),
         BootstrapPhaseId::E2bTemplates => p.detail.clone().unwrap_or_else(|| {
-            "e2b template buildId missing (observe / nas-api / worker / worker-relaxed)".into()
+            "e2b template buildId missing (observe / nas-api / worker / relaxed / opencode / appserver)"
+                .into()
         }),
         BootstrapPhaseId::E2bSingletons => p
             .detail
@@ -327,24 +389,13 @@ pub async fn cluster_bootstrap_status(
         &settings.e2b_nas_api,
         &settings.e2b_worker,
         &settings.e2b_worker_relaxed,
+        &settings.e2b_worker_opencode,
+        &settings.e2b_worker_appserver,
     );
     let publish_job = gateway_bootstrap_publish::current_publish_job();
-    // While Admin publish is running, surface rows as pending so UI does not keep
-    // stale buildId/ready from the previous tag. PG is updated as each template finishes.
+    // While Admin publish is running, blank only in-scope rows so the other step stays visible.
     // Author: kejiqing
-    let template_entries =
-        if publish_job.phase == gateway_bootstrap_publish::BootstrapPublishPhase::Running {
-            template_entries
-                .into_iter()
-                .map(|mut e| {
-                    e.build_id = None;
-                    e.ready = false;
-                    e
-                })
-                .collect()
-        } else {
-            template_entries
-        };
+    let template_entries = blank_template_entries_for_publish_job(template_entries, &publish_job);
     let templates_ok = template_entries.iter().all(|e| e.ready)
         && publish_job.phase != gateway_bootstrap_publish::BootstrapPublishPhase::Running;
 
@@ -816,6 +867,118 @@ mod tests {
         assert!(!build_id_ready(Some(&String::new())));
         assert!(!build_id_ready(Some(&"  ".into())));
         assert!(build_id_ready(Some(&"uuid-1".into())));
+    }
+
+    #[test]
+    fn template_entries_include_opencode_and_appserver() {
+        let mut observe = E2bObserveSettings::default();
+        observe.build_id = Some("obs-1".into());
+        let mut nas = E2bNasApiSettings::default();
+        nas.build_id = Some("nas-1".into());
+        let mut worker = E2bWorkerSettings::default();
+        worker.build_id = Some("w-1".into());
+        worker.image_ref = Some("reg/claw-gateway-worker:t".into());
+        worker.image_digest = Some("sha256:abc".into());
+        let mut relaxed = E2bWorkerSettings::default();
+        relaxed.build_id = Some("r-1".into());
+        let mut opencode = E2bWorkerSettings::default();
+        opencode.build_id = Some("o-1".into());
+        let mut appserver = E2bWorkerSettings::default();
+        appserver.build_id = Some("a-1".into());
+        let entries = template_entries_from_settings(
+            &observe, &nas, &worker, &relaxed, &opencode, &appserver,
+        );
+        assert_eq!(entries.len(), 6);
+        assert_eq!(entries[0].key, "e2bObserve");
+        assert_eq!(entries[4].key, "e2bWorkerOpencode");
+        assert_eq!(entries[4].alias, "claw-worker-opencode");
+        assert_eq!(entries[5].key, "e2bWorkerAppserver");
+        assert_eq!(entries[5].alias, "claw-worker-appserver");
+        assert!(entries.iter().all(|e| e.ready));
+        assert_eq!(
+            entries[2].image_ref.as_deref(),
+            Some("reg/claw-gateway-worker:t")
+        );
+    }
+
+    #[test]
+    fn blank_entries_only_clears_observe_scope() {
+        let mut observe = E2bObserveSettings::default();
+        observe.build_id = Some("obs-1".into());
+        observe.image_ref = Some("tap:v1".into());
+        let mut nas = E2bNasApiSettings::default();
+        nas.build_id = Some("nas-1".into());
+        nas.image_ref = Some("debian".into());
+        let worker = E2bWorkerSettings {
+            build_id: Some("w-1".into()),
+            image_ref: Some("worker:t".into()),
+            ..Default::default()
+        };
+        let relaxed = E2bWorkerSettings {
+            build_id: Some("r-1".into()),
+            ..Default::default()
+        };
+        let opencode = E2bWorkerSettings {
+            build_id: Some("o-1".into()),
+            ..Default::default()
+        };
+        let appserver = E2bWorkerSettings {
+            build_id: Some("a-1".into()),
+            ..Default::default()
+        };
+        let entries = template_entries_from_settings(
+            &observe, &nas, &worker, &relaxed, &opencode, &appserver,
+        );
+        let job = BootstrapPublishJob {
+            phase: gateway_bootstrap_publish::BootstrapPublishPhase::Running,
+            scope: Some(gateway_bootstrap_publish::BootstrapPublishScope::Observe),
+            ..Default::default()
+        };
+        let blanked = blank_template_entries_for_publish_job(entries, &job);
+        let obs = blanked.iter().find(|e| e.key == "e2bObserve").unwrap();
+        assert!(!obs.ready);
+        assert!(obs.build_id.is_none());
+        // image_ref kept on blank so UI can still show source while pending
+        assert_eq!(obs.image_ref.as_deref(), Some("tap:v1"));
+        let worker_row = blanked.iter().find(|e| e.key == "e2bWorker").unwrap();
+        assert!(worker_row.ready);
+        assert_eq!(worker_row.build_id.as_deref(), Some("w-1"));
+        assert_eq!(worker_row.image_ref.as_deref(), Some("worker:t"));
+    }
+
+    #[test]
+    fn blank_entries_worker_set_keeps_observe() {
+        let observe = E2bObserveSettings {
+            build_id: Some("obs-1".into()),
+            image_ref: Some("tap:v1".into()),
+            ..Default::default()
+        };
+        let nas = E2bNasApiSettings {
+            build_id: Some("nas-1".into()),
+            ..Default::default()
+        };
+        let worker = E2bWorkerSettings {
+            build_id: Some("w-1".into()),
+            ..Default::default()
+        };
+        let relaxed = E2bWorkerSettings::default();
+        let opencode = E2bWorkerSettings::default();
+        let appserver = E2bWorkerSettings::default();
+        let entries = template_entries_from_settings(
+            &observe, &nas, &worker, &relaxed, &opencode, &appserver,
+        );
+        let job = BootstrapPublishJob {
+            phase: gateway_bootstrap_publish::BootstrapPublishPhase::Running,
+            scope: Some(gateway_bootstrap_publish::BootstrapPublishScope::WorkerSet),
+            ..Default::default()
+        };
+        let blanked = blank_template_entries_for_publish_job(entries, &job);
+        let obs = blanked.iter().find(|e| e.key == "e2bObserve").unwrap();
+        assert!(obs.ready);
+        assert_eq!(obs.build_id.as_deref(), Some("obs-1"));
+        let nas_row = blanked.iter().find(|e| e.key == "e2bNasApi").unwrap();
+        assert!(!nas_row.ready);
+        assert!(nas_row.build_id.is_none());
     }
 
     #[test]

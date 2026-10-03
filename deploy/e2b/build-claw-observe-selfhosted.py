@@ -238,10 +238,13 @@ def main() -> int:
 
     skip_cache = _env("CLAW_E2B_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no")
     content_digest = ""
+    # Source image for PG imageRef (explicit — do not use locals()). Author: kejiqing
+    source_image_ref = ""
 
     # Bootstrap: e2b rejects claw-tap / missing debian-bookworm-claw-observe → debian+COPY. Author: kejiqing
     if _env("CLAW_E2B_OBSERVE_SKIP_LOCAL_BUILD") in ("1", "true", "yes"):
         tap_image = _tap_base_image()
+        source_image_ref = tap_image
         print(
             f"==> skip local observe docker; debian + COPY claude-tap from {tap_image!r}",
             file=sys.stderr,
@@ -271,7 +274,9 @@ def main() -> int:
                     ("live_port", str(live_port).encode()),
                 ]
             )
-            if try_skip_unchanged("e2bObserve", content_digest):
+            if try_skip_unchanged(
+                "e2bObserve", content_digest, image_ref=source_image_ref
+            ):
                 return 0
             template = (
                 Template(file_context_path=str(staging))
@@ -291,6 +296,7 @@ def main() -> int:
     else:
         e2b_image = _e2b_observe_image_tag(skip_cache=skip_cache)
         e2b_image = _build_e2b_observe_image(live_port, e2b_image)
+        source_image_ref = e2b_image
         print(f"==> e2b Template.build from_image={e2b_image!r}")
         content_digest = digest_parts(
             [
@@ -300,7 +306,9 @@ def main() -> int:
                 ("live_port", str(live_port).encode()),
             ]
         )
-        if try_skip_unchanged("e2bObserve", content_digest):
+        if try_skip_unchanged(
+            "e2bObserve", content_digest, image_ref=source_image_ref
+        ):
             return 0
         template = (
             Template()
@@ -321,7 +329,7 @@ def main() -> int:
     now_ms = int(time.time() * 1000)
     print(f"template_id: {build.template_id}")
     print(f"build_id: {build.build_id}")
-    image_ref = locals().get("e2b_image") or locals().get("tap_image") or ""
+    image_ref = source_image_ref
     try:
         merge_settings_json_key(
             "e2bObserve",

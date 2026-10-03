@@ -40,8 +40,50 @@ def should_skip_publish(stored_hash: str, stored_build_id: str, digest: str) -> 
     return bool(stored) and bool(build_id) and stored == digest
 
 
-def try_skip_unchanged(settings_key: str, digest: str) -> bool:
-    """True when PG contentHash matches and buildId is set. Lookup failure builds."""
+def _backfill_image_meta(settings_key: str, image_ref: str) -> None:
+    """On skip, still refresh imageRef / imageDigest so Admin table is not stuck on —."""
+    ref = (image_ref or "").strip()
+    if not ref:
+        return
+    try:
+        from e2b_pg_settings import merge_settings_json_key
+        from registry_extract import try_image_digest
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"warn: image meta backfill imports failed for {settings_key} ({exc})",
+            file=sys.stderr,
+        )
+        return
+    patch: dict[str, str] = {"imageRef": ref}
+    digest = try_image_digest(ref)
+    if digest and digest.strip():
+        patch["imageDigest"] = digest.strip()
+    try:
+        merge_settings_json_key(settings_key, patch)
+        print(
+            f"==> skip Template.build {settings_key}: backfilled imageRef"
+            + (f" imageDigest={digest[:19]}…" if digest and len(digest) > 19 else ""),
+            file=sys.stderr,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"warn: image meta backfill failed for {settings_key} ({exc})",
+            file=sys.stderr,
+        )
+
+
+def try_skip_unchanged(
+    settings_key: str,
+    digest: str,
+    *,
+    image_ref: str | None = None,
+) -> bool:
+    """True when PG contentHash matches and buildId is set. Lookup failure builds.
+
+    When skipping, optionally backfill `imageRef` / `imageDigest` from the current
+    source image so Init UI is not left blank after an older pin without those fields.
+    Author: kejiqing
+    """
     try:
         from e2b_pg_settings import load_settings_json_key
 
@@ -59,5 +101,7 @@ def try_skip_unchanged(settings_key: str, digest: str) -> bool:
             f"==> skip Template.build {settings_key}: content unchanged "
             f"buildId={stored_build}"
         )
+        if image_ref is not None:
+            _backfill_image_meta(settings_key, image_ref)
         return True
     return False

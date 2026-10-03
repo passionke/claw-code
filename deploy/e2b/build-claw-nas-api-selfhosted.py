@@ -172,7 +172,7 @@ def main() -> int:
                 ("port", str(nas_port).encode()),
             ]
         )
-        if try_skip_unchanged("e2bNasApi", content_digest):
+        if try_skip_unchanged("e2bNasApi", content_digest, image_ref=base_image):
             return 0
         template = _build_template(staging, nas_port)
         print(f"==> template startCmd=claw-nas-api :{nas_port}")
