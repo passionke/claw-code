@@ -149,6 +149,30 @@ pub(crate) fn run_solve_preflight(
     }
 }
 
+/// Run `turn.end` steps (same resolve rules as solve preflight). Author: kejiqing
+#[allow(dead_code)]
+pub(crate) fn run_solve_turn_end_preflight(
+    params: PreflightRunParams<'_>,
+    language_pipeline_json: &Value,
+) -> Result<(), GatewaySolveTurnError> {
+    use crate::preflight_runner::run_turn_end_preflight;
+    let empty = PreflightPipelineConfig {
+        steps: vec![],
+        kinds: vec![],
+    };
+    match resolve_solve_preflight_state(params.session_home) {
+        SolvePreflightResolve::Enabled(cfg) => {
+            run_turn_end_preflight(&cfg, language_pipeline_json, params, false)
+        }
+        SolvePreflightResolve::Disabled => {
+            run_turn_end_preflight(&empty, language_pipeline_json, params, false)
+        }
+        SolvePreflightResolve::Missing => {
+            run_turn_end_preflight(&empty, language_pipeline_json, params, true)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,7 +344,11 @@ mod tests {
         let steps = plan_solve_preflight_steps(&session_home, &sample_language_pipeline_json());
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].plugin_id, BUILTIN_SQLBOT_MCP_START);
-        assert_eq!(steps[0].scope, PreflightScope::SessionFirstTurn);
+        assert_eq!(
+            steps[0].resolved_event(),
+            preflight_spi::PreflightLifecycleEvent::SessionStart
+        );
+        assert_eq!(steps[0].scope, Some(PreflightScope::SessionFirstTurn));
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -13,17 +13,29 @@ import {
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../context/AppContext";
-import type { PreflightPluginRecord, PreflightStepJson } from "../types/preflight";
+import type {
+  PreflightLifecycleEvent,
+  PreflightPluginRecord,
+  PreflightStepJson,
+} from "../types/preflight";
 import {
   normalizeSolvePreflightSteps,
+  resolvedEvent,
   stepsToSolvePreflightJson,
 } from "../types/preflight";
 import { putProjectConfigDraft } from "../utils/projectConfig";
 import { fetchPreflightPlugins, upsertPreflightPlugin } from "../utils/preflightPlugins";
 
-const SCOPE_OPTIONS = [
-  { value: "every_turn", label: "每轮 (every_turn)" },
-  { value: "session_first_turn", label: "首轮 session (session_first_turn)" },
+/** Lifecycle event options (`steps[].on`). Author: kejiqing */
+const EVENT_OPTIONS: { value: PreflightLifecycleEvent; label: string }[] = [
+  { value: "worker.init.start", label: "Worker 首次创建 (worker.init.start)" },
+  { value: "worker.init.end", label: "Worker 创建收尾 (worker.init.end)" },
+  { value: "worker.reuse.start", label: "Worker 复用/唤醒 (worker.reuse.start)" },
+  { value: "worker.reuse.end", label: "Worker 本轮释放前 (worker.reuse.end)" },
+  { value: "session.start", label: "Session 首轮 (session.start)" },
+  { value: "session.end", label: "Session 关闭 (session.end)" },
+  { value: "turn.start", label: "每轮对话开始 (turn.start)" },
+  { value: "turn.end", label: "每轮对话结束 (turn.end)" },
 ];
 
 export default function PreflightPage() {
@@ -64,6 +76,7 @@ export default function PreflightPage() {
       ...prev,
       {
         pluginId: defaultPlugin,
+        on: "session.start",
         scope: "session_first_turn",
         impl: plugins[0]?.defaultImpl,
       },
@@ -137,8 +150,10 @@ export default function PreflightPage() {
       <Card title="项目 Preflight 管道" size="small">
         <Typography.Paragraph type="secondary">
           存于 <Typography.Text code>project_config.solve_preflight_json</Typography.Text>，物化到{" "}
-          <Typography.Text code>home/.claw/solve-preflight.json</Typography.Text>。按顺序执行；scope
-          控制每轮或仅 session 首轮。
+          <Typography.Text code>home/.claw/solve-preflight.json</Typography.Text>。按{" "}
+          <Typography.Text code>on</Typography.Text> 生命周期事件过滤执行（见{" "}
+          <Typography.Text code>docs/preflight-lifecycle-events.md</Typography.Text>
+          ）。<Typography.Text code>worker.init.*</Typography.Text> 需重置 worker 后生效。
         </Typography.Paragraph>
         {steps.length === 0 ? (
           <Tag>未配置步骤（保存为 kind:none；运行时仍默认每轮 turn_language）</Tag>
@@ -159,10 +174,20 @@ export default function PreflightPage() {
                 }}
               />
               <Select
-                style={{ width: 220 }}
-                value={step.scope}
-                options={SCOPE_OPTIONS}
-                onChange={(scope) => updateStep(idx, { scope })}
+                style={{ width: 320 }}
+                value={resolvedEvent(step)}
+                options={EVENT_OPTIONS}
+                onChange={(on: PreflightLifecycleEvent) =>
+                  updateStep(idx, {
+                    on,
+                    scope:
+                      on === "turn.start"
+                        ? "every_turn"
+                        : on === "session.start"
+                          ? "session_first_turn"
+                          : undefined,
+                  })
+                }
               />
               <Button
                 danger

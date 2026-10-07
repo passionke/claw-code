@@ -56,6 +56,7 @@ import {
   saveResponsesDisplay,
   type ResponsesDisplayMap,
 } from "../utils/responsesDisplay";
+import { formatMsZh } from "../utils/versionDisplay";
 interface TurnEntry {
   id: string;
   userText: string;
@@ -623,6 +624,9 @@ export default function ChatPage() {
             }
             return (
               <div key={item.id} className={styles.turnThread}>
+                {item.createdAtMs != null && item.createdAtMs > 0 ? (
+                  <div className={styles.turnTime}>{formatMsZh(item.createdAtMs)}</div>
+                ) : null}
                 <div className={styles.bubbleUser}>
                   {item.userText}
                   {item.attachments && item.attachments.length > 0 ? (

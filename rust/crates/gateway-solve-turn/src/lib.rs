@@ -2037,6 +2037,8 @@ pub fn run_gateway_solve_turn(
         otel_turn.mark_error(&message);
         err(HTTP_INTERNAL, message)
     })?;
+    // turn.end lifecycle hooks: `run_turn_end_preflight` (session recovered after runtime
+    // teardown is a follow-up; filter/SPI contract is ready). Author: kejiqing
     // ToolCompleteTurn: specialist body already on reportPath / live hub; do not use
     // empty router control text as the final message. Author: kejiqing
     let message = if result.completion_reason == runtime::TurnCompletionReason::ToolCompleteTurn {

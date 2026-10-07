@@ -1,7 +1,8 @@
-//! Preflight SPI v1 types and validation (shared by gateway-solve-turn and http-gateway-rs). Author: kejiqing
+//! Preflight SPI v1 types and validation (shared by gateway-solve-turn and http-gateway-rs).
+//! Lifecycle events: worker/session/turn × start/end via `steps[].on`. Author: kejiqing
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 #[derive(Deserialize)]
 struct LegacyPreflightKind {
@@ -14,12 +15,87 @@ pub const SPI_VERSION: &str = "1";
 pub const BUILTIN_TURN_LANGUAGE: &str = "turn_language";
 pub const BUILTIN_SQLBOT_MCP_START: &str = "sqlbot_mcp_start";
 
-/// When a session-first-turn step is considered done.
+/// Legacy scope (compat). Prefer [`PreflightLifecycleEvent`] via `steps[].on`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PreflightScope {
     EveryTurn,
     SessionFirstTurn,
+}
+
+/// Closed lifecycle event set for project preflight steps. Author: kejiqing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PreflightLifecycleEvent {
+    #[serde(rename = "worker.init.start")]
+    WorkerInitStart,
+    #[serde(rename = "worker.init.end")]
+    WorkerInitEnd,
+    #[serde(rename = "worker.reuse.start")]
+    WorkerReuseStart,
+    #[serde(rename = "worker.reuse.end")]
+    WorkerReuseEnd,
+    #[serde(rename = "session.start")]
+    SessionStart,
+    #[serde(rename = "session.end")]
+    SessionEnd,
+    #[serde(rename = "turn.start")]
+    TurnStart,
+    #[serde(rename = "turn.end")]
+    TurnEnd,
+}
+
+impl PreflightLifecycleEvent {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkerInitStart => "worker.init.start",
+            Self::WorkerInitEnd => "worker.init.end",
+            Self::WorkerReuseStart => "worker.reuse.start",
+            Self::WorkerReuseEnd => "worker.reuse.end",
+            Self::SessionStart => "session.start",
+            Self::SessionEnd => "session.end",
+            Self::TurnStart => "turn.start",
+            Self::TurnEnd => "turn.end",
+        }
+    }
+
+    /// Events dispatched inside `gateway-solve-once` (after Landlock).
+    #[must_use]
+    pub fn is_solve_path(self) -> bool {
+        matches!(
+            self,
+            Self::SessionStart | Self::SessionEnd | Self::TurnStart | Self::TurnEnd
+        )
+    }
+
+    /// Events that must run before Landlock (create / acquire).
+    #[must_use]
+    pub fn is_pre_jail(self) -> bool {
+        matches!(
+            self,
+            Self::WorkerInitStart
+                | Self::WorkerInitEnd
+                | Self::WorkerReuseStart
+                | Self::WorkerReuseEnd
+        )
+    }
+}
+
+#[must_use]
+pub fn event_from_scope(scope: PreflightScope) -> PreflightLifecycleEvent {
+    match scope {
+        PreflightScope::EveryTurn => PreflightLifecycleEvent::TurnStart,
+        PreflightScope::SessionFirstTurn => PreflightLifecycleEvent::SessionStart,
+    }
+}
+
+#[must_use]
+pub fn scope_from_event(event: PreflightLifecycleEvent) -> Option<PreflightScope> {
+    match event {
+        PreflightLifecycleEvent::TurnStart => Some(PreflightScope::EveryTurn),
+        PreflightLifecycleEvent::SessionStart => Some(PreflightScope::SessionFirstTurn),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,11 +109,39 @@ pub enum PreflightImpl {
 #[serde(rename_all = "camelCase")]
 pub struct PreflightStep {
     pub plugin_id: String,
-    pub scope: PreflightScope,
+    /// Preferred: lifecycle event. Author: kejiqing
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<PreflightLifecycleEvent>,
+    /// Legacy; used when `on` is absent. Author: kejiqing
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<PreflightScope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#impl: Option<PreflightImpl>,
     #[serde(default)]
     pub config: Value,
+}
+
+impl PreflightStep {
+    /// Resolve `on` (preferred) or map legacy `scope`; default `turn.start`.
+    #[must_use]
+    pub fn resolved_event(&self) -> PreflightLifecycleEvent {
+        if let Some(on) = self.on {
+            return on;
+        }
+        match self.scope {
+            Some(s) => event_from_scope(s),
+            None => PreflightLifecycleEvent::TurnStart,
+        }
+    }
+
+    /// Normalize so `on` is set; keep mapped `scope` for turn/session start compat.
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        let event = self.resolved_event();
+        self.on = Some(event);
+        self.scope = scope_from_event(event);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +154,7 @@ pub struct PreflightPipelineConfig {
     pub kinds: Vec<String>,
 }
 
+/// Turn/session SPI context (existing shape). Author: kejiqing
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreflightRequestContext {
@@ -65,11 +170,205 @@ pub struct PreflightRequestContext {
     pub model: String,
 }
 
+/// Outcome for `*.end` events. Author: kejiqing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightOutcome {
+    Ok,
+    Error,
+}
+
+/// Flexible lifecycle context (camelCase JSON). Field presence depends on event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LifecycleEventContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proj_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_profile_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_user_prompts: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_session: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_continuation: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<PreflightOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Validate required / forbidden fields for an event. Author: kejiqing
+pub fn validate_context_for_event(
+    event: PreflightLifecycleEvent,
+    ctx: &LifecycleEventContext,
+) -> Result<(), String> {
+    if ctx.work_dir.as_ref().is_none_or(String::is_empty) {
+        return Err(format!(
+            "context.workDir required for event {}",
+            event.as_str()
+        ));
+    }
+    match event {
+        PreflightLifecycleEvent::WorkerInitStart | PreflightLifecycleEvent::WorkerInitEnd => {
+            forbid_prompt_fields(event, ctx)?;
+            if ctx.user_prompt.is_some() || ctx.turn_id.is_some() {
+                return Err(format!(
+                    "event {} must not include userPrompt/turnId",
+                    event.as_str()
+                ));
+            }
+            if matches!(event, PreflightLifecycleEvent::WorkerInitEnd) {
+                require_end_fields(event, ctx)?;
+            }
+        }
+        PreflightLifecycleEvent::WorkerReuseStart | PreflightLifecycleEvent::WorkerReuseEnd => {
+            if ctx.user_prompt.is_some() {
+                return Err(format!(
+                    "event {} must not include userPrompt",
+                    event.as_str()
+                ));
+            }
+            if matches!(event, PreflightLifecycleEvent::WorkerReuseEnd) {
+                require_end_fields(event, ctx)?;
+            }
+        }
+        PreflightLifecycleEvent::SessionStart => {
+            if ctx.session_id.as_ref().is_none_or(String::is_empty) {
+                return Err("context.sessionId required for session.start".into());
+            }
+        }
+        PreflightLifecycleEvent::SessionEnd => {
+            if ctx.session_id.as_ref().is_none_or(String::is_empty) {
+                return Err("context.sessionId required for session.end".into());
+            }
+            require_end_fields(event, ctx)?;
+        }
+        PreflightLifecycleEvent::TurnStart => {
+            if ctx.session_id.as_ref().is_none_or(String::is_empty) {
+                return Err("context.sessionId required for turn.start".into());
+            }
+            if ctx.turn_id.as_ref().is_none_or(String::is_empty) {
+                return Err("context.turnId required for turn.start".into());
+            }
+            if ctx.user_prompt.is_none() {
+                return Err("context.userPrompt required for turn.start".into());
+            }
+            if ctx.model.as_ref().is_none_or(String::is_empty) {
+                return Err("context.model required for turn.start".into());
+            }
+        }
+        PreflightLifecycleEvent::TurnEnd => {
+            if ctx.session_id.as_ref().is_none_or(String::is_empty) {
+                return Err("context.sessionId required for turn.end".into());
+            }
+            if ctx.turn_id.as_ref().is_none_or(String::is_empty) {
+                return Err("context.turnId required for turn.end".into());
+            }
+            require_end_fields(event, ctx)?;
+        }
+    }
+    Ok(())
+}
+
+fn forbid_prompt_fields(
+    event: PreflightLifecycleEvent,
+    ctx: &LifecycleEventContext,
+) -> Result<(), String> {
+    if ctx.prior_user_prompts.is_some() {
+        return Err(format!(
+            "event {} must not include priorUserPrompts",
+            event.as_str()
+        ));
+    }
+    Ok(())
+}
+
+fn require_end_fields(
+    event: PreflightLifecycleEvent,
+    ctx: &LifecycleEventContext,
+) -> Result<(), String> {
+    if ctx.outcome.is_none() {
+        return Err(format!("context.outcome required for {}", event.as_str()));
+    }
+    if ctx.duration_ms.is_none() {
+        return Err(format!(
+            "context.durationMs required for {}",
+            event.as_str()
+        ));
+    }
+    if ctx.outcome == Some(PreflightOutcome::Ok) && ctx.error.is_some() {
+        return Err(format!(
+            "context.error must be absent when outcome=ok ({})",
+            event.as_str()
+        ));
+    }
+    Ok(())
+}
+
+/// Build a minimal worker-init context. Author: kejiqing
+#[must_use]
+pub fn build_worker_init_context(
+    proj_id: i64,
+    worker_id: &str,
+    work_dir: &str,
+    template_id: &str,
+    sandbox_id: &str,
+    worker_profile_mode: &str,
+) -> LifecycleEventContext {
+    LifecycleEventContext {
+        proj_id: Some(proj_id),
+        worker_id: Some(worker_id.to_string()),
+        work_dir: Some(work_dir.to_string()),
+        template_id: Some(template_id.to_string()),
+        sandbox_id: Some(sandbox_id.to_string()),
+        worker_profile_mode: Some(worker_profile_mode.to_string()),
+        ..Default::default()
+    }
+}
+
+/// Convert turn SPI context into lifecycle context for `turn.start`.
+#[must_use]
+pub fn lifecycle_context_from_turn(req: &PreflightRequestContext) -> LifecycleEventContext {
+    LifecycleEventContext {
+        work_dir: Some(req.work_dir.clone()),
+        session_id: Some(req.session_id.clone()),
+        turn_id: Some(req.turn_id.clone()),
+        user_prompt: Some(req.user_prompt.clone()),
+        prior_user_prompts: Some(req.prior_user_prompts.clone()),
+        extra_session: Some(req.extra_session.clone()),
+        model: Some(req.model.clone()),
+        is_continuation: Some(req.is_continuation),
+        ..Default::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreflightSpiRequest {
     #[serde(rename = "spiVersion")]
     pub spi_version: String,
+    /// Firing lifecycle event. Author: kejiqing
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<PreflightLifecycleEvent>,
     pub step: PreflightStep,
     pub context: PreflightRequestContext,
     #[serde(default)]
@@ -144,24 +443,100 @@ pub struct PreflightFilterContext {
     pub session_first_turn_satisfied: bool,
 }
 
-/// Returns step indices to run in order.
+/// Returns step indices to run for a firing event (in order). Author: kejiqing
+#[must_use]
+pub fn filter_step_indices_for_event(
+    steps: &[PreflightStep],
+    event: PreflightLifecycleEvent,
+    ctx: PreflightFilterContext,
+) -> Vec<usize> {
+    steps
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| should_run_for_event(step.resolved_event(), event, ctx))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Legacy: filter for solve-path `session.start` + `turn.start` only (excludes worker.*).
+/// Prefer [`filter_step_indices_for_event`] for a single firing event.
 #[must_use]
 pub fn filter_step_indices(steps: &[PreflightStep], ctx: PreflightFilterContext) -> Vec<usize> {
     steps
         .iter()
         .enumerate()
-        .filter(|(_, step)| should_run_step(step.scope, ctx))
+        .filter(|(_, step)| {
+            let ev = step.resolved_event();
+            matches!(
+                ev,
+                PreflightLifecycleEvent::SessionStart | PreflightLifecycleEvent::TurnStart
+            ) && should_run_for_event(ev, ev, ctx)
+        })
         .map(|(i, _)| i)
         .collect()
 }
 
 #[must_use]
-pub fn should_run_step(scope: PreflightScope, ctx: PreflightFilterContext) -> bool {
-    match scope {
-        PreflightScope::EveryTurn => true,
-        PreflightScope::SessionFirstTurn => {
+pub fn should_run_for_event(
+    step_event: PreflightLifecycleEvent,
+    firing: PreflightLifecycleEvent,
+    ctx: PreflightFilterContext,
+) -> bool {
+    if step_event != firing {
+        return false;
+    }
+    match firing {
+        PreflightLifecycleEvent::SessionStart => {
             !ctx.is_continuation && !ctx.session_first_turn_satisfied
         }
+        PreflightLifecycleEvent::TurnStart
+        | PreflightLifecycleEvent::TurnEnd
+        | PreflightLifecycleEvent::SessionEnd
+        | PreflightLifecycleEvent::WorkerInitStart
+        | PreflightLifecycleEvent::WorkerInitEnd
+        | PreflightLifecycleEvent::WorkerReuseStart
+        | PreflightLifecycleEvent::WorkerReuseEnd => true,
+    }
+}
+
+/// Legacy scope filter (compat). Author: kejiqing
+#[must_use]
+pub fn should_run_step(scope: PreflightScope, ctx: PreflightFilterContext) -> bool {
+    let ev = event_from_scope(scope);
+    should_run_for_event(ev, ev, ctx)
+}
+
+/// Session-turn effects are not valid on worker lifecycle events. Author: kejiqing
+pub fn validate_effects_for_event(
+    event: PreflightLifecycleEvent,
+    effects: &[PreflightEffect],
+) -> Result<(), String> {
+    if event.is_pre_jail() {
+        for effect in effects {
+            if matches!(
+                effect,
+                PreflightEffect::LockLanguage { .. }
+                    | PreflightEffect::InjectToolExchange { .. }
+                    | PreflightEffect::AppendTranscriptSummary { .. }
+            ) {
+                return Err(format!(
+                    "effect {:?} not allowed on event {}",
+                    effect_type_name(effect),
+                    event.as_str()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn effect_type_name(effect: &PreflightEffect) -> &'static str {
+    match effect {
+        PreflightEffect::LockLanguage { .. } => "lockLanguage",
+        PreflightEffect::WriteSessionFile { .. } => "writeSessionFile",
+        PreflightEffect::AppendSystemPromptSection { .. } => "appendSystemPromptSection",
+        PreflightEffect::AppendTranscriptSummary { .. } => "appendTranscriptSummary",
+        PreflightEffect::InjectToolExchange { .. } => "injectToolExchange",
     }
 }
 
@@ -193,8 +568,12 @@ pub fn validate_spi_request(request: &PreflightSpiRequest) -> Result<(), String>
     if request.step.plugin_id.trim().is_empty() {
         return Err(String::from("step.pluginId must be non-empty"));
     }
-    if request.context.user_prompt.is_empty() && request.context.is_continuation {
-        // continuation may have empty user_prompt in edge cases; allow
+    let event = request
+        .event
+        .unwrap_or_else(|| request.step.resolved_event());
+    if event == PreflightLifecycleEvent::TurnStart {
+        let lc = lifecycle_context_from_turn(&request.context);
+        validate_context_for_event(event, &lc)?;
     }
     Ok(())
 }
@@ -210,7 +589,8 @@ fn normalize_kinds(raw: &[String]) -> Vec<String> {
 fn default_turn_language_step() -> PreflightStep {
     PreflightStep {
         plugin_id: BUILTIN_TURN_LANGUAGE.to_string(),
-        scope: PreflightScope::EveryTurn,
+        on: Some(PreflightLifecycleEvent::TurnStart),
+        scope: Some(PreflightScope::EveryTurn),
         r#impl: Some(PreflightImpl::Builtin {
             handler: BUILTIN_TURN_LANGUAGE.to_string(),
         }),
@@ -222,7 +602,8 @@ fn kind_to_step(kind: &str) -> Option<PreflightStep> {
     match kind {
         BUILTIN_SQLBOT_MCP_START => Some(PreflightStep {
             plugin_id: BUILTIN_SQLBOT_MCP_START.to_string(),
-            scope: PreflightScope::SessionFirstTurn,
+            on: Some(PreflightLifecycleEvent::SessionStart),
+            scope: Some(PreflightScope::SessionFirstTurn),
             r#impl: Some(PreflightImpl::Builtin {
                 handler: BUILTIN_SQLBOT_MCP_START.to_string(),
             }),
@@ -230,7 +611,8 @@ fn kind_to_step(kind: &str) -> Option<PreflightStep> {
         }),
         BUILTIN_TURN_LANGUAGE => Some(PreflightStep {
             plugin_id: BUILTIN_TURN_LANGUAGE.to_string(),
-            scope: PreflightScope::EveryTurn,
+            on: Some(PreflightLifecycleEvent::TurnStart),
+            scope: Some(PreflightScope::EveryTurn),
             r#impl: Some(PreflightImpl::Builtin {
                 handler: BUILTIN_TURN_LANGUAGE.to_string(),
             }),
@@ -260,26 +642,28 @@ pub fn parse_pipeline_value(value: &Value) -> Result<PreflightPipelineConfig, St
     })
 }
 
-/// Normalize to executable `steps` (migrate legacy `kinds`; explicit empty kinds → no steps).
+/// Normalize to executable `steps` (migrate legacy `kinds`; set `on` from scope).
 #[must_use]
 pub fn normalize_pipeline_steps(cfg: &PreflightPipelineConfig) -> Vec<PreflightStep> {
-    if !cfg.steps.is_empty() {
-        return cfg.steps.clone();
-    }
-    let kinds = normalize_kinds(&cfg.kinds);
-    if kinds.is_empty() {
-        return vec![];
-    }
-    let mut steps = vec![default_turn_language_step()];
-    for kind in kinds {
-        if let Some(step) = kind_to_step(&kind) {
-            if step.plugin_id == BUILTIN_TURN_LANGUAGE {
-                continue;
-            }
-            steps.push(step);
+    let raw = if cfg.steps.is_empty() {
+        let kinds = normalize_kinds(&cfg.kinds);
+        if kinds.is_empty() {
+            return vec![];
         }
-    }
-    steps
+        let mut steps = vec![default_turn_language_step()];
+        for kind in kinds {
+            if let Some(step) = kind_to_step(&kind) {
+                if step.plugin_id == BUILTIN_TURN_LANGUAGE {
+                    continue;
+                }
+                steps.push(step);
+            }
+        }
+        steps
+    } else {
+        cfg.steps.clone()
+    };
+    raw.into_iter().map(PreflightStep::normalized).collect()
 }
 
 /// Default pipeline when no project preflight file is mounted (language inference every turn).
@@ -297,6 +681,7 @@ pub fn validate_pipeline_value(value: &Value) -> Result<(), String> {
                 "solvePreflightJson steps[].pluginId must be non-empty",
             ));
         }
+        let _ = step.resolved_event();
         if let Some(PreflightImpl::Builtin { handler }) = &step.r#impl {
             match handler.as_str() {
                 BUILTIN_TURN_LANGUAGE | BUILTIN_SQLBOT_MCP_START => {}
@@ -323,7 +708,6 @@ pub fn validate_pipeline_value(value: &Value) -> Result<(), String> {
 pub fn executable_pipeline_steps(cfg: &PreflightPipelineConfig) -> Vec<PreflightStep> {
     let steps = normalize_pipeline_steps(cfg);
     if steps.is_empty() && cfg.steps.is_empty() && normalize_kinds(&cfg.kinds).is_empty() {
-        // Explicit tombstone (`kind:none`, `steps:[]`) — no runtime steps.
         return vec![];
     }
     if steps.is_empty() {
@@ -332,19 +716,19 @@ pub fn executable_pipeline_steps(cfg: &PreflightPipelineConfig) -> Vec<Preflight
     steps
 }
 
-/// Materialize worker-readable `solve-preflight.json` (steps only).
+/// Materialize worker-readable `solve-preflight.json` (steps with `on`).
 #[must_use]
 pub fn materialize_pipeline_json(value: &Value) -> Value {
     let Ok(cfg) = parse_pipeline_value(value) else {
-        return serde_json::json!({ "steps": [] });
+        return json!({ "steps": [] });
     };
     let steps = normalize_pipeline_steps(&cfg);
     if steps.is_empty() {
-        return serde_json::json!({ "steps": [] });
+        return json!({ "steps": [] });
     }
     serde_json::to_value(&steps).map_or_else(
-        |_| serde_json::json!({ "steps": [] }),
-        |steps| serde_json::json!({ "steps": steps }),
+        |_| json!({ "steps": [] }),
+        |steps| json!({ "steps": steps }),
     )
 }
 
@@ -389,7 +773,6 @@ pub fn merge_language_pipeline_into_steps(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn scope_matrix_session_first_turn() {
@@ -412,13 +795,222 @@ mod tests {
     }
 
     #[test]
+    fn event_filter_matrix() {
+        let ctx_new = PreflightFilterContext {
+            is_continuation: false,
+            session_first_turn_satisfied: false,
+        };
+        let ctx_cont = PreflightFilterContext {
+            is_continuation: true,
+            session_first_turn_satisfied: false,
+        };
+        assert!(should_run_for_event(
+            PreflightLifecycleEvent::WorkerInitStart,
+            PreflightLifecycleEvent::WorkerInitStart,
+            ctx_new
+        ));
+        assert!(!should_run_for_event(
+            PreflightLifecycleEvent::WorkerInitStart,
+            PreflightLifecycleEvent::WorkerReuseStart,
+            ctx_new
+        ));
+        assert!(should_run_for_event(
+            PreflightLifecycleEvent::WorkerReuseStart,
+            PreflightLifecycleEvent::WorkerReuseStart,
+            ctx_new
+        ));
+        assert!(!should_run_for_event(
+            PreflightLifecycleEvent::WorkerReuseStart,
+            PreflightLifecycleEvent::WorkerInitStart,
+            ctx_new
+        ));
+        assert!(should_run_for_event(
+            PreflightLifecycleEvent::SessionStart,
+            PreflightLifecycleEvent::SessionStart,
+            ctx_new
+        ));
+        assert!(!should_run_for_event(
+            PreflightLifecycleEvent::SessionStart,
+            PreflightLifecycleEvent::SessionStart,
+            ctx_cont
+        ));
+        assert!(should_run_for_event(
+            PreflightLifecycleEvent::TurnStart,
+            PreflightLifecycleEvent::TurnStart,
+            ctx_cont
+        ));
+        assert!(!should_run_for_event(
+            PreflightLifecycleEvent::TurnEnd,
+            PreflightLifecycleEvent::TurnStart,
+            ctx_new
+        ));
+        assert!(should_run_for_event(
+            PreflightLifecycleEvent::TurnEnd,
+            PreflightLifecycleEvent::TurnEnd,
+            ctx_new
+        ));
+    }
+
+    #[test]
+    fn solve_path_excludes_worker_init_steps() {
+        let steps = vec![
+            PreflightStep {
+                plugin_id: "apt".into(),
+                on: Some(PreflightLifecycleEvent::WorkerInitStart),
+                scope: None,
+                r#impl: None,
+                config: json!({}),
+            },
+            PreflightStep {
+                plugin_id: "reuse".into(),
+                on: Some(PreflightLifecycleEvent::WorkerReuseStart),
+                scope: None,
+                r#impl: None,
+                config: json!({}),
+            },
+            PreflightStep {
+                plugin_id: BUILTIN_SQLBOT_MCP_START.into(),
+                on: Some(PreflightLifecycleEvent::SessionStart),
+                scope: Some(PreflightScope::SessionFirstTurn),
+                r#impl: None,
+                config: json!({}),
+            },
+            PreflightStep {
+                plugin_id: BUILTIN_TURN_LANGUAGE.into(),
+                on: Some(PreflightLifecycleEvent::TurnStart),
+                scope: Some(PreflightScope::EveryTurn),
+                r#impl: None,
+                config: json!({}),
+            },
+        ];
+        let ctx = PreflightFilterContext {
+            is_continuation: false,
+            session_first_turn_satisfied: false,
+        };
+        let idxs = filter_step_indices(&steps, ctx);
+        let plugins: Vec<_> = idxs.iter().map(|&i| steps[i].plugin_id.as_str()).collect();
+        assert_eq!(
+            plugins,
+            vec![BUILTIN_SQLBOT_MCP_START, BUILTIN_TURN_LANGUAGE]
+        );
+        assert!(filter_step_indices_for_event(
+            &steps,
+            PreflightLifecycleEvent::WorkerInitStart,
+            ctx
+        )
+        .contains(&0));
+    }
+
+    #[test]
+    fn legacy_scope_maps_to_on() {
+        let step = PreflightStep {
+            plugin_id: "x".into(),
+            on: None,
+            scope: Some(PreflightScope::EveryTurn),
+            r#impl: None,
+            config: json!({}),
+        };
+        assert_eq!(step.resolved_event(), PreflightLifecycleEvent::TurnStart);
+        let session = PreflightStep {
+            plugin_id: "y".into(),
+            on: None,
+            scope: Some(PreflightScope::SessionFirstTurn),
+            r#impl: None,
+            config: json!({}),
+        };
+        assert_eq!(
+            session.resolved_event(),
+            PreflightLifecycleEvent::SessionStart
+        );
+        let on_wins = PreflightStep {
+            plugin_id: "z".into(),
+            on: Some(PreflightLifecycleEvent::WorkerInitStart),
+            scope: Some(PreflightScope::EveryTurn),
+            r#impl: None,
+            config: json!({}),
+        };
+        assert_eq!(
+            on_wins.resolved_event(),
+            PreflightLifecycleEvent::WorkerInitStart
+        );
+    }
+
+    #[test]
     fn migrate_kinds_to_steps_with_default_language() {
         let raw = json!({"kinds": ["sqlbot_mcp_start"]});
         let steps = normalize_pipeline_steps(&parse_pipeline_value(&raw).unwrap());
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[0].plugin_id, BUILTIN_TURN_LANGUAGE);
-        assert_eq!(steps[0].scope, PreflightScope::EveryTurn);
+        assert_eq!(
+            steps[0].resolved_event(),
+            PreflightLifecycleEvent::TurnStart
+        );
+        assert_eq!(steps[0].on, Some(PreflightLifecycleEvent::TurnStart));
         assert_eq!(steps[1].plugin_id, BUILTIN_SQLBOT_MCP_START);
+    }
+
+    #[test]
+    fn context_worker_init_forbids_prompt() {
+        let mut ctx = build_worker_init_context(1, "w1", "/claw_ds", "tmpl", "sbx", "strict");
+        assert!(validate_context_for_event(PreflightLifecycleEvent::WorkerInitStart, &ctx).is_ok());
+        ctx.user_prompt = Some("hi".into());
+        assert!(
+            validate_context_for_event(PreflightLifecycleEvent::WorkerInitStart, &ctx).is_err()
+        );
+    }
+
+    #[test]
+    fn context_turn_start_requires_prompt() {
+        let ctx = LifecycleEventContext {
+            work_dir: Some("/w".into()),
+            session_id: Some("s".into()),
+            turn_id: Some("t".into()),
+            user_prompt: Some("q".into()),
+            model: Some("m".into()),
+            ..Default::default()
+        };
+        assert!(validate_context_for_event(PreflightLifecycleEvent::TurnStart, &ctx).is_ok());
+        let mut bad = ctx;
+        bad.user_prompt = None;
+        assert!(validate_context_for_event(PreflightLifecycleEvent::TurnStart, &bad).is_err());
+    }
+
+    #[test]
+    fn context_end_requires_outcome() {
+        let ctx = LifecycleEventContext {
+            work_dir: Some("/w".into()),
+            session_id: Some("s".into()),
+            turn_id: Some("t".into()),
+            outcome: Some(PreflightOutcome::Ok),
+            duration_ms: Some(12),
+            ..Default::default()
+        };
+        assert!(validate_context_for_event(PreflightLifecycleEvent::TurnEnd, &ctx).is_ok());
+        let mut bad = ctx;
+        bad.outcome = None;
+        assert!(validate_context_for_event(PreflightLifecycleEvent::TurnEnd, &bad).is_err());
+    }
+
+    #[test]
+    fn worker_init_rejects_session_effects() {
+        let effects = vec![PreflightEffect::LockLanguage {
+            language: "Chinese".into(),
+            reason: None,
+        }];
+        assert!(
+            validate_effects_for_event(PreflightLifecycleEvent::WorkerInitStart, &effects).is_err()
+        );
+        assert!(validate_effects_for_event(PreflightLifecycleEvent::TurnStart, &effects).is_ok());
+    }
+
+    #[test]
+    fn lifecycle_context_serde_roundtrip() {
+        let ctx = build_worker_init_context(9, "w", "/claw_ds", "t", "s", "relaxed");
+        let v = serde_json::to_value(&ctx).unwrap();
+        assert!(v.get("userPrompt").is_none());
+        assert_eq!(v.get("projId").and_then(Value::as_i64), Some(9));
+        let back: LifecycleEventContext = serde_json::from_value(v).unwrap();
+        assert_eq!(back.worker_id.as_deref(), Some("w"));
     }
 
     #[test]
@@ -459,11 +1051,32 @@ mod tests {
     }
 
     #[test]
-    fn materialize_emits_steps_only() {
+    fn materialize_emits_steps_with_on() {
         let out = materialize_pipeline_json(&json!({"kind": "sqlbot_mcp_start"}));
         let steps = out.get("steps").and_then(Value::as_array).expect("steps");
         assert_eq!(steps.len(), 2);
         assert!(out.get("kinds").is_none());
+        assert_eq!(
+            steps[0].get("on").and_then(Value::as_str),
+            Some("turn.start")
+        );
+    }
+
+    #[test]
+    fn parse_on_without_scope() {
+        let raw = json!({
+            "steps": [{
+                "pluginId": "apt_tools",
+                "on": "worker.init.start",
+                "impl": { "type": "subprocess", "command": ["true"] }
+            }]
+        });
+        let steps = normalize_pipeline_steps(&parse_pipeline_value(&raw).unwrap());
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            steps[0].resolved_event(),
+            PreflightLifecycleEvent::WorkerInitStart
+        );
     }
 
     #[test]

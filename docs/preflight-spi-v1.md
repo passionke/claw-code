@@ -17,9 +17,10 @@ Gateway `PreflightRunner` 按项目配置的 `steps[]` 顺序执行 preflight。
 ```json
 {
   "spiVersion": "1",
+  "event": "turn.start",
   "step": {
     "pluginId": "my_plugin",
-    "scope": "every_turn",
+    "on": "turn.start",
     "config": {}
   },
   "context": {
@@ -36,12 +37,17 @@ Gateway `PreflightRunner` 按项目配置的 `steps[]` 顺序执行 preflight。
 }
 ```
 
-### scope
+### event / `steps[].on`
+
+封闭事件集见 [`preflight-lifecycle-events.md`](preflight-lifecycle-events.md)。`context` **按事件裁剪**（例如 `worker.init.start` 不得含 `userPrompt`）。
 
 | 值 | 何时执行 |
 |----|----------|
-| `every_turn` | 每轮 solve |
-| `session_first_turn` | 仅该 `sessionId` 首轮且步骤尚未 satisfied |
+| `turn.start` | 每轮 solve（兼容旧 `scope: every_turn`） |
+| `session.start` | 仅该 `sessionId` 首轮且尚未 satisfied（兼容旧 `session_first_turn`） |
+| `worker.init.start` 等 | 见生命周期指南 |
+
+旧字段：`step.scope` 仍可读；与 `on` 同时存在时以 `on` 为准。
 
 ## stdout：响应
 

@@ -2,38 +2,62 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://claw.local/schemas/preflight-spi-v1.json",
   "title": "Preflight SPI v1",
-  "description": "Subprocess stdin/stdout contract for gateway solve preflight plugins. Author: kejiqing",
+  "description": "Subprocess stdin/stdout contract for gateway solve preflight plugins. Lifecycle events via step.on / request.event. Author: kejiqing",
   "definitions": {
+    "lifecycleEvent": {
+      "type": "string",
+      "enum": [
+        "worker.init.start",
+        "worker.init.end",
+        "worker.reuse.start",
+        "worker.reuse.end",
+        "session.start",
+        "session.end",
+        "turn.start",
+        "turn.end"
+      ]
+    },
     "scope": {
       "type": "string",
-      "enum": ["every_turn", "session_first_turn"]
+      "enum": ["every_turn", "session_first_turn"],
+      "description": "Legacy; prefer on. every_turn→turn.start, session_first_turn→session.start"
     },
     "request": {
       "type": "object",
       "required": ["spiVersion", "step", "context"],
       "properties": {
         "spiVersion": { "const": "1" },
+        "event": { "$ref": "#/definitions/lifecycleEvent" },
         "step": {
           "type": "object",
-          "required": ["pluginId", "scope"],
+          "required": ["pluginId"],
           "properties": {
             "pluginId": { "type": "string", "minLength": 1 },
+            "on": { "$ref": "#/definitions/lifecycleEvent" },
             "scope": { "$ref": "#/definitions/scope" },
             "config": { "type": "object" }
           }
         },
         "context": {
           "type": "object",
-          "required": ["sessionId", "turnId", "workDir", "isContinuation", "userPrompt", "model"],
+          "description": "Fields depend on event; worker.* must not include userPrompt",
           "properties": {
+            "projId": { "type": "integer" },
+            "workerId": { "type": "string" },
+            "workDir": { "type": "string" },
+            "templateId": { "type": "string" },
+            "sandboxId": { "type": "string" },
+            "workerProfileMode": { "type": "string" },
             "sessionId": { "type": "string" },
             "turnId": { "type": "string" },
-            "workDir": { "type": "string" },
             "isContinuation": { "type": "boolean" },
             "userPrompt": { "type": "string" },
             "priorUserPrompts": { "type": "array", "items": { "type": "string" } },
             "extraSession": { "type": "object" },
-            "model": { "type": "string" }
+            "model": { "type": "string" },
+            "outcome": { "type": "string", "enum": ["ok", "error"] },
+            "durationMs": { "type": "integer" },
+            "error": { "type": "string" }
           }
         },
         "artifacts": {
