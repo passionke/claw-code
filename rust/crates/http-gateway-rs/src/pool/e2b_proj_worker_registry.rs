@@ -994,9 +994,7 @@ impl E2bProjWorkerRegistry {
         let plugin_defaults = db
             .list_preflight_plugins()
             .await
-            .map(|rows| {
-                super::worker_lifecycle_preflight::plugin_default_impl_map(&rows)
-            })
+            .map(|rows| super::worker_lifecycle_preflight::plugin_default_impl_map(&rows))
             .map_err(|e| format!("load preflight plugin catalog for proj {proj_id}: {e}"))?;
         let init_mode = match spec.mode {
             WorkerProfileMode::Relaxed => "relaxed",
@@ -1640,9 +1638,7 @@ impl E2bProjWorkerRegistry {
                 let plugin_defaults = db
                     .list_preflight_plugins()
                     .await
-                    .map(|rows| {
-                        super::worker_lifecycle_preflight::plugin_default_impl_map(&rows)
-                    })
+                    .map(|rows| super::worker_lifecycle_preflight::plugin_default_impl_map(&rows))
                     .unwrap_or_default();
                 let profile = db
                     .get_worker_profile_json(proj_id)

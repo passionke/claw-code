@@ -173,13 +173,7 @@ pub async fn run_worker_lifecycle_event_on_guest(
                 let script = guest_spi_script(&command, &req_json);
                 // Pre-Landlock install steps need root (envd default is uid 1000). Author: kejiqing
                 let stdout = client
-                    .exec_shell_script_stdout_with(
-                        handle,
-                        &script,
-                        None,
-                        Some("root"),
-                        Some(600),
-                    )
+                    .exec_shell_script_stdout_with(handle, &script, None, Some("root"), Some(600))
                     .await
                     .map_err(|e| {
                         format!(
