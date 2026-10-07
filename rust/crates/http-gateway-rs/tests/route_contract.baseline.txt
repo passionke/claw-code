@@ -84,6 +84,7 @@ GET	/v1/pools	list_claw_pools_handler
 DELETE	/v1/pools/{pool_id}	delete_claw_pool_handler
 GET	/v1/preflight/plugins	get_preflight_plugins_handler
 PUT	/v1/preflight/plugins/{plugin_id}	put_preflight_plugin_handler
+DELETE	/v1/preflight/plugins/{plugin_id}	delete_preflight_plugin_handler
 GET	/v1/project/claude/{proj_id}	get_project_claude_md
 POST	/v1/project/claude/{proj_id}	update_project_claude_md
 GET	/v1/project/config/{proj_id}	get_project_config
