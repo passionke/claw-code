@@ -1572,6 +1572,20 @@ impl E2bSandboxClient {
         env: Option<&BTreeMap<String, String>>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<E2bExecOutcome, String> {
+        self.exec_shell_script_streaming_with(handle, script, env, None, None, on_stdout_line)
+            .await
+    }
+
+    /// `run_sh` with optional envd `user` / timeout (worker.init apt needs root). Author: kejiqing
+    pub async fn exec_shell_script_streaming_with(
+        &self,
+        handle: &E2bSandboxHandle,
+        script: &str,
+        env: Option<&BTreeMap<String, String>>,
+        user: Option<&str>,
+        timeout_secs: Option<u64>,
+        on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    ) -> Result<E2bExecOutcome, String> {
         self.touch_sandbox_lease(&handle.sandbox_id).await?;
         let mut payload = json!({
             "op": "run_sh",
@@ -1584,6 +1598,12 @@ impl E2bSandboxClient {
         });
         if let Some(env) = env.filter(|m| !m.is_empty()) {
             payload["env"] = json!(env);
+        }
+        if let Some(u) = user.map(str::trim).filter(|s| !s.is_empty()) {
+            payload["user"] = json!(u);
+        }
+        if let Some(t) = timeout_secs.filter(|t| *t > 0) {
+            payload["timeout"] = json!(t);
         }
         Self::run_exec_helper(&self.config().exec_helper, &payload, on_stdout_line).await
     }
@@ -1595,20 +1615,22 @@ impl E2bSandboxClient {
         script: &str,
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<String, String> {
-        self.touch_sandbox_lease(&handle.sandbox_id).await?;
-        let mut payload = json!({
-            "op": "run_sh",
-            "api_key": self.config().api_key,
-            "domain": handle.sandbox_domain,
-            "api_url": self.config().api_url,
-            "sandbox_url": self.config().sandbox_url,
-            "sandbox_id": handle.sandbox_id,
-            "script": script,
-        });
-        if let Some(env) = env.filter(|m| !m.is_empty()) {
-            payload["env"] = json!(env);
-        }
-        let outcome = Self::run_exec_helper(&self.config().exec_helper, &payload, None).await?;
+        self.exec_shell_script_stdout_with(handle, script, env, None, None)
+            .await
+    }
+
+    /// stdout capture with optional envd `user` / timeout. Author: kejiqing
+    pub async fn exec_shell_script_stdout_with(
+        &self,
+        handle: &E2bSandboxHandle,
+        script: &str,
+        env: Option<&BTreeMap<String, String>>,
+        user: Option<&str>,
+        timeout_secs: Option<u64>,
+    ) -> Result<String, String> {
+        let outcome = self
+            .exec_shell_script_streaming_with(handle, script, env, user, timeout_secs, None)
+            .await?;
         Ok(outcome.stdout)
     }
 

@@ -1645,6 +1645,38 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    /// Delete catalog row; returns whether a row was removed. Author: kejiqing
+    pub async fn delete_preflight_plugin(&self, plugin_id: &str) -> Result<bool, SqlxError> {
+        let res = sqlx::query("DELETE FROM preflight_plugin WHERE plugin_id = $1")
+            .bind(plugin_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Proj ids whose `solve_preflight_json` references `plugin_id` (steps or legacy kinds). Author: kejiqing
+    pub async fn list_proj_ids_referencing_preflight_plugin(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Vec<i64>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT proj_id, solve_preflight_json FROM project_config WHERE cluster_id = $1",
+        )
+        .bind(self.cluster_id())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::new();
+        for row in rows {
+            let proj_id: i64 = row.try_get("proj_id")?;
+            let raw: Value = row.try_get::<Json<Value>, _>("solve_preflight_json")?.0;
+            if solve_preflight_json_references_plugin(&raw, plugin_id) {
+                out.push(proj_id);
+            }
+        }
+        out.sort_unstable();
+        Ok(out)
+    }
+
     pub async fn list_project_config_proj_ids(&self) -> Result<Vec<i64>, SqlxError> {
         let rows = sqlx::query_scalar::<_, i64>(
             "SELECT proj_id FROM project_config WHERE cluster_id = $1 ORDER BY proj_id",
@@ -5283,6 +5315,16 @@ fn gateway_integration_database_url() -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Whether project `solve_preflight_json` references `plugin_id` after normalization. Author: kejiqing
+fn solve_preflight_json_references_plugin(raw: &Value, plugin_id: &str) -> bool {
+    let Ok(cfg) = preflight_spi::parse_pipeline_value(raw) else {
+        return false;
+    };
+    preflight_spi::normalize_pipeline_steps(&cfg)
+        .iter()
+        .any(|s| s.plugin_id == plugin_id)
 }
 
 /// Open PG when configured and TCP-reachable; `None` → integration test should skip.

@@ -50,6 +50,30 @@ pub(crate) async fn put_preflight_plugin_handler(
         .map(Json)
 }
 
+#[utoipa::path(
+    delete,
+    path = "/v1/preflight/plugins/{plugin_id}",
+    tag = "Pools",
+    operation_id = "delete_preflight_plugin_handler",
+    params(
+        ("plugin_id" = String, Path, description = "Plugin id")
+    ),
+    responses(
+        (status = 200, description = "Plugin deleted", body = preflight_plugin_api::DeletePreflightPluginResponse),
+        (status = 404, description = "Plugin not found"),
+        (status = 409, description = "Plugin still referenced by a project pipeline")
+    )
+)]
+pub(crate) async fn delete_preflight_plugin_handler(
+    State(state): State<AppState>,
+    AxumPath(plugin_id): AxumPath<String>,
+) -> Result<Json<preflight_plugin_api::DeletePreflightPluginResponse>, ApiError> {
+    preflight_plugin_api::delete_preflight_plugin(&state.session_db, &plugin_id)
+        .await
+        .map_err(|(status, msg)| ApiError::new(status, msg))
+        .map(Json)
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct ListClawPoolsResponse {
     pools: Vec<ClawPoolJson>,

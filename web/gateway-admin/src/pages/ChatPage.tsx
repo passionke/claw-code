@@ -96,16 +96,6 @@ interface SysEntry {
 
 type ThreadItem = TurnEntry | SysEntry;
 
-/** 输入框上方快捷问句（点击即发送）。Author: kejiqing */
-const QUICK_PROMPTS = [
-  "最近生意怎么样",
-  "哪个菜卖得好",
-  "今天营业额多少",
-  "和上周比怎么样",
-  "哪些时段客流最高",
-  "库存或原料有没有要关注的",
-] as const;
-
 function isSys(item: ThreadItem): item is SysEntry {
   return "kind" in item && item.kind === "sys";
 }
@@ -538,16 +528,6 @@ export default function ChatPage() {
     }
   };
 
-  const onQuickPrompt = async (text: string) => {
-    if (sending || composerDisabled) return;
-    setSending(true);
-    try {
-      await runSend(text);
-    } finally {
-      setSending(false);
-    }
-  };
-
   const canTranslate = Boolean(activeSessionId);
 
   return (
@@ -814,19 +794,6 @@ export default function ChatPage() {
                 />
                 {kind} 展开
               </label>
-            ))}
-          </div>
-          <div className={styles.quickPrompts}>
-            {QUICK_PROMPTS.map((q) => (
-              <button
-                key={q}
-                type="button"
-                className={styles.quickPromptBtn}
-                disabled={sending || composerDisabled}
-                onClick={() => void onQuickPrompt(q)}
-              >
-                {q}
-              </button>
             ))}
           </div>
           <div className={styles.composerRow}>

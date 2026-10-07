@@ -33,3 +33,14 @@ export async function upsertPreflightPlugin(
     payload,
   );
 }
+
+export async function deletePreflightPlugin(
+  gatewayBase: string,
+  pluginId: string,
+): Promise<{ pluginId: string; deleted: boolean }> {
+  return proxyHttp(
+    gatewayBase,
+    "DELETE",
+    `/v1/preflight/plugins/${encodeURIComponent(pluginId)}`,
+  );
+}

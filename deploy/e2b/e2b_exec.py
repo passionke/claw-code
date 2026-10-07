@@ -146,7 +146,7 @@ class _LineAssembler:
             self._buf = ""
 
 
-def _run_streaming(sandbox, script: str, timeout: int):
+def _run_streaming(sandbox, script: str, timeout: int, user: str | None = None):
     assembler = _LineAssembler()
     stdout_fallback = _SpooledTextFallback()
     stderr_fallback = _SpooledTextFallback()
@@ -163,13 +163,17 @@ def _run_streaming(sandbox, script: str, timeout: int):
         text = data if isinstance(data, str) else str(data)
         stderr_fallback.write(text)
 
+    run_kwargs = {
+        "timeout": timeout,
+        "on_stdout": on_stdout,
+        "on_stderr": on_stderr,
+    }
+    # envd default user is uid 1000; apt/preflight needs root. Author: kejiqing
+    if user and str(user).strip():
+        run_kwargs["user"] = str(user).strip()
+
     try:
-        result = sandbox.commands.run(
-            script,
-            timeout=timeout,
-            on_stdout=on_stdout,
-            on_stderr=on_stderr,
-        )
+        result = sandbox.commands.run(script, **run_kwargs)
         assembler.flush_tail()
         stderr = result.stderr or stderr_fallback.read_all()
         stdout = result.stdout if result.stdout else stdout_fallback.read_all()
@@ -177,6 +181,17 @@ def _run_streaming(sandbox, script: str, timeout: int):
     finally:
         stdout_fallback.close()
         stderr_fallback.close()
+
+
+def _resolve_run_sh_user(payload: dict, script: str) -> str | None:
+    """Optional payload.user; worker-lifecycle SPI scripts default to root. Author: kejiqing"""
+    raw = payload.get("user")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    # guest_spi_script marker from worker_lifecycle_preflight.rs
+    if "CLAW_PREFLIGHT_SPI_EOF" in (script or ""):
+        return "root"
+    return None
 
 
 def main() -> None:
@@ -257,7 +272,13 @@ def main() -> None:
             return
         run_env = payload.get("env") or {}
         script = _prepend_env_exports(script, run_env)
-        result, stdout, stderr, _stdout_obs = _run_streaming(sandbox, script, timeout)
+        run_user = _resolve_run_sh_user(payload, script)
+        # apt-get install in worker.init can exceed default 180s. Author: kejiqing
+        if run_user == "root" and int(payload.get("timeout") or 0) <= 0:
+            timeout = max(timeout, 600)
+        result, stdout, stderr, _stdout_obs = _run_streaming(
+            sandbox, script, timeout, user=run_user
+        )
         if result.exit_code != 0:
             stderr = (stderr or "").strip()
             stdout = (stdout or "").strip()

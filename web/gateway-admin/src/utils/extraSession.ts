@@ -6,10 +6,8 @@ import {
 } from "./clientOrigin";
 
 export function buildExtraSession(fieldValues: Record<string, string>): Record<string, string> {
+  // Only client-origin marker + project-defined fields; no hard-coded biz defaults. Author: kejiqing
   const extra: Record<string, string> = {
-    tenant_code: "GPOS",
-    solution_code: "restaurant",
-    biz_type: "BOSS_REPORT",
     [CLAW_EXTRA_CLIENT_ORIGIN]: CLIENT_ORIGIN_GATEWAY_ADMIN,
   };
   for (const [key, raw] of Object.entries(fieldValues)) {

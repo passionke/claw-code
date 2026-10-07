@@ -3,6 +3,7 @@ import {
   Card,
   Form,
   Input,
+  Popconfirm,
   Select,
   Space,
   Table,
@@ -24,7 +25,11 @@ import {
   stepsToSolvePreflightJson,
 } from "../types/preflight";
 import { putProjectConfigDraft } from "../utils/projectConfig";
-import { fetchPreflightPlugins, upsertPreflightPlugin } from "../utils/preflightPlugins";
+import {
+  deletePreflightPlugin,
+  fetchPreflightPlugins,
+  upsertPreflightPlugin,
+} from "../utils/preflightPlugins";
 
 /** Lifecycle event options (`steps[].on`). Author: kejiqing */
 const EVENT_OPTIONS: { value: PreflightLifecycleEvent; label: string }[] = [
@@ -97,8 +102,7 @@ export default function PreflightPage() {
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <Card title="Preflight 插件库（全局）" size="small">
         <Typography.Paragraph type="secondary">
-          注册外部子进程插件；内置 <Typography.Text code>turn_language</Typography.Text>、
-          <Typography.Text code>sqlbot_mcp_start</Typography.Text> 由迁移种子提供。
+          全局目录：注册 / 删除任意插件（含种子 builtin）。若仍被某项目管道引用，删除会返回 409。
         </Typography.Paragraph>
         <Table
           size="small"
@@ -115,6 +119,32 @@ export default function PreflightPage() {
                 row.defaultImpl?.type === "subprocess"
                   ? (row.defaultImpl.command ?? []).join(" ")
                   : row.defaultImpl?.handler ?? "builtin",
+            },
+            {
+              title: "操作",
+              width: 88,
+              render: (_, row) => (
+                <Popconfirm
+                  title={`删除插件 ${row.pluginId}？`}
+                  description="项目管道仍引用时会失败，需先去掉对应步骤。"
+                  okButtonProps={{ danger: true }}
+                  onConfirm={async () => {
+                    try {
+                      await deletePreflightPlugin(gatewayBase, row.pluginId);
+                      message.success(`已删除 ${row.pluginId}`);
+                      await loadPlugins();
+                    } catch (e) {
+                      message.error(
+                        e instanceof Error ? e.message : String(e),
+                      );
+                    }
+                  }}
+                >
+                  <Button type="link" danger size="small" icon={<DeleteOutlined />}>
+                    删除
+                  </Button>
+                </Popconfirm>
+              ),
             },
           ]}
         />

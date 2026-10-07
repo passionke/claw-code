@@ -991,6 +991,10 @@ impl E2bProjWorkerRegistry {
             .map(|row| row.map(|r| r.solve_preflight_json))
             .map_err(|e| format!("load solve_preflight_json for proj {proj_id}: {e}"))?
             .unwrap_or_else(|| json!({"kind": "none"}));
+        let plugin_defaults = db
+            .list_preflight_plugins()
+            .await
+            .map_err(|e| format!("load preflight plugin catalog for proj {proj_id}: {e}"))?;
         let init_mode = match spec.mode {
             WorkerProfileMode::Relaxed => "relaxed",
             WorkerProfileMode::Strict => "strict",
@@ -999,6 +1003,7 @@ impl E2bProjWorkerRegistry {
             &self.client,
             &handle,
             &solve_preflight_json,
+            &plugin_defaults,
             proj_id,
             &worker_id,
             &contract_key,
@@ -1629,6 +1634,7 @@ impl E2bProjWorkerRegistry {
                     .flatten()
                     .map(|r| r.solve_preflight_json)
                     .unwrap_or_else(|| json!({"kind": "none"}));
+                let plugin_defaults = db.list_preflight_plugins().await.unwrap_or_default();
                 let profile = db
                     .get_worker_profile_json(proj_id)
                     .await
@@ -1639,6 +1645,7 @@ impl E2bProjWorkerRegistry {
                         &self.client,
                         &handle,
                         &solve_preflight_json,
+                        &plugin_defaults,
                         proj_id,
                         &worker_id,
                         &template_id,
