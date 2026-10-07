@@ -209,13 +209,14 @@ pub async fn run_worker_init_on_create(
     client: &E2bSandboxClient,
     handle: &E2bSandboxHandle,
     solve_preflight_json: &Value,
-    plugin_defaults: &HashMap<String, PreflightImpl>,
+    plugin_defaults: &[PreflightPluginRecord],
     proj_id: i64,
     worker_id: &str,
     template_id: &str,
     worker_profile_mode: &str,
 ) -> Result<(), String> {
-    let steps = steps_for_lifecycle(solve_preflight_json, plugin_defaults);
+    let plugin_defaults = plugin_default_impl_map(plugin_defaults);
+    let steps = steps_for_lifecycle(solve_preflight_json, &plugin_defaults);
     let started = std::time::Instant::now();
     let mut ctx = build_worker_init_context(
         proj_id,
@@ -261,7 +262,7 @@ pub async fn run_worker_reuse_start_on_acquire(
     client: &E2bSandboxClient,
     handle: &E2bSandboxHandle,
     solve_preflight_json: &Value,
-    plugin_defaults: &HashMap<String, PreflightImpl>,
+    plugin_defaults: &[PreflightPluginRecord],
     proj_id: i64,
     worker_id: &str,
     template_id: &str,
@@ -269,7 +270,8 @@ pub async fn run_worker_reuse_start_on_acquire(
     worker_profile_mode: &str,
     session_id: Option<&str>,
 ) -> Result<(), String> {
-    let steps = steps_for_lifecycle(solve_preflight_json, plugin_defaults);
+    let plugin_defaults = plugin_default_impl_map(plugin_defaults);
+    let steps = steps_for_lifecycle(solve_preflight_json, &plugin_defaults);
     let mut ctx = build_worker_init_context(
         proj_id,
         worker_id,
