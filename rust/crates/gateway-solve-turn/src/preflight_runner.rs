@@ -8,10 +8,11 @@ use std::time::Duration;
 use preflight_spi::{
     default_runtime_pipeline_steps, filter_step_indices, filter_step_indices_for_event,
     merge_language_pipeline_into_steps, normalize_pipeline_steps, parse_pipeline_value,
-    validate_effects_for_event, validate_spi_request, validate_subprocess_response, PreflightEffect,
-    PreflightFilterContext, PreflightImpl, PreflightLifecycleEvent, PreflightPipelineConfig,
-    PreflightRequestContext, PreflightResponseStatus, PreflightSpiRequest, PreflightSpiResponse,
-    PreflightStep, BUILTIN_SQLBOT_MCP_START, BUILTIN_TURN_LANGUAGE, SPI_VERSION,
+    validate_effects_for_event, validate_spi_request, validate_subprocess_response,
+    PreflightEffect, PreflightFilterContext, PreflightImpl, PreflightLifecycleEvent,
+    PreflightPipelineConfig, PreflightRequestContext, PreflightResponseStatus, PreflightSpiRequest,
+    PreflightSpiResponse, PreflightStep, BUILTIN_SQLBOT_MCP_START, BUILTIN_TURN_LANGUAGE,
+    SPI_VERSION,
 };
 use runtime::{ContentBlock, ConversationMessage, MessageRole, Session};
 use serde_json::Value;
@@ -411,7 +412,8 @@ pub fn run_preflight_for_event(
                         continue;
                     }
                     let effects = run_builtin_turn_language(params, step)?;
-                    validate_effects_for_event(event, &effects).map_err(|e| err(HTTP_INTERNAL, e))?;
+                    validate_effects_for_event(event, &effects)
+                        .map_err(|e| err(HTTP_INTERNAL, e))?;
                     apply_preflight_effects(
                         params.session_home,
                         params.session,
@@ -479,9 +481,9 @@ pub fn run_preflight_pipeline(
     };
     // Solve path: session.start + turn.start only (excludes worker.*). Author: kejiqing
     let indices = filter_step_indices(&steps, filter_ctx);
-    let ran_session_first_turn = indices.iter().any(|&idx| {
-        steps[idx].resolved_event() == PreflightLifecycleEvent::SessionStart
-    });
+    let ran_session_first_turn = indices
+        .iter()
+        .any(|&idx| steps[idx].resolved_event() == PreflightLifecycleEvent::SessionStart);
 
     for idx in indices {
         let step = &steps[idx];
@@ -491,7 +493,8 @@ pub fn run_preflight_pipeline(
             PreflightImpl::Builtin { handler } => match handler.as_str() {
                 BUILTIN_TURN_LANGUAGE => {
                     let effects = run_builtin_turn_language(&params, step)?;
-                    validate_effects_for_event(event, &effects).map_err(|e| err(HTTP_INTERNAL, e))?;
+                    validate_effects_for_event(event, &effects)
+                        .map_err(|e| err(HTTP_INTERNAL, e))?;
                     apply_preflight_effects(
                         params.session_home,
                         params.session,
@@ -702,7 +705,9 @@ mod tests {
 
     #[test]
     fn run_for_event_only_matching_steps() {
-        use preflight_spi::{filter_step_indices_for_event, PreflightFilterContext, PreflightScope};
+        use preflight_spi::{
+            filter_step_indices_for_event, PreflightFilterContext, PreflightScope,
+        };
         let steps = vec![
             PreflightStep {
                 plugin_id: "apt".into(),
@@ -724,11 +729,7 @@ mod tests {
             session_first_turn_satisfied: false,
         };
         assert_eq!(
-            filter_step_indices_for_event(
-                &steps,
-                PreflightLifecycleEvent::WorkerInitStart,
-                ctx
-            ),
+            filter_step_indices_for_event(&steps, PreflightLifecycleEvent::WorkerInitStart, ctx),
             vec![0]
         );
         assert_eq!(

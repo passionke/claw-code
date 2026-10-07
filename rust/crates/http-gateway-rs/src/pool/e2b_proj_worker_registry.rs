@@ -1634,18 +1634,19 @@ impl E2bProjWorkerRegistry {
                     .await
                     .unwrap_or_else(|_| default_worker_profile_json());
                 let mode = profile_mode_label(&profile);
-                if let Err(e) = super::worker_lifecycle_preflight::run_worker_reuse_start_on_acquire(
-                    &self.client,
-                    &handle,
-                    &solve_preflight_json,
-                    proj_id,
-                    &worker_id,
-                    &template_id,
-                    &handle.sandbox_id,
-                    mode,
-                    None,
-                )
-                .await
+                if let Err(e) =
+                    super::worker_lifecycle_preflight::run_worker_reuse_start_on_acquire(
+                        &self.client,
+                        &handle,
+                        &solve_preflight_json,
+                        proj_id,
+                        &worker_id,
+                        &template_id,
+                        &handle.sandbox_id,
+                        mode,
+                        None,
+                    )
+                    .await
                 {
                     return Err(format!(
                         "worker.reuse.start preflight failed for proj {proj_id}: {e}"

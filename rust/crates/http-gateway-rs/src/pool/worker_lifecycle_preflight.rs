@@ -103,9 +103,10 @@ pub async fn run_worker_lifecycle_event_on_guest(
     let mut ran = 0usize;
     for idx in indices {
         let step = &steps[idx];
-        let impl_kind = step.r#impl.clone().unwrap_or(PreflightImpl::Subprocess {
-            command: vec![],
-        });
+        let impl_kind = step
+            .r#impl
+            .clone()
+            .unwrap_or(PreflightImpl::Subprocess { command: vec![] });
         match impl_kind {
             PreflightImpl::Builtin { handler } => {
                 warn!(
@@ -283,11 +284,7 @@ mod tests {
             session_first_turn_satisfied: false,
         };
         assert_eq!(
-            filter_step_indices_for_event(
-                &steps,
-                PreflightLifecycleEvent::WorkerInitStart,
-                filter
-            ),
+            filter_step_indices_for_event(&steps, PreflightLifecycleEvent::WorkerInitStart, filter),
             vec![0]
         );
         assert_eq!(steps[1].scope, Some(PreflightScope::EveryTurn));

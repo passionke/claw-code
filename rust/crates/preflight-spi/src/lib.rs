@@ -307,10 +307,7 @@ fn require_end_fields(
     ctx: &LifecycleEventContext,
 ) -> Result<(), String> {
     if ctx.outcome.is_none() {
-        return Err(format!(
-            "context.outcome required for {}",
-            event.as_str()
-        ));
+        return Err(format!("context.outcome required for {}", event.as_str()));
     }
     if ctx.duration_ms.is_none() {
         return Err(format!(
@@ -892,7 +889,10 @@ mod tests {
         };
         let idxs = filter_step_indices(&steps, ctx);
         let plugins: Vec<_> = idxs.iter().map(|&i| steps[i].plugin_id.as_str()).collect();
-        assert_eq!(plugins, vec![BUILTIN_SQLBOT_MCP_START, BUILTIN_TURN_LANGUAGE]);
+        assert_eq!(
+            plugins,
+            vec![BUILTIN_SQLBOT_MCP_START, BUILTIN_TURN_LANGUAGE]
+        );
         assert!(filter_step_indices_for_event(
             &steps,
             PreflightLifecycleEvent::WorkerInitStart,
@@ -954,7 +954,9 @@ mod tests {
         let mut ctx = build_worker_init_context(1, "w1", "/claw_ds", "tmpl", "sbx", "strict");
         assert!(validate_context_for_event(PreflightLifecycleEvent::WorkerInitStart, &ctx).is_ok());
         ctx.user_prompt = Some("hi".into());
-        assert!(validate_context_for_event(PreflightLifecycleEvent::WorkerInitStart, &ctx).is_err());
+        assert!(
+            validate_context_for_event(PreflightLifecycleEvent::WorkerInitStart, &ctx).is_err()
+        );
     }
 
     #[test]
@@ -995,11 +997,9 @@ mod tests {
             language: "Chinese".into(),
             reason: None,
         }];
-        assert!(validate_effects_for_event(
-            PreflightLifecycleEvent::WorkerInitStart,
-            &effects
-        )
-        .is_err());
+        assert!(
+            validate_effects_for_event(PreflightLifecycleEvent::WorkerInitStart, &effects).is_err()
+        );
         assert!(validate_effects_for_event(PreflightLifecycleEvent::TurnStart, &effects).is_ok());
     }
 
