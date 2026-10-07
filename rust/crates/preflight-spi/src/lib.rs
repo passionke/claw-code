@@ -221,7 +221,7 @@ pub fn validate_context_for_event(
     event: PreflightLifecycleEvent,
     ctx: &LifecycleEventContext,
 ) -> Result<(), String> {
-    if ctx.work_dir.as_ref().is_none_or(|s| s.is_empty()) {
+    if ctx.work_dir.as_ref().is_none_or(String::is_empty) {
         return Err(format!(
             "context.workDir required for event {}",
             event.as_str()
@@ -252,35 +252,35 @@ pub fn validate_context_for_event(
             }
         }
         PreflightLifecycleEvent::SessionStart => {
-            if ctx.session_id.as_ref().is_none_or(|s| s.is_empty()) {
+            if ctx.session_id.as_ref().is_none_or(String::is_empty) {
                 return Err("context.sessionId required for session.start".into());
             }
         }
         PreflightLifecycleEvent::SessionEnd => {
-            if ctx.session_id.as_ref().is_none_or(|s| s.is_empty()) {
+            if ctx.session_id.as_ref().is_none_or(String::is_empty) {
                 return Err("context.sessionId required for session.end".into());
             }
             require_end_fields(event, ctx)?;
         }
         PreflightLifecycleEvent::TurnStart => {
-            if ctx.session_id.as_ref().is_none_or(|s| s.is_empty()) {
+            if ctx.session_id.as_ref().is_none_or(String::is_empty) {
                 return Err("context.sessionId required for turn.start".into());
             }
-            if ctx.turn_id.as_ref().is_none_or(|s| s.is_empty()) {
+            if ctx.turn_id.as_ref().is_none_or(String::is_empty) {
                 return Err("context.turnId required for turn.start".into());
             }
             if ctx.user_prompt.is_none() {
                 return Err("context.userPrompt required for turn.start".into());
             }
-            if ctx.model.as_ref().is_none_or(|s| s.is_empty()) {
+            if ctx.model.as_ref().is_none_or(String::is_empty) {
                 return Err("context.model required for turn.start".into());
             }
         }
         PreflightLifecycleEvent::TurnEnd => {
-            if ctx.session_id.as_ref().is_none_or(|s| s.is_empty()) {
+            if ctx.session_id.as_ref().is_none_or(String::is_empty) {
                 return Err("context.sessionId required for turn.end".into());
             }
-            if ctx.turn_id.as_ref().is_none_or(|s| s.is_empty()) {
+            if ctx.turn_id.as_ref().is_none_or(String::is_empty) {
                 return Err("context.turnId required for turn.end".into());
             }
             require_end_fields(event, ctx)?;
@@ -645,9 +645,7 @@ pub fn parse_pipeline_value(value: &Value) -> Result<PreflightPipelineConfig, St
 /// Normalize to executable `steps` (migrate legacy `kinds`; set `on` from scope).
 #[must_use]
 pub fn normalize_pipeline_steps(cfg: &PreflightPipelineConfig) -> Vec<PreflightStep> {
-    let raw = if !cfg.steps.is_empty() {
-        cfg.steps.clone()
-    } else {
+    let raw = if cfg.steps.is_empty() {
         let kinds = normalize_kinds(&cfg.kinds);
         if kinds.is_empty() {
             return vec![];
@@ -662,6 +660,8 @@ pub fn normalize_pipeline_steps(cfg: &PreflightPipelineConfig) -> Vec<PreflightS
             }
         }
         steps
+    } else {
+        cfg.steps.clone()
     };
     raw.into_iter().map(PreflightStep::normalized).collect()
 }
