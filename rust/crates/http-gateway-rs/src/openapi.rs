@@ -83,6 +83,7 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::app::openapi,
         crate::routes::app::get_preflight_plugins_handler,
         crate::routes::app::put_preflight_plugin_handler,
+        crate::routes::app::delete_preflight_plugin_handler,
         crate::routes::app::list_gateway_endpoints_handler,
         crate::routes::app::delete_gateway_endpoint_handler,
         crate::routes::app::delete_claw_pool_handler,

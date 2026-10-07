@@ -37,7 +37,7 @@ acquire existing
   → worker.reuse.start → Landlock → session.start? → turn.start → 对话 → turn.end → worker.reuse.end?
 ```
 
-`worker.init.*` / `worker.reuse.start` 在 **Landlock 之前**（才能装 OS 包）。`session.*` / `turn.*` 在 solve 内、jail 之后。
+`worker.init.*` / `worker.reuse.start` 在 **Landlock 之前**（才能装 OS 包），且 guest exec 以 **root** 运行（envd 默认 `user`/uid 1000 无 apt 权限）。`session.*` / `turn.*` 在 solve 内、jail 之后，仍为普通用户。
 
 ## 配置怎么写
 
@@ -73,10 +73,10 @@ acquire existing
 
 ### 装软件（典型）
 
-1. 写子进程脚本（在 guest 里 `apt-get` / `pip` 等）。
-2. Admin **插件库**注册 `pluginId` + 默认 `command`。
-3. 项目 Preflight 页加一步：`on = worker.init.start`。
-4. **重置 worker**（与 `worker_env_json` 相同：保存不自动 rotate）。
+1. 写子进程脚本（guest 里 `apt-get` / `pip` 等）；stdin 读 SPI，stdout 只打 `{"status":"ok","effects":[]}`（apt 日志重定向到 `/dev/null`）。
+2. Admin **Preflight 插件库**注册（或 `PUT /v1/preflight/plugins/{pluginId}`），填 `defaultImpl.command`——**不要**用 SQL/migration 订正业务插件。
+3. 项目 Preflight 页加一步：选该 `pluginId`，`on = worker.init.start` 或 `worker.init.end`（均在 Landlock 前）。
+4. 保存草稿 → commit → 生效；再 **重置 worker**。
 
 失败只毁掉**该项目** slot，不影响平台模板和其他 project。
 
@@ -98,7 +98,7 @@ SPI 请求含 `event` + `context`。**只出现该事件合法字段**。
 
 ## Admin 操作
 
-1. 全局：**Preflight 插件库** → 注册 `pluginId` / 展示名 / 默认 command。
+1. 全局：**Preflight 插件库** → 注册或删除 `pluginId`（`PUT` / `DELETE /v1/preflight/plugins/{id}`）。仍被项目管道引用时删除返回 409。
 2. 项目：**Preflight** 页 → 添加步骤 → 选插件与 `on` → 保存草稿 / 生效。
 3. `worker.init.*`：保存后到 **Worker profile** 使用「重置 worker」。
 

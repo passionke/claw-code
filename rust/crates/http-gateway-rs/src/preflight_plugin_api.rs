@@ -50,6 +50,53 @@ pub async fn list_preflight_plugins(
     Ok(PreflightPluginListResponse { plugins })
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletePreflightPluginResponse {
+    pub plugin_id: String,
+    pub deleted: bool,
+}
+
+/// Remove a catalog plugin. Rejects when any project pipeline still references it. Author: kejiqing
+pub async fn delete_preflight_plugin(
+    db: &GatewaySessionDb,
+    plugin_id: &str,
+) -> Result<DeletePreflightPluginResponse, PreflightApiError> {
+    let plugin_id = plugin_id.trim();
+    if plugin_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            String::from("pluginId must be non-empty"),
+        ));
+    }
+    let refs = db
+        .list_proj_ids_referencing_preflight_plugin(plugin_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !refs.is_empty() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "pluginId {plugin_id:?} is referenced by project(s) {refs:?}; remove those Preflight steps first"
+            ),
+        ));
+    }
+    let deleted = db
+        .delete_preflight_plugin(plugin_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !deleted {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("pluginId {plugin_id:?} not found"),
+        ));
+    }
+    Ok(DeletePreflightPluginResponse {
+        plugin_id: plugin_id.to_string(),
+        deleted: true,
+    })
+}
+
 pub async fn upsert_preflight_plugin(
     db: &GatewaySessionDb,
     plugin_id: &str,

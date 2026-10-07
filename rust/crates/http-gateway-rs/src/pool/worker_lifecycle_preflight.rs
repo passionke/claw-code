@@ -1,12 +1,15 @@
 //! Run project preflight steps for worker lifecycle events (pre-Landlock).
 //! Author: kejiqing
 
+use std::collections::HashMap;
+
 use claw_e2b_sandbox_client::{E2bSandboxClient, E2bSandboxHandle};
 use preflight_spi::{
     build_worker_init_context, filter_step_indices_for_event, normalize_pipeline_steps,
     parse_pipeline_value, validate_context_for_event, validate_effects_for_event,
     LifecycleEventContext, PreflightFilterContext, PreflightImpl, PreflightLifecycleEvent,
-    PreflightOutcome, PreflightResponseStatus, PreflightSpiResponse, PreflightStep, SPI_VERSION,
+    PreflightOutcome, PreflightPluginRecord, PreflightResponseStatus, PreflightSpiResponse,
+    PreflightStep, SPI_VERSION,
 };
 use serde_json::{json, Value};
 use tracing::{info, warn};
@@ -17,6 +20,45 @@ pub fn steps_from_solve_preflight_json(value: &Value) -> Vec<PreflightStep> {
     parse_pipeline_value(value)
         .map(|cfg| normalize_pipeline_steps(&cfg))
         .unwrap_or_default()
+}
+
+/// Map `pluginId` → catalog `defaultImpl` for steps that omit `impl`. Author: kejiqing
+#[must_use]
+pub fn plugin_default_impl_map(
+    plugins: &[PreflightPluginRecord],
+) -> HashMap<String, PreflightImpl> {
+    plugins
+        .iter()
+        .filter_map(|p| {
+            p.default_impl
+                .clone()
+                .map(|impl_kind| (p.plugin_id.clone(), impl_kind))
+        })
+        .collect()
+}
+
+/// Fill missing `step.impl` from the global plugin catalog. Author: kejiqing
+pub fn fill_step_impls_from_plugin_defaults(
+    steps: &mut [PreflightStep],
+    defaults: &HashMap<String, PreflightImpl>,
+) {
+    for step in steps.iter_mut() {
+        if step.r#impl.is_some() {
+            continue;
+        }
+        if let Some(impl_kind) = defaults.get(&step.plugin_id) {
+            step.r#impl = Some(impl_kind.clone());
+        }
+    }
+}
+
+fn steps_for_lifecycle(
+    solve_preflight_json: &Value,
+    plugin_defaults: &HashMap<String, PreflightImpl>,
+) -> Vec<PreflightStep> {
+    let mut steps = steps_from_solve_preflight_json(solve_preflight_json);
+    fill_step_impls_from_plugin_defaults(&mut steps, plugin_defaults);
+    steps
 }
 
 fn shell_quote(s: &str) -> String {
@@ -129,8 +171,15 @@ pub async fn run_worker_lifecycle_event_on_guest(
                 let req_json = serde_json::to_string(&req)
                     .map_err(|e| format!("encode lifecycle SPI request: {e}"))?;
                 let script = guest_spi_script(&command, &req_json);
+                // Pre-Landlock install steps need root (envd default is uid 1000). Author: kejiqing
                 let stdout = client
-                    .exec_shell_script_stdout(handle, &script, None)
+                    .exec_shell_script_stdout_with(
+                        handle,
+                        &script,
+                        None,
+                        Some("root"),
+                        Some(600),
+                    )
                     .await
                     .map_err(|e| {
                         format!(
@@ -166,12 +215,13 @@ pub async fn run_worker_init_on_create(
     client: &E2bSandboxClient,
     handle: &E2bSandboxHandle,
     solve_preflight_json: &Value,
+    plugin_defaults: &HashMap<String, PreflightImpl>,
     proj_id: i64,
     worker_id: &str,
     template_id: &str,
     worker_profile_mode: &str,
 ) -> Result<(), String> {
-    let steps = steps_from_solve_preflight_json(solve_preflight_json);
+    let steps = steps_for_lifecycle(solve_preflight_json, plugin_defaults);
     let started = std::time::Instant::now();
     let mut ctx = build_worker_init_context(
         proj_id,
@@ -217,6 +267,7 @@ pub async fn run_worker_reuse_start_on_acquire(
     client: &E2bSandboxClient,
     handle: &E2bSandboxHandle,
     solve_preflight_json: &Value,
+    plugin_defaults: &HashMap<String, PreflightImpl>,
     proj_id: i64,
     worker_id: &str,
     template_id: &str,
@@ -224,7 +275,7 @@ pub async fn run_worker_reuse_start_on_acquire(
     worker_profile_mode: &str,
     session_id: Option<&str>,
 ) -> Result<(), String> {
-    let steps = steps_from_solve_preflight_json(solve_preflight_json);
+    let steps = steps_for_lifecycle(solve_preflight_json, plugin_defaults);
     let mut ctx = build_worker_init_context(
         proj_id,
         worker_id,
@@ -295,5 +346,30 @@ mod tests {
         let s = guest_spi_script(&["/bin/true".into()], r#"{"spiVersion":"1"}"#);
         assert!(s.contains("CLAW_PREFLIGHT_SPI_EOF"));
         assert!(s.contains("/bin/true"));
+    }
+
+    #[test]
+    fn fill_impl_from_plugin_catalog() {
+        let raw = json!({
+            "steps": [{
+                "pluginId": "install_adb",
+                "on": "worker.init.end"
+            }]
+        });
+        let mut steps = steps_from_solve_preflight_json(&raw);
+        assert!(steps[0].r#impl.is_none());
+        let defaults = HashMap::from([(
+            "install_adb".into(),
+            PreflightImpl::Subprocess {
+                command: vec!["/bin/bash".into(), "-c".into(), "true".into()],
+            },
+        )]);
+        fill_step_impls_from_plugin_defaults(&mut steps, &defaults);
+        match steps[0].r#impl.as_ref() {
+            Some(PreflightImpl::Subprocess { command }) => {
+                assert_eq!(command.first().map(String::as_str), Some("/bin/bash"));
+            }
+            other => panic!("expected subprocess impl, got {other:?}"),
+        }
     }
 }
