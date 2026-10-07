@@ -1,4 +1,4 @@
-//! Preflight pipeline runner: scope filter, builtins, subprocess SPI, effects applier. Author: kejiqing
+//! Preflight pipeline runner: lifecycle event filter, builtins, subprocess SPI, effects. Author: kejiqing
 
 use std::io::Write;
 use std::path::Path;
@@ -6,12 +6,12 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use preflight_spi::{
-    default_runtime_pipeline_steps, filter_step_indices, merge_language_pipeline_into_steps,
-    normalize_pipeline_steps, parse_pipeline_value, validate_spi_request,
-    validate_subprocess_response, PreflightEffect, PreflightFilterContext, PreflightImpl,
-    PreflightPipelineConfig, PreflightRequestContext, PreflightResponseStatus, PreflightScope,
-    PreflightSpiRequest, PreflightSpiResponse, PreflightStep, BUILTIN_SQLBOT_MCP_START,
-    BUILTIN_TURN_LANGUAGE, SPI_VERSION,
+    default_runtime_pipeline_steps, filter_step_indices, filter_step_indices_for_event,
+    merge_language_pipeline_into_steps, normalize_pipeline_steps, parse_pipeline_value,
+    validate_effects_for_event, validate_spi_request, validate_subprocess_response, PreflightEffect,
+    PreflightFilterContext, PreflightImpl, PreflightLifecycleEvent, PreflightPipelineConfig,
+    PreflightRequestContext, PreflightResponseStatus, PreflightSpiRequest, PreflightSpiResponse,
+    PreflightStep, BUILTIN_SQLBOT_MCP_START, BUILTIN_TURN_LANGUAGE, SPI_VERSION,
 };
 use runtime::{ContentBlock, ConversationMessage, MessageRole, Session};
 use serde_json::Value;
@@ -60,7 +60,7 @@ fn err(status: u16, msg: impl Into<String>) -> GatewaySolveTurnError {
     }
 }
 
-/// Whether session-first-turn steps are already reflected in the session.
+/// Whether session.start steps are already reflected in the session.
 #[must_use]
 pub fn session_first_turn_preflight_satisfied(
     _session_home: &Path,
@@ -68,7 +68,7 @@ pub fn session_first_turn_preflight_satisfied(
     steps: &[PreflightStep],
 ) -> bool {
     for step in steps {
-        if step.scope != PreflightScope::SessionFirstTurn {
+        if step.resolved_event() != PreflightLifecycleEvent::SessionStart {
             continue;
         }
         match step.plugin_id.as_str() {
@@ -218,6 +218,7 @@ fn build_spi_request(params: &PreflightRunParams<'_>, step: &PreflightStep) -> P
     );
     PreflightSpiRequest {
         spi_version: SPI_VERSION.to_string(),
+        event: Some(step.resolved_event()),
         step: step.clone(),
         context: PreflightRequestContext {
             session_id: params.session_id.to_string(),
@@ -391,7 +392,76 @@ pub fn resolve_pipeline_steps_for_run(
     merge_language_pipeline_into_steps(steps, language_pipeline_json)
 }
 
-/// Run configured preflight steps for this turn.
+/// Run steps for one lifecycle event (shared by solve-path and worker hooks). Author: kejiqing
+pub fn run_preflight_for_event(
+    steps: &[PreflightStep],
+    event: PreflightLifecycleEvent,
+    filter_ctx: PreflightFilterContext,
+    params: &mut PreflightRunParams<'_>,
+) -> Result<usize, GatewaySolveTurnError> {
+    let indices = filter_step_indices_for_event(steps, event, filter_ctx);
+    let mut ran = 0usize;
+    for idx in indices {
+        let step = &steps[idx];
+        let impl_kind = resolve_step_impl(step);
+        match impl_kind {
+            PreflightImpl::Builtin { handler } => match handler.as_str() {
+                BUILTIN_TURN_LANGUAGE => {
+                    if event != PreflightLifecycleEvent::TurnStart {
+                        continue;
+                    }
+                    let effects = run_builtin_turn_language(params, step)?;
+                    validate_effects_for_event(event, &effects).map_err(|e| err(HTTP_INTERNAL, e))?;
+                    apply_preflight_effects(
+                        params.session_home,
+                        params.session,
+                        params.system_prompt,
+                        &effects,
+                        params.turn_id,
+                    )?;
+                    ran += 1;
+                }
+                BUILTIN_SQLBOT_MCP_START => {
+                    if event != PreflightLifecycleEvent::SessionStart {
+                        continue;
+                    }
+                    crate::sqlbot_preflight::run_sqlbot_preflight(
+                        params.session_home,
+                        params.session,
+                        params.executor,
+                    )?;
+                    ran += 1;
+                }
+                other => {
+                    return Err(err(
+                        HTTP_INTERNAL,
+                        format!("unknown builtin preflight handler {other:?}"),
+                    ));
+                }
+            },
+            PreflightImpl::Subprocess { .. } => {
+                let request = build_spi_request(params, step);
+                let response = run_subprocess_preflight(step, &request)?;
+                if response.status == PreflightResponseStatus::Skip {
+                    continue;
+                }
+                validate_effects_for_event(event, &response.effects)
+                    .map_err(|e| err(HTTP_INTERNAL, e))?;
+                apply_preflight_effects(
+                    params.session_home,
+                    params.session,
+                    params.system_prompt,
+                    &response.effects,
+                    params.turn_id,
+                )?;
+                ran += 1;
+            }
+        }
+    }
+    Ok(ran)
+}
+
+/// Run configured preflight steps for solve-path session.start + turn.start (pipeline order).
 pub fn run_preflight_pipeline(
     pipeline: &PreflightPipelineConfig,
     language_pipeline_json: &Value,
@@ -407,18 +477,21 @@ pub fn run_preflight_pipeline(
         is_continuation: params.is_continuation,
         session_first_turn_satisfied: session_first_satisfied,
     };
+    // Solve path: session.start + turn.start only (excludes worker.*). Author: kejiqing
     let indices = filter_step_indices(&steps, filter_ctx);
-    let ran_session_first_turn = indices
-        .iter()
-        .any(|&idx| steps[idx].scope == PreflightScope::SessionFirstTurn);
+    let ran_session_first_turn = indices.iter().any(|&idx| {
+        steps[idx].resolved_event() == PreflightLifecycleEvent::SessionStart
+    });
 
     for idx in indices {
         let step = &steps[idx];
+        let event = step.resolved_event();
         let impl_kind = resolve_step_impl(step);
         match impl_kind {
             PreflightImpl::Builtin { handler } => match handler.as_str() {
                 BUILTIN_TURN_LANGUAGE => {
                     let effects = run_builtin_turn_language(&params, step)?;
+                    validate_effects_for_event(event, &effects).map_err(|e| err(HTTP_INTERNAL, e))?;
                     apply_preflight_effects(
                         params.session_home,
                         params.session,
@@ -447,6 +520,8 @@ pub fn run_preflight_pipeline(
                 if response.status == PreflightResponseStatus::Skip {
                     continue;
                 }
+                validate_effects_for_event(event, &response.effects)
+                    .map_err(|e| err(HTTP_INTERNAL, e))?;
                 apply_preflight_effects(
                     params.session_home,
                     params.session,
@@ -457,9 +532,32 @@ pub fn run_preflight_pipeline(
             }
         }
     }
+
     Ok(PreflightRunReport {
         ran_session_first_turn,
     })
+}
+
+/// Run `turn.end` steps after the conversation finishes. Author: kejiqing
+pub fn run_turn_end_preflight(
+    pipeline: &PreflightPipelineConfig,
+    language_pipeline_json: &Value,
+    mut params: PreflightRunParams<'_>,
+    default_when_empty: bool,
+) -> Result<(), GatewaySolveTurnError> {
+    let steps =
+        resolve_pipeline_steps_for_run(pipeline, language_pipeline_json, default_when_empty);
+    let filter_ctx = PreflightFilterContext {
+        is_continuation: params.is_continuation,
+        session_first_turn_satisfied: true,
+    };
+    let _ = run_preflight_for_event(
+        &steps,
+        PreflightLifecycleEvent::TurnEnd,
+        filter_ctx,
+        &mut params,
+    )?;
+    Ok(())
 }
 
 /// Resolve pipeline from materialized JSON value (file or DB).
@@ -474,7 +572,6 @@ pub fn pipeline_from_value(value: &Value) -> PreflightPipelineConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use preflight_spi::PreflightScope;
     use serde_json::json;
     use std::fs;
 
@@ -569,17 +666,19 @@ mod tests {
 
     #[test]
     fn scope_filter_matrix() {
-        use preflight_spi::{filter_step_indices, PreflightFilterContext};
+        use preflight_spi::{filter_step_indices, PreflightFilterContext, PreflightScope};
         let steps = vec![
             PreflightStep {
                 plugin_id: BUILTIN_TURN_LANGUAGE.into(),
-                scope: PreflightScope::EveryTurn,
+                on: Some(PreflightLifecycleEvent::TurnStart),
+                scope: Some(PreflightScope::EveryTurn),
                 r#impl: None,
                 config: json!({}),
             },
             PreflightStep {
                 plugin_id: BUILTIN_SQLBOT_MCP_START.into(),
-                scope: PreflightScope::SessionFirstTurn,
+                on: Some(PreflightLifecycleEvent::SessionStart),
+                scope: Some(PreflightScope::SessionFirstTurn),
                 r#impl: None,
                 config: json!({}),
             },
@@ -599,6 +698,43 @@ mod tests {
             session_first_turn_satisfied: true,
         };
         assert_eq!(filter_step_indices(&steps, ctx_sat), vec![0]);
+    }
+
+    #[test]
+    fn run_for_event_only_matching_steps() {
+        use preflight_spi::{filter_step_indices_for_event, PreflightFilterContext, PreflightScope};
+        let steps = vec![
+            PreflightStep {
+                plugin_id: "apt".into(),
+                on: Some(PreflightLifecycleEvent::WorkerInitStart),
+                scope: None,
+                r#impl: None,
+                config: json!({}),
+            },
+            PreflightStep {
+                plugin_id: BUILTIN_TURN_LANGUAGE.into(),
+                on: Some(PreflightLifecycleEvent::TurnStart),
+                scope: Some(PreflightScope::EveryTurn),
+                r#impl: None,
+                config: json!({}),
+            },
+        ];
+        let ctx = PreflightFilterContext {
+            is_continuation: false,
+            session_first_turn_satisfied: false,
+        };
+        assert_eq!(
+            filter_step_indices_for_event(
+                &steps,
+                PreflightLifecycleEvent::WorkerInitStart,
+                ctx
+            ),
+            vec![0]
+        );
+        assert_eq!(
+            filter_step_indices_for_event(&steps, PreflightLifecycleEvent::TurnStart, ctx),
+            vec![1]
+        );
     }
 
     #[test]
@@ -650,7 +786,8 @@ EOF
         }
         let step = PreflightStep {
             plugin_id: "test".into(),
-            scope: PreflightScope::EveryTurn,
+            on: Some(PreflightLifecycleEvent::TurnStart),
+            scope: Some(preflight_spi::PreflightScope::EveryTurn),
             r#impl: Some(PreflightImpl::Subprocess {
                 command: vec![script.display().to_string()],
             }),
@@ -658,6 +795,7 @@ EOF
         };
         let req = PreflightSpiRequest {
             spi_version: SPI_VERSION.into(),
+            event: Some(PreflightLifecycleEvent::TurnStart),
             step: step.clone(),
             context: PreflightRequestContext {
                 session_id: "s".into(),
@@ -694,7 +832,8 @@ EOF
         }
         let step = PreflightStep {
             plugin_id: "test".into(),
-            scope: PreflightScope::EveryTurn,
+            on: Some(PreflightLifecycleEvent::TurnStart),
+            scope: Some(preflight_spi::PreflightScope::EveryTurn),
             r#impl: Some(PreflightImpl::Subprocess {
                 command: vec![script.display().to_string()],
             }),
@@ -702,6 +841,7 @@ EOF
         };
         let req = PreflightSpiRequest {
             spi_version: SPI_VERSION.into(),
+            event: Some(PreflightLifecycleEvent::TurnStart),
             step: step.clone(),
             context: PreflightRequestContext {
                 session_id: "s".into(),

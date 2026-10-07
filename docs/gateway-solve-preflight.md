@@ -16,24 +16,26 @@ Author: kejiqing
 
 ## 配置格式（`solvePreflightJson`）
 
-推荐 **`steps`**（顺序 + scope + 可选 per-step `config` / `impl`）：
+推荐 **`steps`**（顺序 + **`on` 生命周期事件** + 可选 per-step `config` / `impl`）。事件表与上下文见 [`preflight-lifecycle-events.md`](preflight-lifecycle-events.md)。
 
 ```json
 {
   "steps": [
     {
       "pluginId": "turn_language",
-      "scope": "every_turn",
+      "on": "turn.start",
       "impl": { "type": "builtin", "handler": "turn_language" }
     },
     {
       "pluginId": "sqlbot_mcp_start",
-      "scope": "session_first_turn",
+      "on": "session.start",
       "impl": { "type": "builtin", "handler": "sqlbot_mcp_start" }
     }
   ]
 }
 ```
+
+旧字段 `scope: every_turn|session_first_turn` 仍可读，映射为 `turn.start` / `session.start`。
 
 兼容历史：
 
@@ -50,22 +52,27 @@ Author: kejiqing
 | 无 `solve-preflight.json` 文件 | 运行时默认每轮 `turn_language` |
 | `language_pipeline_json`（deprecated） | 合并进 `turn_language` step 的 `config` |
 
-## Scope
+## 事件 `on`（取代 scope）
 
-| `scope` | 何时执行 |
+| `on` | 何时执行 |
 | --- | --- |
-| `every_turn` | 每轮 solve（含续聊） |
-| `session_first_turn` | 仅该 `sessionId` 第一次 solve，且 transcript 尚未满足该步 |
+| `turn.start` | 每轮 solve（含续聊）；兼容旧 `every_turn` |
+| `session.start` | 仅该 `sessionId` 第一次 solve，且尚未 satisfied；兼容旧 `session_first_turn` |
+| `worker.init.start` / `worker.init.end` | 该项目 worker **create** 时（Landlock 前） |
+| `worker.reuse.start` | acquire 已有 warm worker（Landlock 前） |
+| `turn.end` / `session.end` / `worker.reuse.end` | 见生命周期指南 |
 
-## 何时执行（统一管道）
+完整表与上下文：[`preflight-lifecycle-events.md`](preflight-lifecycle-events.md)。
+
+## 何时执行（solve 管道：session/turn）
 
 1. 加载 system prompt、初始化 MCP
 2. **`push_user_text`**
-3. **`PreflightRunner::run`**（按 `steps` 顺序）
+3. **`PreflightRunner`**（仅 `session.start` + `turn.start`，按 `steps` 顺序；**不含** `worker.*`）
 4. 合并 effects → system prompt / session 文件 / transcript
 5. `ConversationRuntime::run_turn_after_user_message`
 
-语言推断已从 bootstrap 移入 `turn_language` builtin（`every_turn`）。
+`worker.init.*` 在 gateway `create_and_persist_slot`；`worker.reuse.start` 在 warm acquire。语言推断：`turn_language` builtin（`turn.start`）。
 
 ## 内置插件
 
@@ -97,10 +104,12 @@ Author: kejiqing
 
 1. 实现子进程脚本（SPI v1）或后续 builtin 包装
 2. `PUT /v1/preflight/plugins/{pluginId}` 注册
-3. 项目 `solvePreflightJson.steps` 引用 `pluginId`、选 `scope`、填 `config`
+3. 项目 `solvePreflightJson.steps` 引用 `pluginId`、选 **`on`**、填 `config`
 4. **无需**再改 `gateway-solve-turn` 的 `match kind`
+5. 装软件等冷启动逻辑用 `worker.init.start`（见生命周期指南）
 
 ## 相关
 
+- 生命周期事件（项目扩展点主入口）：[`preflight-lifecycle-events.md`](preflight-lifecycle-events.md)
 - 编排（非 preflight）：`solve_orchestration_json` → [`multi-agent-analysis.md`](multi-agent-analysis.md)
 - 项目配置总览：[`project-config-model.md`](project-config-model.md)

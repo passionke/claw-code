@@ -984,6 +984,34 @@ impl E2bProjWorkerRegistry {
             .await
             .map_err(|e| format!("renew new project worker TTL: {e}"))?;
 
+        // Project preflight worker.init.* before slot is ready (pre-Landlock). Author: kejiqing
+        let solve_preflight_json = db
+            .get_project_config(proj_id)
+            .await
+            .map(|row| row.map(|r| r.solve_preflight_json))
+            .map_err(|e| format!("load solve_preflight_json for proj {proj_id}: {e}"))?
+            .unwrap_or_else(|| json!({"kind": "none"}));
+        let init_mode = match spec.mode {
+            WorkerProfileMode::Relaxed => "relaxed",
+            WorkerProfileMode::Strict => "strict",
+        };
+        if let Err(e) = super::worker_lifecycle_preflight::run_worker_init_on_create(
+            &self.client,
+            &handle,
+            &solve_preflight_json,
+            proj_id,
+            &worker_id,
+            &contract_key,
+            init_mode,
+        )
+        .await
+        {
+            let _ = self.client.kill_sandbox(&handle.sandbox_id).await;
+            return Err(format!(
+                "worker.init preflight failed for proj {proj_id} worker {worker_id}: {e}"
+            ));
+        }
+
         let now_ms = chrono::Utc::now().timestamp_millis();
         let row = ProjectFcWorkerRow {
             proj_id,
@@ -1590,7 +1618,40 @@ impl E2bProjWorkerRegistry {
             })?;
             let handle = rt.handle.clone();
             let worker_id = rt.worker_id.clone();
+            let template_id = rt.template_id.clone();
             drop(guard);
+            // Existing warm worker: worker.reuse.start (not create). Author: kejiqing
+            if let Ok(db) = self.session_db().await {
+                let solve_preflight_json = db
+                    .get_project_config(proj_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|r| r.solve_preflight_json)
+                    .unwrap_or_else(|| json!({"kind": "none"}));
+                let profile = db
+                    .get_worker_profile_json(proj_id)
+                    .await
+                    .unwrap_or_else(|_| default_worker_profile_json());
+                let mode = profile_mode_label(&profile);
+                if let Err(e) = super::worker_lifecycle_preflight::run_worker_reuse_start_on_acquire(
+                    &self.client,
+                    &handle,
+                    &solve_preflight_json,
+                    proj_id,
+                    &worker_id,
+                    &template_id,
+                    &handle.sandbox_id,
+                    mode,
+                    None,
+                )
+                .await
+                {
+                    return Err(format!(
+                        "worker.reuse.start preflight failed for proj {proj_id}: {e}"
+                    ));
+                }
+            }
             let mut leases = self.leases.lock().await;
             *leases.entry(key).or_insert(0) += 1;
             if let Ok(db) = self.session_db().await {

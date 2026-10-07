@@ -19,6 +19,7 @@ mod session_mount_ownership;
 mod stdout_hooks;
 mod traits;
 mod worker_env;
+mod worker_lifecycle_preflight;
 mod worker_profile;
 
 pub use traits::{PoolOps, SlotLease, TaskOutcome};
@@ -70,6 +71,9 @@ pub use stdout_hooks::merge_stdout_hooks;
 pub use worker_env::{
     default_kb_sync_worker_env_json, default_worker_env_json, merge_kb_sync_worker_env_defaults,
     parse_worker_env_map, validate_worker_env_json,
+};
+pub use worker_lifecycle_preflight::{
+    run_worker_init_on_create, run_worker_reuse_start_on_acquire, steps_from_solve_preflight_json,
 };
 pub use worker_profile::{
     default_worker_profile_json, desired_strict_pool_size_from_profile, effective_mode,
