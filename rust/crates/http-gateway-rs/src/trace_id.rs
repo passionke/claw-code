@@ -10,6 +10,9 @@ use uuid::Uuid;
 /// HTTP request/response header for distributed log correlation. Author: kejiqing
 pub const HEADER_TRACE_ID: &str = "x-trace-id";
 
+/// W3C trace context header (KEY OTEL → gateway OTEL parent). Author: kejiqing
+pub const HEADER_TRACEPARENT: &str = "traceparent";
+
 /// Mint a new gateway `trace_id` (UUID v4 without dashes → 32 hex). Author: kejiqing
 #[must_use]
 pub fn mint_request_trace_id() -> String {
@@ -61,6 +64,16 @@ pub fn apply_inbound_trace_id(header: Option<&str>, extra_session: &mut Option<V
 pub fn trace_id_from_headers(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers
         .get(HEADER_TRACE_ID)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// Read W3C `traceparent` from a header map. Author: kejiqing
+#[must_use]
+pub fn traceparent_from_headers(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get(HEADER_TRACEPARENT)
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty())

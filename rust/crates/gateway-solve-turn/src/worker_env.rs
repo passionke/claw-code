@@ -61,6 +61,11 @@ pub const WORKER_ENV_KEYS: &[&str] = &[
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
     "LANGFUSE_BASE_URL",
+    // SkyWalking / collector override (550w OAP). Author: kejiqing
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_SERVICE_NAME",
 ];
 
 fn worker_env_search_paths() -> Vec<PathBuf> {
@@ -117,6 +122,10 @@ pub fn otel_forward_env() -> BTreeMap<String, String> {
         "LANGFUSE_PUBLIC_KEY",
         "LANGFUSE_SECRET_KEY",
         "LANGFUSE_BASE_URL",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "OTEL_SERVICE_NAME",
     ];
     let mut out = BTreeMap::new();
     for key in KEYS {

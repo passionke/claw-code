@@ -146,6 +146,8 @@ pub(crate) async fn solve(
             turn_id: new_turn_id.clone(),
             skip_session_db: false,
             client_origin,
+            inbound_traceparent: trace_id::traceparent_from_headers(&headers)
+                .map(str::to_string),
         },
     )
     .await;
@@ -197,6 +199,7 @@ pub(crate) async fn enqueue_solve_async(
     req: SolveRequest,
     endpoint: &'static str,
     client_origin: Option<String>,
+    inbound_traceparent: Option<String>,
 ) -> Result<SolveAsyncResponse, ApiError> {
     enqueue_solve_async_with_turn(
         state,
@@ -206,6 +209,7 @@ pub(crate) async fn enqueue_solve_async(
         endpoint,
         client_origin,
         None,
+        inbound_traceparent,
     )
     .await
 }
@@ -218,6 +222,7 @@ pub(crate) async fn enqueue_solve_async_with_turn(
     endpoint: &'static str,
     client_origin: Option<String>,
     preassigned_turn_id: Option<String>,
+    inbound_traceparent: Option<String>,
 ) -> Result<SolveAsyncResponse, ApiError> {
     // Belt-and-suspenders: callers with headers should have applied already; mint if missing.
     if trace_id_from_extra_session(req.extra_session.as_ref()).is_none() {
@@ -372,6 +377,7 @@ pub(crate) async fn enqueue_solve_async_with_turn(
     let rid = effective.clone();
     let turn_id_for_worker = new_turn_id.clone();
     let client_origin_for_worker = client_origin.clone();
+    let inbound_tp_for_worker = inbound_traceparent;
     let join = tokio::spawn(async move {
         {
             let mut tasks = state_clone.tasks.lock().await;
@@ -412,6 +418,7 @@ pub(crate) async fn enqueue_solve_async_with_turn(
                 turn_id: turn_id_for_worker.clone(),
                 skip_session_db: false,
                 client_origin: client_origin_for_worker,
+                inbound_traceparent: inbound_tp_for_worker,
             },
         )
         .await;
@@ -671,6 +678,7 @@ pub(crate) async fn solve_async(
         req,
         "/v1/solve_async",
         client_origin,
+        trace_id::traceparent_from_headers(&headers).map(str::to_string),
     )
     .await?;
     let headers = solve_async_response_headers(&out.session_id, Some(&trace_id))?;

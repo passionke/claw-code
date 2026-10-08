@@ -289,6 +289,7 @@ pub(crate) async fn confirm_session_plan(
         "/v1/sessions/{session_id}/plans/{plan_id}/confirm",
         Some(client_origin::CLIENT_ORIGIN_GATEWAY_ADMIN.to_string()),
         Some(execute_turn_id),
+        None,
     )
     .await?;
 
