@@ -21,17 +21,17 @@ Author: kejiqing
 | `CLAW_BOOTSTRAP_LLM_NAME` | Admin 里显示名 | `ci-bootstrap` |
 | `CLAUDE_TAP_IMAGE` | claw-tap 镜像 | ACR `passionke/claw-tap:latest`（见 `env.production.example`） |
 
-### Langfuse OTEL（CI 宿主机已部署 Langfuse 时）
+### OTEL / OTLP（SkyWalking 或任意 OTLP 后端）
 
-在 **Settings → CI/CD → Variables** 配置；`render-env-from-ci.sh` 写入根 `.env`，`gateway.sh pool-up` 同步到 `pool-daemon.env`。详见 [`docs/langfuse-otel.md`](../../docs/langfuse-otel.md)。
+在 **Settings → CI/CD → Variables** 配置；`render-env-from-ci.sh` 写入根 `.env`，`gateway.sh pool-up` 同步到 `pool-daemon.env`。详见 [`docs/otel.md`](../../../docs/otel.md)。
 
 | Key | Masked | 说明 |
 |-----|--------|------|
-| `LANGFUSE_PUBLIC_KEY` | **是** | Langfuse Project → API Keys |
-| `LANGFUSE_SECRET_KEY` | **是** | 同上 |
-| `CLAW_OTEL_ENABLED` | 否 | 建议 `1`；仅设 key 时 render 默认 `1` |
-| `LANGFUSE_BASE_URL` | 否 | 94 CI：`http://10.22.28.94:8090`；未设时 render 用 `http://${CLAW_POOL_ADVERTISE_HOST}:8090` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | 否 | 例如 `http://10.22.28.239:12800`；设了且未写 `CLAW_OTEL_ENABLED` 时 render 默认 `1` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | **是** | 可选，`k=v,k2=v2` |
+| `CLAW_OTEL_ENABLED` | 否 | 建议 `1` |
 | `CLAW_OTEL_LOG_PROMPTS` | 否 | `1` 记录 prompt（默认）；`0` 关闭 |
+| `OTEL_SERVICE_NAME` | 否 | 可选，默认 `claw` |
 
 双节点 `ci-cluster-dual-deploy.sh` 会把上述变量从 node A `.env` 转发到 `.env.ci-node-b`。
 

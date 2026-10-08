@@ -10,25 +10,36 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-pub fn otel_tool_started(tool_use_id: &str, tool_name: &str) {
+pub fn otel_tool_started(
+    tool_use_id: &str,
+    tool_name: &str,
+    iteration: usize,
+    turn_id: &str,
+    input_size: usize,
+) {
     if !otel_enabled() {
         return;
     }
     let Some(guard) = OtelSpanGuard::start("claw-runtime", "tool.execution", None) else {
         return;
     };
-    guard.set_attribute(
-        "langfuse.observation.metadata.tool_name",
-        tool_name.to_string(),
-    );
     guard.set_attribute("tool.name", tool_name.to_string());
     guard.set_attribute("tool.use_id", tool_use_id.to_string());
+    guard.set_attribute("iteration", iteration.to_string());
+    guard.set_attribute("turn_id", turn_id.to_string());
+    guard.set_attribute("input_size", input_size.to_string());
     TOOL_OTEL_GUARDS.with(|map| {
         map.borrow_mut().insert(tool_use_id.to_string(), guard);
     });
 }
 
-pub fn otel_tool_finished(tool_use_id: &str, is_error: bool, duration_ms: u128) {
+pub fn otel_tool_finished(
+    tool_use_id: &str,
+    is_error: bool,
+    duration_ms: u128,
+    output_size: usize,
+    error_preview: Option<&str>,
+) {
     if !otel_enabled() {
         return;
     }
@@ -38,10 +49,25 @@ pub fn otel_tool_finished(tool_use_id: &str, is_error: bool, duration_ms: u128) 
         };
         guard.set_attribute("duration_ms", duration_ms.to_string());
         guard.set_attribute("tool.is_error", is_error.to_string());
+        guard.set_attribute("output_size", output_size.to_string());
+        if let Some(preview) = error_preview {
+            guard.set_attribute("error_preview", preview.to_string());
+        }
         if is_error {
             guard.set_error("tool_execution_failed");
         } else {
             guard.set_ok();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn otel_tool_noop_when_disabled() {
+        std::env::remove_var("CLAW_OTEL_ENABLED");
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        super::otel_tool_started("id", "bash", 1, "turn", 10);
+        super::otel_tool_finished("id", false, 1, 0, None);
+    }
 }

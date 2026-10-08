@@ -58,10 +58,7 @@ pub const WORKER_ENV_KEYS: &[&str] = &[
     "CLAW_SSE_DEBUG_PREVIEW_CHARS",
     "CLAW_OTEL_ENABLED",
     "CLAW_OTEL_LOG_PROMPTS",
-    "LANGFUSE_PUBLIC_KEY",
-    "LANGFUSE_SECRET_KEY",
-    "LANGFUSE_BASE_URL",
-    // SkyWalking / collector override (550w OAP). Author: kejiqing
+    // SkyWalking / any OTLP collector. Author: kejiqing
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_HEADERS",
     "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -113,15 +110,12 @@ fn log_loaded_sse_env() {
     );
 }
 
-/// Langfuse / OTEL keys to forward into worker `docker exec -e` (pool host may not inherit compose env).
+/// OTEL keys to forward into worker `docker exec -e` (pool host may not inherit compose env).
 #[must_use]
 pub fn otel_forward_env() -> BTreeMap<String, String> {
     const KEYS: &[&str] = &[
         "CLAW_OTEL_ENABLED",
         "CLAW_OTEL_LOG_PROMPTS",
-        "LANGFUSE_PUBLIC_KEY",
-        "LANGFUSE_SECRET_KEY",
-        "LANGFUSE_BASE_URL",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
         "OTEL_EXPORTER_OTLP_HEADERS",
         "OTEL_EXPORTER_OTLP_PROTOCOL",

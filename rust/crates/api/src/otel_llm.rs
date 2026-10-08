@@ -1,4 +1,4 @@
-//! OTEL generation spans for LLM calls (Langfuse `gen_ai.*`). Author: kejiqing
+//! OTEL generation spans for LLM calls (`gen_ai.*`). Author: kejiqing
 
 use telemetry::{log_prompts_enabled, otel_enabled, OtelSpanGuard};
 
@@ -11,18 +11,30 @@ pub struct LlmOtelGuard {
 }
 
 impl LlmOtelGuard {
+    /// Start `llm.chat` with Anthropic system label (legacy callers).
     #[must_use]
     pub fn start(model: &str, prompt_preview: &str) -> Option<Self> {
+        Self::start_with_system("anthropic", model, prompt_preview)
+    }
+
+    /// Start `llm.chat` under current context. Author: kejiqing
+    #[must_use]
+    pub fn start_with_system(system: &str, model: &str, prompt_preview: &str) -> Option<Self> {
         if !otel_enabled() {
             return None;
         }
         let guard = OtelSpanGuard::start("claw-api", "llm.chat", None)?;
-        guard.set_attribute("gen_ai.system", "anthropic");
+        guard.set_attribute("gen_ai.system", system.to_string());
         guard.set_attribute("gen_ai.operation.name", "chat");
         guard.set_attribute("gen_ai.request.model", model.to_string());
-        guard.set_attribute("langfuse.observation.model.name", model.to_string());
+        if let Ok(turn_id) = std::env::var("CLAW_TURN_ID") {
+            let turn_id = turn_id.trim();
+            if !turn_id.is_empty() {
+                guard.set_attribute("turn_id", turn_id.to_string());
+            }
+        }
         if log_prompts_enabled() {
-            guard.set_attribute("gen_ai.prompt", truncate(prompt_preview, 8000));
+            guard.set_attribute("gen_ai.prompt", prompt_preview.to_string());
         }
         Some(Self {
             inner: guard,
@@ -30,15 +42,17 @@ impl LlmOtelGuard {
         })
     }
 
+    /// Optional iteration attr when the caller has agent-loop context. Author: kejiqing
+    #[allow(dead_code)]
+    pub fn set_iteration(&self, iteration: u64) {
+        self.inner.set_attribute("iteration", iteration.to_string());
+    }
+
     pub fn push_completion_delta(&mut self, text: &str) {
         if !log_prompts_enabled() {
             return;
         }
-        if self.completion.len() < 8000 {
-            let remaining = 8000usize.saturating_sub(self.completion.len());
-            self.completion
-                .push_str(&text.chars().take(remaining).collect::<String>());
-        }
+        self.completion.push_str(text);
     }
 
     pub fn finish_with_response(&mut self, response: &MessageResponse) {
@@ -72,16 +86,18 @@ impl LlmOtelGuard {
             "gen_ai.usage.output_tokens",
             usage.output_tokens.to_string(),
         );
-        self.inner.set_attribute(
-            "langfuse.observation.usage_details",
-            serde_json::json!({
-                "input": usage.input_tokens,
-                "output": usage.output_tokens,
-                "cache_creation_input_tokens": usage.cache_creation_input_tokens,
-                "cache_read_input_tokens": usage.cache_read_input_tokens,
-            })
-            .to_string(),
-        );
+        if usage.cache_creation_input_tokens > 0 {
+            self.inner.set_attribute(
+                "gen_ai.usage.cache_creation_input_tokens",
+                usage.cache_creation_input_tokens.to_string(),
+            );
+        }
+        if usage.cache_read_input_tokens > 0 {
+            self.inner.set_attribute(
+                "gen_ai.usage.cache_read_input_tokens",
+                usage.cache_read_input_tokens.to_string(),
+            );
+        }
     }
 }
 
@@ -117,6 +133,36 @@ pub fn message_response_completion_preview(response: &MessageResponse) -> String
         .join("")
 }
 
-fn truncate(text: &str, max_chars: usize) -> String {
-    text.chars().take(max_chars).collect()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn llm_otel_guard_start_none_when_otel_off() {
+        std::env::remove_var("CLAW_OTEL_ENABLED");
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        assert!(LlmOtelGuard::start("m", "p").is_none());
+        assert!(LlmOtelGuard::start_with_system("openai", "m", "p").is_none());
+    }
+
+    #[test]
+    fn prompt_preview_joins_text_blocks() {
+        let request = MessageRequest {
+            model: "m".to_string(),
+            messages: vec![crate::types::InputMessage {
+                role: "user".to_string(),
+                content: vec![
+                    crate::types::InputContentBlock::Text {
+                        text: "hello".to_string(),
+                    },
+                    crate::types::InputContentBlock::Text {
+                        text: "world".to_string(),
+                    },
+                ],
+            }],
+            max_tokens: 16,
+            ..Default::default()
+        };
+        assert_eq!(message_request_prompt_preview(&request), "hello\nworld");
+    }
 }
