@@ -311,7 +311,7 @@ pub fn timing_kind_skips_otel_dual_write(kind: &str, source: Option<&str>) -> bo
         return true;
     }
     if kind.starts_with("tool_execution_") {
-        return !matches!(source, Some("preflight") | Some("fanout"));
+        return !matches!(source, Some("preflight" | "fanout"));
     }
     false
 }
