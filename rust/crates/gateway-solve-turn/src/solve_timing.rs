@@ -358,7 +358,10 @@ mod tests {
 
     #[test]
     fn skip_list_in_loop_tools_and_llm_stream() {
-        assert!(timing_kind_skips_otel_dual_write("tool_execution_finished", None));
+        assert!(timing_kind_skips_otel_dual_write(
+            "tool_execution_finished",
+            None
+        ));
         assert!(timing_kind_skips_otel_dual_write(
             "tool_execution_started",
             None
@@ -371,8 +374,14 @@ mod tests {
             "tool_execution_finished",
             Some("fanout")
         ));
-        assert!(timing_kind_skips_otel_dual_write("llm_stream_started", None));
-        assert!(timing_kind_skips_otel_dual_write("llm_stream_finished", None));
+        assert!(timing_kind_skips_otel_dual_write(
+            "llm_stream_started",
+            None
+        ));
+        assert!(timing_kind_skips_otel_dual_write(
+            "llm_stream_finished",
+            None
+        ));
         assert!(!timing_kind_skips_otel_dual_write("turn_started", None));
         assert!(!timing_kind_skips_otel_dual_write(
             "bootstrap_mcp_ready",

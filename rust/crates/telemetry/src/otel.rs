@@ -83,9 +83,8 @@ pub fn resolve_otlp_config() -> Option<(String, HashMap<String, String>)> {
         .ok()
         .map(|s| trim_quotes(s.trim()))
         .filter(|s| !s.is_empty())?;
-    let headers = parse_otlp_headers(
-        &std::env::var(OTEL_EXPORTER_OTLP_HEADERS_ENV).unwrap_or_default(),
-    );
+    let headers =
+        parse_otlp_headers(&std::env::var(OTEL_EXPORTER_OTLP_HEADERS_ENV).unwrap_or_default());
     Some((endpoint, headers))
 }
 
@@ -436,12 +435,7 @@ pub fn parent_context_for_inbound(
 }
 
 /// Neutral trace-level attrs on the active span in `cx`. Author: kejiqing
-pub fn set_trace_attrs_on_context(
-    cx: &Context,
-    session_id: &str,
-    turn_id: &str,
-    request_id: &str,
-) {
+pub fn set_trace_attrs_on_context(cx: &Context, session_id: &str, turn_id: &str, request_id: &str) {
     let span = cx.span();
     span.set_attribute(KeyValue::new("session_id", session_id.to_string()));
     span.set_attribute(KeyValue::new("turn_id", turn_id.to_string()));

@@ -1275,13 +1275,7 @@ where
         );
         attributes.insert("input_size".to_string(), Value::from(input_size as u64));
         self.emit_turn_timing("tool_execution_started", attributes.clone());
-        crate::otel_tool::otel_tool_started(
-            tool_use_id,
-            tool_name,
-            iteration,
-            turn_id,
-            input_size,
-        );
+        crate::otel_tool::otel_tool_started(tool_use_id, tool_name, iteration, turn_id, input_size);
 
         let Some(session_tracer) = &self.session_tracer else {
             return;
