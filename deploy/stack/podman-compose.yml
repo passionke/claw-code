@@ -133,3 +133,11 @@ services:
       timeout: 5s
       retries: 6
       start_period: 5s
+
+# Pin claw_default away from office lab 172.19.0.0/16 (e.g. 9F testbed 172.19.99.20).
+# Docker auto-IPAM previously claimed 172.19/16 and broke host+e2b adb routes. Author: kejiqing
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
