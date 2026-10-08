@@ -264,11 +264,7 @@ pub fn reconcile_should_invalidate(stored: &str, desired: &str) -> bool {
 /// Acquire guard: slot may be leased only when lifecycle is not `invalid` and applied build
 /// is not behind desired (same rule as version switch). Author: kejiqing
 #[must_use]
-pub fn acquire_slot_usable(
-    lifecycle: &str,
-    stored_contract: &str,
-    desired_contract: &str,
-) -> bool {
+pub fn acquire_slot_usable(lifecycle: &str, stored_contract: &str, desired_contract: &str) -> bool {
     if lifecycle == "invalid" {
         return false;
     }
@@ -599,8 +595,7 @@ impl E2bProjWorkerRegistry {
             let key = scope_slot_key(proj_id, &row.scope_key, e2b_worker_slot_u32(row.slot_index));
             self.workers.lock().await.remove(&key);
             // Stop lease ticker so invalid sandboxes are not renewed. Author: kejiqing
-            self.client
-                .unregister_tracked_sandbox(&row.sandbox_id);
+            self.client.unregister_tracked_sandbox(&row.sandbox_id);
             audit_rotation(
                 db.as_ref(),
                 WorkerRotationEvent {
@@ -1644,9 +1639,7 @@ impl E2bProjWorkerRegistry {
                 .await
                 .map_err(|e| format!("get project_e2b_worker for acquire guard: {e}"))?;
             let usable = match &row {
-                Some(r) => {
-                    acquire_slot_usable(&r.lifecycle_state, &r.template_id, &desired)
-                }
+                Some(r) => acquire_slot_usable(&r.lifecycle_state, &r.template_id, &desired),
                 // get_* filters out invalid — treat missing as unusable for this warm hit.
                 None => false,
             };
