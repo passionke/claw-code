@@ -1,4 +1,4 @@
-//! `cargo run -p telemetry --example langfuse_smoke` (source repo `.env` first). Author: kejiqing
+//! `cargo run -p telemetry --example otel_smoke` (source repo `.env` first). Author: kejiqing
 
 use std::time::Duration;
 
@@ -30,7 +30,7 @@ fn load_repo_dotenv() {
 async fn main() {
     load_repo_dotenv();
     if !otel_enabled() {
-        eprintln!("CLAW_OTEL_ENABLED or LANGFUSE_* not configured");
+        eprintln!("CLAW_OTEL_ENABLED or OTEL_EXPORTER_OTLP_ENDPOINT not configured");
         std::process::exit(1);
     }
 
@@ -57,7 +57,7 @@ async fn main() {
         Some(&context_from_traceparent(&pool_tp)),
     )
     .expect("worker");
-    worker.set_langfuse_trace_attrs("smoke-session", "smoke-turn", "smoke-request");
+    worker.set_trace_attrs("smoke-session", "smoke-turn", "smoke-request");
     let _worker = worker.enter();
 
     let llm = OtelSpanGuard::start("api", "llm.chat", Some(worker.context())).expect("llm");

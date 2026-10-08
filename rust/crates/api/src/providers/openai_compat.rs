@@ -185,6 +185,7 @@ impl OpenAiCompatClient {
         self
     }
 
+    #[allow(clippy::too_many_lines)] // OTEL guard paths mirror anthropic send_message. Author: kejiqing
     pub async fn send_message(
         &self,
         request: &MessageRequest,
@@ -195,10 +196,32 @@ impl OpenAiCompatClient {
             ..request.clone()
         };
         preflight_message_request(&request)?;
-        let response = self.send_with_retry(&request).await?;
+        let prompt_preview = crate::otel_llm::message_request_prompt_preview(&request);
+        let mut otel_llm = crate::otel_llm::LlmOtelGuard::start_with_system(
+            self.config.provider_name,
+            &request.model,
+            &prompt_preview,
+        );
+        let response = match self.send_with_retry(&request).await {
+            Ok(response) => response,
+            Err(e) => {
+                if let Some(ref g) = otel_llm {
+                    g.finish_error(e.to_string());
+                }
+                return Err(e);
+            }
+        };
         let header_elapsed_ms = boundary_started_at.elapsed().as_millis();
         let request_id = request_id_from_headers(response.headers());
-        let body = response.text().await.map_err(ApiError::from)?;
+        let body = match response.text().await.map_err(ApiError::from) {
+            Ok(body) => body,
+            Err(e) => {
+                if let Some(ref g) = otel_llm {
+                    g.finish_error(e.to_string());
+                }
+                return Err(e);
+            }
+        };
         if boundary_log_enabled() {
             let body_elapsed_ms = boundary_started_at.elapsed().as_millis();
             tracing::info!(
@@ -227,6 +250,9 @@ impl OpenAiCompatClient {
                     .get("code")
                     .and_then(serde_json::Value::as_u64)
                     .map(|c| c as u16);
+                if let Some(ref g) = otel_llm {
+                    g.finish_error(&msg);
+                }
                 return Err(ApiError::Api {
                     status: reqwest::StatusCode::from_u16(code.unwrap_or(400))
                         .unwrap_or(reqwest::StatusCode::BAD_REQUEST),
@@ -245,12 +271,35 @@ impl OpenAiCompatClient {
                 });
             }
         }
-        let payload = serde_json::from_str::<ChatCompletionResponse>(&body).map_err(|error| {
-            ApiError::json_deserialize(self.config.provider_name, &request.model, &body, error)
-        })?;
-        let mut normalized = normalize_response(&request.model, payload)?;
+        let payload = match serde_json::from_str::<ChatCompletionResponse>(&body) {
+            Ok(payload) => payload,
+            Err(error) => {
+                let e = ApiError::json_deserialize(
+                    self.config.provider_name,
+                    &request.model,
+                    &body,
+                    error,
+                );
+                if let Some(ref g) = otel_llm {
+                    g.finish_error(e.to_string());
+                }
+                return Err(e);
+            }
+        };
+        let mut normalized = match normalize_response(&request.model, payload) {
+            Ok(normalized) => normalized,
+            Err(e) => {
+                if let Some(ref g) = otel_llm {
+                    g.finish_error(e.to_string());
+                }
+                return Err(e);
+            }
+        };
         if normalized.request_id.is_none() {
             normalized.request_id = request_id;
+        }
+        if let Some(ref mut g) = otel_llm {
+            g.finish_with_response(&normalized);
         }
         Ok(normalized)
     }
@@ -273,9 +322,24 @@ impl OpenAiCompatClient {
             );
         }
         preflight_message_request(request)?;
-        let response = self
+        let prompt_preview = crate::otel_llm::message_request_prompt_preview(request);
+        let otel_llm = crate::otel_llm::LlmOtelGuard::start_with_system(
+            self.config.provider_name,
+            &request.model,
+            &prompt_preview,
+        );
+        let response = match self
             .send_with_retry(&request.clone().with_streaming())
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(e) => {
+                if let Some(ref g) = otel_llm {
+                    g.finish_error(e.to_string());
+                }
+                return Err(e);
+            }
+        };
         let request_id = request_id_from_headers(response.headers());
         if debug_enabled {
             sse_debug(
@@ -303,6 +367,8 @@ impl OpenAiCompatClient {
             raw_chunk_count: 0,
             parsed_chunk_count: 0,
             burst_ctx: BurstStreamCtx::default(),
+            otel_llm,
+            otel_usage_recorded: false,
         })
     }
 
@@ -459,6 +525,7 @@ impl Provider for OpenAiCompatClient {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)] // stream debug + otel finish flags. Author: kejiqing
 #[derive(Debug)]
 pub struct MessageStream {
     request_id: Option<String>,
@@ -473,6 +540,8 @@ pub struct MessageStream {
     raw_chunk_count: u64,
     parsed_chunk_count: u64,
     burst_ctx: BurstStreamCtx,
+    otel_llm: Option<crate::otel_llm::LlmOtelGuard>,
+    otel_usage_recorded: bool,
 }
 
 impl MessageStream {
@@ -485,6 +554,7 @@ impl MessageStream {
     pub async fn next_event(&mut self) -> Result<Option<StreamEvent>, ApiError> {
         loop {
             if let Some(event) = self.pending.pop_front() {
+                self.observe_otel_event(&event);
                 return Ok(Some(event));
             }
 
@@ -613,6 +683,32 @@ impl MessageStream {
                     self.done = true;
                 }
             }
+        }
+    }
+
+    fn observe_otel_event(&mut self, event: &StreamEvent) {
+        match event {
+            StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
+                delta: ContentBlockDelta::TextDelta { text },
+                ..
+            }) => {
+                if let Some(ref mut g) = self.otel_llm {
+                    g.push_completion_delta(text);
+                }
+            }
+            StreamEvent::MessageStop(_) if !self.otel_usage_recorded => {
+                if let Some(ref mut g) = self.otel_llm {
+                    let usage = self.state.usage.clone().unwrap_or(Usage {
+                        input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: 0,
+                        output_tokens: 0,
+                    });
+                    g.finish_with_usage(&usage, Some(self.state.model.as_str()));
+                }
+                self.otel_usage_recorded = true;
+            }
+            _ => {}
         }
     }
 }

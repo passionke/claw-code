@@ -32,11 +32,10 @@ impl SolveTurnOtelGuard {
         let parent = context_from_env_traceparent();
         let guard = OtelSpanGuard::start("gateway-solve-turn", "gateway_solve_turn", Some(&parent));
         if let Some(ref g) = guard {
-            g.set_langfuse_trace_attrs(mcp.clawcode_session_id(), &turn_id, &mcp.request_id);
-            g.set_attribute("langfuse.trace.name", "gateway_solve_turn");
+            g.set_trace_attrs(mcp.clawcode_session_id(), &turn_id, &mcp.request_id);
+            g.set_attribute("trace.name", "gateway_solve_turn");
             if log_prompts_enabled() {
-                let preview: String = user_prompt.chars().take(8000).collect();
-                g.set_attribute("langfuse.trace.input", preview);
+                g.set_attribute("trace.input", user_prompt.to_string());
             }
         }
         Self {
@@ -52,8 +51,7 @@ impl SolveTurnOtelGuard {
     pub fn mark_ok(&mut self, output_text: &str) {
         if let Some(ref g) = self.inner {
             if log_prompts_enabled() {
-                let preview: String = output_text.chars().take(8000).collect();
-                g.set_attribute("langfuse.trace.output", preview);
+                g.set_attribute("trace.output", output_text.to_string());
             }
             g.set_ok();
         }

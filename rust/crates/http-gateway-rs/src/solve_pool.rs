@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use axum::http::StatusCode;
 use gateway_solve_turn::{otel_forward_env, GatewaySolveTaskFile};
 use telemetry::{
-    inject_traceparent, parent_context_for_inbound, set_langfuse_trace_attrs_on_context,
+    emit_child_span, inject_traceparent, parent_context_for_inbound, set_trace_attrs_on_context,
     OtelSpanGuard,
 };
 use tokio::fs;
@@ -39,6 +39,45 @@ pub(crate) fn session_mount_for_pool_acquire(
 
 /// Fixed name inside the per-session bind mount (no `..`, not client-controlled).
 const GATEWAY_SOLVE_TASK_FILE: &str = "gateway-solve-task.json";
+
+/// Persist bootstrap timing + dual-write OTEL child under `gateway.solve`. Author: kejiqing
+///
+/// Parent contract (gateway async path):
+/// - `OtelContextGuard` is `!Send` → never hold `enter()` across `.await` (breaks `tokio::spawn`).
+/// - Do **not** assume `Context::current()` is `gateway.solve` for the whole solve; it is not.
+/// - Child spans must either pass an explicit parent (`OtelSpanGuard::start(..., Some(parent))`)
+///   or briefly `enter()` in a **sync** block around `emit_child_span` (as below).
+/// - Relying on ambient `Context::current()` without enter / without explicit parent is incorrect
+///   on this path (orphan or wrong parent in SW).
+async fn append_bootstrap_timing_and_otel(
+    state: &AppState,
+    turn_id: &str,
+    kind: &str,
+    otel_guard: Option<&OtelSpanGuard>,
+) -> Result<(), ApiError> {
+    state
+        .session_db
+        .append_turn_solve_timing_bootstrap(turn_id, kind)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("persist bootstrap timing failed: {e}"),
+            )
+        })?;
+    // Sync-only ambient: enter → emit → drop. Never across await. Author: kejiqing
+    {
+        let _cx = otel_guard.map(|g| g.enter());
+        emit_child_span(
+            &format!("timing.{kind}"),
+            &[
+                ("turn_id", turn_id.to_string()),
+                ("source", "bootstrap".to_string()),
+            ],
+        );
+    }
+    Ok(())
+}
 
 /// Path to `claw` inside worker images. Host `CLAW_BIN` may be a macOS absolute path unusable in `podman exec`. kejiqing
 const POOL_WORKER_CLAW_BIN: &str = "/usr/local/bin/claw";
@@ -166,17 +205,6 @@ pub(crate) async fn run_solve_request_docker(
         .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?
     };
 
-    state
-        .session_db
-        .append_turn_solve_timing_bootstrap(&turn_id, "bootstrap_solve_pool_start")
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("persist bootstrap timing failed: {e}"),
-            )
-        })?;
-
     let task_path = session_home.join(GATEWAY_SOLVE_TASK_FILE);
 
     let session_id = req
@@ -195,13 +223,20 @@ pub(crate) async fn run_solve_request_docker(
     let otel_parent = parent_context_for_inbound(inbound_traceparent.as_deref(), &seed_trace_id);
     let otel_guard = OtelSpanGuard::start("claw-gateway-rs", "gateway.solve", otel_parent.as_ref());
     if let Some(ref g) = otel_guard {
-        set_langfuse_trace_attrs_on_context(g.context(), &session_id, &turn_id, &request_id);
-        g.set_attribute("langfuse.trace.name", "gateway.solve");
+        set_trace_attrs_on_context(g.context(), &session_id, &turn_id, &request_id);
+        g.set_attribute("trace.name", "gateway.solve");
         g.set_attribute("trace_id", seed_trace_id.clone());
     }
     let otel_traceparent = otel_guard
         .as_ref()
         .and_then(|g| inject_traceparent(g.context()));
+    append_bootstrap_timing_and_otel(
+        &state,
+        &turn_id,
+        "bootstrap_solve_pool_start",
+        otel_guard.as_ref(),
+    )
+    .await?;
     let worker_profile = state
         .session_db
         .get_worker_profile_json(req.proj_id)
@@ -382,16 +417,13 @@ pub(crate) async fn run_solve_request_docker(
     );
 
     let acquire_wait = Duration::from_secs(timeout_seconds.saturating_add(30));
-    state
-        .session_db
-        .append_turn_solve_timing_bootstrap(&turn_id, "bootstrap_pool_waiting")
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("persist bootstrap timing failed: {e}"),
-            )
-        })?;
+    append_bootstrap_timing_and_otel(
+        &state,
+        &turn_id,
+        "bootstrap_pool_waiting",
+        otel_guard.as_ref(),
+    )
+    .await?;
     let lease = pool
         .acquire_slot(
             acquire_wait,
@@ -424,16 +456,13 @@ pub(crate) async fn run_solve_request_docker(
         session_home = %session_home.display(),
         "pool slot leased; running docker exec gateway-solve-once"
     );
-    state
-        .session_db
-        .append_turn_solve_timing_bootstrap(&turn_id, "bootstrap_pool_acquired")
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("persist bootstrap timing failed: {e}"),
-            )
-        })?;
+    append_bootstrap_timing_and_otel(
+        &state,
+        &turn_id,
+        "bootstrap_pool_acquired",
+        otel_guard.as_ref(),
+    )
+    .await?;
 
     let mut lease_cleanup = DockerLeaseCleanup {
         pool: Arc::clone(&pool),
@@ -460,16 +489,13 @@ pub(crate) async fn run_solve_request_docker(
         .as_ref()
         .expect("lease set for exec")
         .slot_index;
-    state
-        .session_db
-        .append_turn_solve_timing_bootstrap(&turn_id, "bootstrap_exec_started")
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("persist bootstrap timing failed: {e}"),
-            )
-        })?;
+    append_bootstrap_timing_and_otel(
+        &state,
+        &turn_id,
+        "bootstrap_exec_started",
+        otel_guard.as_ref(),
+    )
+    .await?;
     let mut exec_env = worker_llm_env;
     exec_env.extend(otel_forward_env());
     if let Some(tp) = task.otel_traceparent.as_deref() {
