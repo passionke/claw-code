@@ -290,7 +290,9 @@ fn context_from_w3c_traceparent_raw(tp: &str) -> Option<Context> {
     }
     let tid_hex = normalize_w3c_trace_id(parts[1])?;
     let sid = parts[2].trim().to_ascii_lowercase();
-    if sid.len() != 16 || !sid.chars().all(|c| c.is_ascii_hexdigit()) || sid.chars().all(|c| c == '0')
+    if sid.len() != 16
+        || !sid.chars().all(|c| c.is_ascii_hexdigit())
+        || sid.chars().all(|c| c == '0')
     {
         return None;
     }
