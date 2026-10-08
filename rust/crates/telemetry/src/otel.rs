@@ -555,15 +555,21 @@ impl Drop for OtelSpanGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Process-wide env mutations must not race across parallel tests. Author: kejiqing
+    static OTEL_ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn log_prompts_enabled_by_default() {
+        let _lock = OTEL_ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::remove(CLAW_OTEL_LOG_PROMPTS_ENV);
         assert!(log_prompts_enabled());
     }
 
     #[test]
     fn resolve_otlp_from_endpoint_env() {
+        let _lock = OTEL_ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _g1 = EnvGuard::set(
             OTEL_EXPORTER_OTLP_ENDPOINT_ENV,
             Some("http://10.22.28.239:12800"),
@@ -576,6 +582,7 @@ mod tests {
 
     #[test]
     fn otel_enabled_requires_endpoint() {
+        let _lock = OTEL_ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _g1 = EnvGuard::set(CLAW_OTEL_ENABLED_ENV, Some("1"));
         let _g2 = EnvGuard::remove(OTEL_EXPORTER_OTLP_ENDPOINT_ENV);
         assert!(!otel_enabled());
@@ -588,6 +595,7 @@ mod tests {
 
     #[test]
     fn emit_child_span_noop_when_disabled() {
+        let _lock = OTEL_ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _g1 = EnvGuard::remove(CLAW_OTEL_ENABLED_ENV);
         let _g2 = EnvGuard::remove(OTEL_EXPORTER_OTLP_ENDPOINT_ENV);
         emit_child_span("timing.test", &[("k", "v".to_string())]);
