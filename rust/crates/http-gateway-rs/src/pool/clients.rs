@@ -267,7 +267,8 @@ impl PoolClients {
         self.e2b_interactive.bind_session_db(db).await;
     }
 
-    /// Startup version switch: mark workers on an older buildId invalid (no kill, no create).
+    /// Version switch (startup entry): mark workers on an older buildId invalid (no kill, no create).
+    /// Same helper also runs on each warm tick and before acquire. Author: kejiqing
     pub async fn reconcile_project_workers_on_startup(&self) -> Result<(), String> {
         self.e2b_workers.reconcile_version_switch().await
     }

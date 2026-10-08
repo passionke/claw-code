@@ -381,6 +381,23 @@ impl E2bSandboxClient {
         }
     }
 
+    /// Stop lease-ticker renewal for a sandbox (e.g. marked `invalid`). Author: kejiqing
+    pub fn unregister_tracked_sandbox(&self, sandbox_id: &str) {
+        if sandbox_id.trim().is_empty() {
+            return;
+        }
+        self.unregister_sandbox_lease(sandbox_id);
+    }
+
+    /// Whether `sandbox_id` is currently tracked for lease ticker renewal. Author: kejiqing
+    #[must_use]
+    pub fn is_sandbox_lease_tracked(&self, sandbox_id: &str) -> bool {
+        self.lease_expires
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(sandbox_id)
+    }
+
     /// Register a persistent e2b singleton for lease ticker + gateway shutdown skip. Author: kejiqing
     pub fn track_persistent_sandbox(&self, sandbox_id: &str) {
         if sandbox_id.trim().is_empty() {
@@ -1965,5 +1982,28 @@ mod client_tests {
             c.service_public_host(3000, "sbx-abc", "cn-beijing.e2b.fc.aliyuncs.com"),
             "3000-sbx-abc.cn-beijing.e2b.fc.aliyuncs.com"
         );
+    }
+
+    #[test]
+    fn unregister_tracked_sandbox_removes_from_lease_map() {
+        // Constraint 3: invalid / retired workers must leave the lease ticker. Author: kejiqing
+        let cfg = E2bSandboxConfig {
+            api_key: "e2b_test".into(),
+            api_url: "https://api.cn-beijing.e2b.fc.aliyuncs.com".into(),
+            sandbox_url: None,
+            domain: "cn-beijing.e2b.fc.aliyuncs.com".into(),
+            template: "code-interpreter-v1".into(),
+            sandbox_timeout_secs: 300,
+            nas_server: None,
+            nas_export: None,
+            nas_user_id: 1000,
+            nas_group_id: 1000,
+            exec_helper: "deploy/e2b/e2b_exec.py".into(),
+        };
+        let c = E2bSandboxClient::new(cfg);
+        c.register_tracked_sandbox("sbx-stale");
+        assert!(c.is_sandbox_lease_tracked("sbx-stale"));
+        c.unregister_tracked_sandbox("sbx-stale");
+        assert!(!c.is_sandbox_lease_tracked("sbx-stale"));
     }
 }

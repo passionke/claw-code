@@ -7,8 +7,10 @@
 //!
 //! Image / buildId: remote rebuild only updates PG. Healthy sandboxes are never killed because
 //! buildId/templateId changed at runtime. New image is applied via version switch
-//! (`reconcile_version_switch` marks stale workers invalid), manual reset, or when the sandbox
-//! is dead/unhealthy.
+//! (`reconcile_version_switch` marks stale workers invalid) on **startup**, each **warm tick**,
+//! and **acquire** entry (PG desired build may change without publish/restart). Manual reset or
+//! dead/unhealthy sandboxes also rotate. Invalid workers are never acquired and leave the lease
+//! ticker so they are not renewed.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -257,6 +259,20 @@ fn scope_wake_should_recreate(stored_contract: &str, desired_contract: &str) -> 
 #[must_use]
 pub fn reconcile_should_invalidate(stored: &str, desired: &str) -> bool {
     image_build_refresh_needed(stored, desired)
+}
+
+/// Acquire guard: slot may be leased only when lifecycle is not `invalid` and applied build
+/// is not behind desired (same rule as version switch). Author: kejiqing
+#[must_use]
+pub fn acquire_slot_usable(
+    lifecycle: &str,
+    stored_contract: &str,
+    desired_contract: &str,
+) -> bool {
+    if lifecycle == "invalid" {
+        return false;
+    }
+    !reconcile_should_invalidate(stored_contract, desired_contract)
 }
 
 /// A persisted singleton worker's availability for acquire + warm accounting.
@@ -525,8 +541,9 @@ impl E2bProjWorkerRegistry {
         load_desired_worker_pool_size(db.as_ref(), proj_id).await
     }
 
-    /// Version switch (release-driven): mark workers on an older buildId `invalid`.
+    /// Version switch: mark workers on an older buildId `invalid`.
     ///
+    /// Invoked on startup, each warm tick, and acquire entry — not gated on publish completion.
     /// - Never kills (in-flight requests keep running); never creates a replacement (warm does).
     /// - Atomic: desired buildId is read once per project and all stale workers are marked in
     ///   the same pass — warm only ever reads the new buildId after this returns.
@@ -581,6 +598,9 @@ impl E2bProjWorkerRegistry {
             .map_err(|e| format!("invalidate slot {}: {e}", row.slot_index))?;
             let key = scope_slot_key(proj_id, &row.scope_key, e2b_worker_slot_u32(row.slot_index));
             self.workers.lock().await.remove(&key);
+            // Stop lease ticker so invalid sandboxes are not renewed. Author: kejiqing
+            self.client
+                .unregister_tracked_sandbox(&row.sandbox_id);
             audit_rotation(
                 db.as_ref(),
                 WorkerRotationEvent {
@@ -1102,9 +1122,9 @@ impl E2bProjWorkerRegistry {
 
     /// Strict solve: pick a usable singleton slot (least lease) and acquire it.
     ///
-    /// Hot path: `pick_usable_singleton_slot` (cache) → `acquire_slot`; falls back to creating a
-    /// fresh slot when no warm worker exists. Full-pool reconcile is version-switch (startup) and
-    /// Admin poolSize change; warm keeps the pool full on the ticker. Author: kejiqing
+    /// Hot path: version-switch invalidate → `pick_usable_singleton_slot` (cache) →
+    /// `acquire_slot`; falls back to creating a fresh slot when no warm worker exists.
+    /// Author: kejiqing
     pub async fn acquire_for_solve(
         &self,
         proj_id: i64,
@@ -1121,6 +1141,8 @@ impl E2bProjWorkerRegistry {
                     .into(),
             );
         }
+        // PG desired build may advance without restart/publish — mark stale before pick.
+        self.invalidate_stale_build_for_proj(proj_id).await?;
         // Pick a usable (running non-invalid) slot from cache; fall back to creating a fresh
         // slot (warm keeps the pool full — this is only a solve-time safety net). Author: kejiqing
         let slot_index = match self.pick_usable_singleton_slot(proj_id).await? {
@@ -1144,6 +1166,8 @@ impl E2bProjWorkerRegistry {
             return Err("scope_key must be non-empty for scope solve".into());
         }
         let db = self.session_db().await?;
+        // PG desired build may advance without restart/publish — mark stale before lease.
+        self.invalidate_stale_build_for_proj(proj_id).await?;
         let key = scope_slot_key(proj_id, scope_key, 0);
 
         // Cache hit: verify running / resume if paused; dead → drop and fall through to create.
@@ -1604,18 +1628,54 @@ impl E2bProjWorkerRegistry {
         slot_index: u32,
     ) -> Result<(E2bSandboxHandle, String), String> {
         let key = singleton_slot_key(proj_id, slot_index);
-        let warm_hit = {
+        let warm_sandbox_id = {
             let guard = self.workers.lock().await;
-            if let Some(rt) = guard.get(&key) {
-                let sandbox_id = rt.handle.sandbox_id.clone();
-                drop(guard);
-                self.ensure_warm_worker_running(proj_id, slot_index, &sandbox_id)
-                    .await?;
-                true
-            } else {
-                false
-            }
+            guard.get(&key).map(|rt| rt.handle.sandbox_id.clone())
         };
+        let mut warm_hit = false;
+        if let Some(ref sandbox_id) = warm_sandbox_id {
+            self.ensure_warm_worker_running(proj_id, slot_index, sandbox_id)
+                .await?;
+            // Defense: refuse invalid / build-behind even if still in cache. Author: kejiqing
+            let desired = self.desired_contract_for_proj(proj_id).await?;
+            let db = self.session_db().await?;
+            let row = db
+                .get_project_e2b_worker(proj_id, e2b_worker_slot_i32(slot_index))
+                .await
+                .map_err(|e| format!("get project_e2b_worker for acquire guard: {e}"))?;
+            let usable = match &row {
+                Some(r) => {
+                    acquire_slot_usable(&r.lifecycle_state, &r.template_id, &desired)
+                }
+                // get_* filters out invalid — treat missing as unusable for this warm hit.
+                None => false,
+            };
+            if usable {
+                warm_hit = true;
+            } else {
+                if let Some(r) = &row {
+                    let _ = db
+                        .invalidate_project_e2b_worker_slot_scoped(
+                            proj_id,
+                            "",
+                            e2b_worker_slot_i32(slot_index),
+                            "acquire_guard",
+                        )
+                        .await;
+                    self.client.unregister_tracked_sandbox(&r.sandbox_id);
+                } else {
+                    self.client.unregister_tracked_sandbox(sandbox_id);
+                }
+                self.workers.lock().await.remove(&key);
+                info!(
+                    target: "claw_e2b_proj_worker",
+                    proj_id,
+                    slot_index,
+                    sandbox_id = %sandbox_id,
+                    "acquire skipped unusable warm slot (invalid or stale build)"
+                );
+            }
+        }
         if warm_hit {
             let guard = self.workers.lock().await;
             let rt = guard.get(&key).ok_or_else(|| {
@@ -1768,10 +1828,9 @@ impl E2bProjWorkerRegistry {
             .collect()
     }
 
-    /// Warm ticker: keeps every non-scope project at `pool_size` usable (running+alive) singleton
-    /// workers — probes liveness, rebuilds dead, fills shortfall, and renews TTL. This is the
-    /// **single** owner of "who fills the pool when a worker dies / is invalidated". Never rotates
-    /// on buildId (version switch is reconcile's job). Author: kejiqing
+    /// Warm ticker: version-switch stale builds, then keep every non-scope project at
+    /// `pool_size` usable singleton workers (probe, rebuild dead, fill shortfall, renew TTL).
+    /// Author: kejiqing
     pub fn spawn_warm_ticker(self: Arc<Self>) {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(self.renew_interval_secs));
@@ -1789,8 +1848,16 @@ impl E2bProjWorkerRegistry {
         });
     }
 
-    /// One warm pass over all projects (best-effort, never fails the process). Author: kejiqing
+    /// One warm pass: mark stale builds invalid first (PG may advance without publish), then
+    /// fill pools. Best-effort; never fails the process. Author: kejiqing
     async fn warm_reconcile_once(&self) -> Result<(), String> {
+        if let Err(e) = self.reconcile_version_switch().await {
+            warn!(
+                target: "claw_e2b_proj_worker",
+                error = %e,
+                "warm tick version switch failed (best-effort)"
+            );
+        }
         let db = self.session_db().await?;
         let proj_ids = db
             .list_project_config_proj_ids()
@@ -2605,7 +2672,7 @@ mod tests {
 
     #[test]
     fn plan_warm_renews_usable_only() {
-        // W6: only running+alive get Renew; dead gets KillAndDelete; invalid-alive gets Leave.
+        // Constraint 3 / W6: invalid must not Renew (Leave); only running+alive renew.
         let (actions, shortfall) = plan_warm_actions(
             2,
             &[
@@ -2698,6 +2765,19 @@ mod tests {
     }
 
     #[test]
+    fn plan_reconcile_marks_stale_when_desired_build_advanced() {
+        // Constraint 1: PG desired build advanced with no publish callback / restart —
+        // decision layer alone must mark the old applied build. Author: kejiqing
+        let applied = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let desired_after_pg_write = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        let rows = vec![row_with(&applied, "running")];
+        assert_eq!(
+            plan_reconcile_invalidations(&desired_after_pg_write, &rows),
+            vec![0]
+        );
+    }
+
+    #[test]
     fn plan_reconcile_skips_already_invalid() {
         let desired = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
         let stale = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
@@ -2711,6 +2791,35 @@ mod tests {
         let legacy = worker_contract_key("tpl_a", None, "rev", "strict");
         let rows = vec![row_with(&legacy, "running")];
         assert_eq!(plan_reconcile_invalidations(&desired, &rows), vec![0]);
+    }
+
+    // ---- acquire guard (constraint 2: fly over invalid / stale build) ----
+
+    #[test]
+    fn acquire_slot_usable_false_when_lifecycle_invalid() {
+        let c = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        assert!(!acquire_slot_usable("invalid", &c, &c));
+    }
+
+    #[test]
+    fn acquire_slot_usable_false_when_build_stale_even_if_running() {
+        let stored = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let desired = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(!acquire_slot_usable("running", &stored, &desired));
+    }
+
+    #[test]
+    fn acquire_slot_usable_true_when_running_and_build_matches() {
+        let c = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(acquire_slot_usable("running", &c, &c));
+        assert!(acquire_slot_usable("sleeping", &c, &c));
+    }
+
+    #[test]
+    fn acquire_slot_usable_false_when_legacy_no_pin_and_desired_pinned() {
+        let legacy = worker_contract_key("tpl_a", None, "rev", "strict");
+        let desired = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(!acquire_slot_usable("running", &legacy, &desired));
     }
 
     #[test]
