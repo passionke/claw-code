@@ -193,11 +193,7 @@ pub(crate) async fn run_solve_request_docker(
     let seed_trace_id = runtime::trace_id_from_extra_session(extra_session_for_trace.as_ref())
         .unwrap_or_else(crate::trace_id::mint_request_trace_id);
     let otel_parent = parent_context_for_inbound(inbound_traceparent.as_deref(), &seed_trace_id);
-    let otel_guard = OtelSpanGuard::start(
-        "claw-gateway-rs",
-        "gateway.solve",
-        otel_parent.as_ref(),
-    );
+    let otel_guard = OtelSpanGuard::start("claw-gateway-rs", "gateway.solve", otel_parent.as_ref());
     if let Some(ref g) = otel_guard {
         set_langfuse_trace_attrs_on_context(g.context(), &session_id, &turn_id, &request_id);
         g.set_attribute("langfuse.trace.name", "gateway.solve");
