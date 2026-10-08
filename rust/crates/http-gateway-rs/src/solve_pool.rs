@@ -6,7 +6,10 @@ use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use gateway_solve_turn::{otel_forward_env, GatewaySolveTaskFile};
-use telemetry::{inject_traceparent, set_langfuse_trace_attrs_on_context, OtelSpanGuard};
+use telemetry::{
+    inject_traceparent, parent_context_for_inbound, set_langfuse_trace_attrs_on_context,
+    OtelSpanGuard,
+};
 use tokio::fs;
 use tokio::time::{timeout, Duration as TokioDuration};
 use tracing::{info, warn};
@@ -117,6 +120,7 @@ pub(crate) async fn run_solve_request_docker(
         turn_id,
         skip_session_db: _,
         client_origin: _,
+        inbound_traceparent,
     } = ctx;
     let timeout_seconds = req
         .timeout_seconds
@@ -180,10 +184,20 @@ pub(crate) async fn run_solve_request_docker(
         .clone()
         .or_else(|| task_id.clone())
         .unwrap_or_else(|| request_id.clone());
-    let otel_guard = OtelSpanGuard::start("claw-gateway-rs", "gateway.solve", None);
+    // Align OTEL root with request trace_id / inbound traceparent (KEY→SW). Author: kejiqing
+    let mut extra_session_for_trace = req.extra_session.clone();
+    if runtime::trace_id_from_extra_session(extra_session_for_trace.as_ref()).is_none() {
+        let tid = crate::trace_id::mint_request_trace_id();
+        crate::trace_id::ensure_extra_session_trace_id(&mut extra_session_for_trace, &tid);
+    }
+    let seed_trace_id = runtime::trace_id_from_extra_session(extra_session_for_trace.as_ref())
+        .unwrap_or_else(crate::trace_id::mint_request_trace_id);
+    let otel_parent = parent_context_for_inbound(inbound_traceparent.as_deref(), &seed_trace_id);
+    let otel_guard = OtelSpanGuard::start("claw-gateway-rs", "gateway.solve", otel_parent.as_ref());
     if let Some(ref g) = otel_guard {
         set_langfuse_trace_attrs_on_context(g.context(), &session_id, &turn_id, &request_id);
         g.set_attribute("langfuse.trace.name", "gateway.solve");
+        g.set_attribute("trace_id", seed_trace_id.clone());
     }
     let otel_traceparent = otel_guard
         .as_ref()
@@ -296,11 +310,7 @@ pub(crate) async fn run_solve_request_docker(
     if inbox_enabled {
         gateway_solve_turn::ensure_inbox_reply_in_allowed_tools(&mut effective_allowed_tools);
     }
-    let mut extra_session = req.extra_session.clone();
-    if runtime::trace_id_from_extra_session(extra_session.as_ref()).is_none() {
-        let tid = crate::trace_id::mint_request_trace_id();
-        crate::trace_id::ensure_extra_session_trace_id(&mut extra_session, &tid);
-    }
+    let extra_session = extra_session_for_trace;
     let mut task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),

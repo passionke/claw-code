@@ -22,6 +22,17 @@ Optional overrides (Collector / advanced):
 - `OTEL_EXPORTER_OTLP_ENDPOINT`
 - `OTEL_EXPORTER_OTLP_HEADERS`
 
+## 550w / SkyWalking OAP
+
+柜内 NeuroGate（如 `10.22.28.240`）接入 SkyWalking：设 `OTEL_EXPORTER_OTLP_ENDPOINT` 指向 OAP REST（与 KEY 同址，当前 `http://10.22.28.239:12800`），**不要**同时配 `LANGFUSE_*`（单出口，避免双写）。
+
+```bash
+CLAW_OTEL_ENABLED=1
+OTEL_EXPORTER_OTLP_ENDPOINT=http://10.22.28.239:12800
+```
+
+`gateway.solve` 优先用入站 W3C `traceparent`（KEY 出站），否则用请求 `trace_id`（`X-Trace-Id` / `extra_session.trace_id`）播种同一条 OTEL 树。改 `.env` 后 `gateway.sh up`（镜像含播种逻辑后才生效）。
+
 ## Process roles
 
 | Process | `OTEL_SERVICE_NAME` | Spans |
@@ -36,7 +47,7 @@ Distributed trace: gateway writes W3C `traceparent` into the solve task file and
 
 ## Worker env forwarding
 
-[`WORKER_ENV_KEYS`](rust/crates/gateway-solve-turn/src/worker_env.rs) includes `CLAW_OTEL_*` and `LANGFUSE_*`. e2b worker exec merges [`otel_forward_env()`](rust/crates/gateway-solve-turn/src/worker_env.rs) into guest environment. After changing `.env`, run `gateway.sh up`.
+[`WORKER_ENV_KEYS`](rust/crates/gateway-solve-turn/src/worker_env.rs) includes `CLAW_OTEL_*`、`LANGFUSE_*`，以及 SkyWalking 覆盖用的 `OTEL_EXPORTER_OTLP_*` / `OTEL_SERVICE_NAME`。e2b worker exec merges [`otel_forward_env()`](rust/crates/gateway-solve-turn/src/worker_env.rs) into guest environment. After changing `.env`, run `gateway.sh up`。
 
 ## Langfuse requirements
 

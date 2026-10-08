@@ -106,6 +106,7 @@ pub(crate) async fn admin_mcp_run_solve_sync(
             turn_id: new_turn_id.clone(),
             skip_session_db: false,
             client_origin,
+            inbound_traceparent: None,
         },
     )
     .await;
@@ -134,6 +135,7 @@ pub(crate) async fn admin_mcp_run_solve_async(
         req,
         "/v1/admin/mcp",
         client_origin,
+        None,
     )
     .await
 }

@@ -435,6 +435,7 @@ pub(crate) async fn responses(
             solve_req,
             "/v1/responses",
             Some(origin),
+            crate::trace_id::traceparent_from_headers(&headers).map(str::to_string),
         )
         .await
         {

@@ -28,6 +28,8 @@ pub(crate) struct RunSolveContext {
     pub(crate) skip_session_db: bool,
     /// Who enqueued this turn (`gateway-admin`, external app, …). Author: kejiqing
     pub(crate) client_origin: Option<String>,
+    /// Inbound W3C `traceparent` (KEY → gateway); seeds OTEL root. Author: kejiqing
+    pub(crate) inbound_traceparent: Option<String>,
 }
 
 #[allow(clippy::struct_field_names)]

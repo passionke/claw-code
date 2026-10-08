@@ -8,7 +8,9 @@ use std::sync::{Mutex, OnceLock};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use opentelemetry::global;
 use opentelemetry::propagation::{Extractor, Injector};
-use opentelemetry::trace::{TraceContextExt, Tracer};
+use opentelemetry::trace::{
+    SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState, Tracer,
+};
 use opentelemetry::{Context, KeyValue};
 
 pub use opentelemetry::ContextGuard as OtelContextGuard;
@@ -254,6 +256,74 @@ pub fn context_from_env_traceparent() -> Context {
         .map_or_else(Context::current, |tp| context_from_traceparent(&tp))
 }
 
+/// Normalize to W3C 32-lowercase-hex trace id; reject empty / wrong length. Author: kejiqing
+fn normalize_w3c_trace_id(raw: &str) -> Option<String> {
+    let s = raw.trim().to_ascii_lowercase();
+    if s.len() != 32 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    if s.chars().all(|c| c == '0') {
+        return None;
+    }
+    Some(s)
+}
+
+/// Remote parent context pinned to `trace_id` (synthetic span id). Author: kejiqing
+#[must_use]
+pub fn context_from_trace_id(trace_id: &str) -> Option<Context> {
+    let tid_hex = normalize_w3c_trace_id(trace_id)?;
+    let tid = TraceId::from_hex(&tid_hex).ok()?;
+    // Non-zero synthetic remote parent so SpanContext is valid. Author: kejiqing
+    let sid = SpanId::from_hex("0100000000000001").ok()?;
+    let sc = SpanContext::new(tid, sid, TraceFlags::SAMPLED, true, TraceState::NONE);
+    if !sc.is_valid() {
+        return None;
+    }
+    Some(Context::new().with_remote_span_context(sc))
+}
+
+/// Parse W3C `traceparent` without global propagator (pre-init safe). Author: kejiqing
+fn context_from_w3c_traceparent_raw(tp: &str) -> Option<Context> {
+    let parts: Vec<&str> = tp.trim().split('-').collect();
+    if parts.len() < 4 || parts[0] != "00" {
+        return None;
+    }
+    let tid_hex = normalize_w3c_trace_id(parts[1])?;
+    let sid = parts[2].trim().to_ascii_lowercase();
+    if sid.len() != 16
+        || !sid.chars().all(|c| c.is_ascii_hexdigit())
+        || sid.chars().all(|c| c == '0')
+    {
+        return None;
+    }
+    let tid = TraceId::from_hex(&tid_hex).ok()?;
+    let span_id = SpanId::from_hex(&sid).ok()?;
+    let flags = if parts[3].trim().ends_with('1') {
+        TraceFlags::SAMPLED
+    } else {
+        TraceFlags::default()
+    };
+    let sc = SpanContext::new(tid, span_id, flags, true, TraceState::NONE);
+    if !sc.is_valid() {
+        return None;
+    }
+    Some(Context::new().with_remote_span_context(sc))
+}
+
+/// Prefer inbound W3C `traceparent`; else seed from request `trace_id`. Author: kejiqing
+#[must_use]
+pub fn parent_context_for_inbound(
+    inbound_traceparent: Option<&str>,
+    trace_id: &str,
+) -> Option<Context> {
+    if let Some(tp) = inbound_traceparent.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(cx) = context_from_w3c_traceparent_raw(tp) {
+            return Some(cx);
+        }
+    }
+    context_from_trace_id(trace_id)
+}
+
 /// Repeat Langfuse trace-level attrs on the active span in `cx`.
 pub fn set_langfuse_trace_attrs_on_context(
     cx: &Context,
@@ -368,6 +438,27 @@ mod tests {
         let (endpoint, headers) = resolve_langfuse_otlp_config().expect("config");
         assert_eq!(endpoint, "http://10.22.28.94:8090/api/public/otel");
         assert!(headers.get("Authorization").unwrap().starts_with("Basic "));
+    }
+
+    #[test]
+    fn context_from_trace_id_pins_w3c_id() {
+        let tid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let cx = context_from_trace_id(tid).expect("context");
+        assert_eq!(format!("{:032x}", cx.span().span_context().trace_id()), tid);
+        assert!(cx.span().span_context().is_remote());
+    }
+
+    #[test]
+    fn parent_context_prefers_valid_traceparent() {
+        let tid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let parent_span = "cccccccccccccccc";
+        let tp = format!("00-{tid}-{parent_span}-01");
+        let cx = parent_context_for_inbound(Some(&tp), "dddddddddddddddddddddddddddddddd")
+            .expect("context");
+        let span = cx.span();
+        let sc = span.span_context();
+        assert_eq!(format!("{:032x}", sc.trace_id()), tid);
+        assert_eq!(format!("{:016x}", sc.span_id()), parent_span);
     }
 
     struct EnvGuard {
