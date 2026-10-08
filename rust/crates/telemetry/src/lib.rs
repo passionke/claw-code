@@ -1,13 +1,13 @@
-//! Claw telemetry: JSONL sinks + optional OTEL/Langfuse export. Author: kejiqing
+//! Claw telemetry: JSONL sinks + optional OTEL/OTLP export. Author: kejiqing
 
 pub mod otel;
 
 pub use opentelemetry::Context;
 pub use otel::{
-    context_from_env_traceparent, context_from_trace_id, context_from_traceparent,
+    context_from_env_traceparent, context_from_trace_id, context_from_traceparent, emit_child_span,
     init_otel_from_env, inject_traceparent, log_prompts_enabled, otel_enabled,
-    parent_context_for_inbound, resolve_langfuse_otlp_config, set_langfuse_trace_attrs_on_context,
-    shutdown_otel, start_span_with_parent, tracer, OtelContextGuard, OtelSpanGuard,
+    parent_context_for_inbound, resolve_otlp_config, set_trace_attrs_on_context, shutdown_otel,
+    start_span_with_parent, tracer, OtelContextGuard, OtelSpanGuard,
 };
 
 use std::fmt::{Debug, Formatter};

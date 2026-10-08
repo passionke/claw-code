@@ -49,7 +49,7 @@ const RESERVED_PREFIXES: &[&str] = &[
     "INTERNAL_CLAUDE_",
     "XAI_",
     "OPENROUTER_",
-    "LANGFUSE_",
+    "OTEL_",
 ];
 
 fn is_reserved_key(key: &str) -> bool {

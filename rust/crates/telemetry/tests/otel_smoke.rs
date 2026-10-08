@@ -1,8 +1,8 @@
-//! Manual smoke: distributed trace export to Langfuse. Author: kejiqing
+//! Manual smoke: distributed trace export to OTLP (e.g. SkyWalking). Author: kejiqing
 //!
 //! Run from repo root:
 //!   set -a && source .env && set +a
-//!   cargo test -p telemetry --test langfuse_otel_smoke -- --ignored --nocapture
+//!   cargo test -p telemetry --test otel_smoke -- --ignored --nocapture
 
 use std::time::Duration;
 
@@ -31,11 +31,11 @@ fn load_repo_dotenv() {
 }
 
 #[tokio::test]
-#[ignore = "requires LANGFUSE_* in .env and reachable Langfuse OTLP endpoint"]
+#[ignore = "requires OTEL_EXPORTER_OTLP_ENDPOINT in .env and reachable OTLP collector"]
 async fn export_distributed_solve_trace_chain() {
     load_repo_dotenv();
     if !otel_enabled() {
-        eprintln!("skip: CLAW_OTEL_ENABLED or LANGFUSE_* not configured");
+        eprintln!("skip: CLAW_OTEL_ENABLED or OTEL_EXPORTER_OTLP_ENDPOINT not configured");
         return;
     }
 
@@ -66,11 +66,11 @@ async fn export_distributed_solve_trace_chain() {
         Some(&worker_parent),
     )
     .expect("worker span");
-    worker.set_langfuse_trace_attrs("smoke-session", "smoke-turn", "smoke-request");
+    worker.set_trace_attrs("smoke-session", "smoke-turn", "smoke-request");
     let _worker_enter = worker.enter();
 
     let llm = OtelSpanGuard::start("api", "llm.chat", Some(worker.context())).expect("llm span");
-    llm.set_attribute("gen_ai.system", "anthropic");
+    llm.set_attribute("gen_ai.system", "openai");
     llm.set_attribute("gen_ai.request.model", "smoke-model");
     llm.set_ok();
 

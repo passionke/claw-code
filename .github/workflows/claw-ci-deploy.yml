@@ -99,11 +99,11 @@ jobs:
           CLAW_BOOTSTRAP_LLM_MODEL_NAME: ${{ vars.CLAW_BOOTSTRAP_LLM_MODEL_NAME }}
           CLAW_BOOTSTRAP_LLM_NAME: ${{ vars.CLAW_BOOTSTRAP_LLM_NAME }}
           CLAW_BOOTSTRAP_LLM_FORCE: "1"
-          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
-          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
-          LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
           CLAW_OTEL_ENABLED: ${{ vars.CLAW_OTEL_ENABLED }}
           CLAW_OTEL_LOG_PROMPTS: ${{ vars.CLAW_OTEL_LOG_PROMPTS }}
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+          OTEL_SERVICE_NAME: ${{ vars.OTEL_SERVICE_NAME }}
         run: ./deploy/stack/lib/render-env-from-ci.sh
 
       - name: Up release stack

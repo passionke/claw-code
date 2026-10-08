@@ -105,6 +105,7 @@ impl SolveTimingRecorder {
             .map_err(|e| format!("open timing file: {e}"))?;
         writeln!(file, "{line}").map_err(|e| format!("append timing: {e}"))?;
         trim_ndjson_file(&self.path)?;
+        maybe_emit_timing_otel(&event);
         Ok(())
     }
 
@@ -302,9 +303,82 @@ fn bool_attr(attrs: &Map<String, Value>, key: &str) -> Option<bool> {
     attrs.get(key).and_then(Value::as_bool)
 }
 
+/// In-loop `tool_execution_*` / `llm_stream_*` already have dedicated OTEL spans; skip dual-write.
+/// Loop-outside tools (`source=preflight|fanout`) still dual-write. Author: kejiqing
+#[must_use]
+pub fn timing_kind_skips_otel_dual_write(kind: &str, source: Option<&str>) -> bool {
+    if kind.starts_with("llm_stream_") {
+        return true;
+    }
+    if kind.starts_with("tool_execution_") {
+        return !matches!(source, Some("preflight") | Some("fanout"));
+    }
+    false
+}
+
+fn maybe_emit_timing_otel(event: &SolveTimingEvent) {
+    if timing_kind_skips_otel_dual_write(event.kind.as_str(), event.source.as_deref()) {
+        return;
+    }
+    let span_name = format!("timing.{}", event.kind);
+    let mut attrs: Vec<(&str, String)> = Vec::new();
+    if let Some(ref turn_id) = event.turn_id {
+        attrs.push(("turn_id", turn_id.clone()));
+    }
+    if let Some(iteration) = event.iteration {
+        attrs.push(("iteration", iteration.to_string()));
+    }
+    if let Some(duration_ms) = event.duration_ms {
+        attrs.push(("duration_ms", duration_ms.to_string()));
+    }
+    if let Some(ref tool_name) = event.tool_name {
+        attrs.push(("tool_name", tool_name.clone()));
+    }
+    if let Some(ref tool_use_id) = event.tool_use_id {
+        attrs.push(("tool_use_id", tool_use_id.clone()));
+    }
+    if let Some(is_error) = event.is_error {
+        attrs.push(("is_error", is_error.to_string()));
+    }
+    if let Some(ref source) = event.source {
+        attrs.push(("source", source.clone()));
+    }
+    if let Some(input_size) = event.input_size {
+        attrs.push(("input_size", input_size.to_string()));
+    }
+    if let Some(output_size) = event.output_size {
+        attrs.push(("output_size", output_size.to_string()));
+    }
+    telemetry::emit_child_span(&span_name, &attrs);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skip_list_in_loop_tools_and_llm_stream() {
+        assert!(timing_kind_skips_otel_dual_write("tool_execution_finished", None));
+        assert!(timing_kind_skips_otel_dual_write(
+            "tool_execution_started",
+            None
+        ));
+        assert!(!timing_kind_skips_otel_dual_write(
+            "tool_execution_finished",
+            Some("preflight")
+        ));
+        assert!(!timing_kind_skips_otel_dual_write(
+            "tool_execution_finished",
+            Some("fanout")
+        ));
+        assert!(timing_kind_skips_otel_dual_write("llm_stream_started", None));
+        assert!(timing_kind_skips_otel_dual_write("llm_stream_finished", None));
+        assert!(!timing_kind_skips_otel_dual_write("turn_started", None));
+        assert!(!timing_kind_skips_otel_dual_write(
+            "bootstrap_mcp_ready",
+            Some("bootstrap")
+        ));
+    }
 
     #[test]
     fn append_and_read_timing_events() {

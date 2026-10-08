@@ -79,7 +79,7 @@ Author: kejiqing
 | [`mcp-arg-schema-pitfalls.md`](mcp-arg-schema-pitfalls.md) | MCP `inputSchema` 类型门禁与 object[] 避坑 |
 | [`preflight-spi-v1.md`](preflight-spi-v1.md) | Preflight 子进程 SPI v1 契约 |
 | [`claw-tap-cluster-identity.md`](claw-tap-cluster-identity.md) | clawTap `clusterHash` |
-| [`langfuse-otel.md`](langfuse-otel.md) | OTEL span 命名 |
+| [`otel.md`](otel.md) | OTEL / OTLP（SkyWalking）span 与 env |
 
 **Deploy 子文档：** `deploy/stack/docs/` — GitLab CI、集群验收（已按 e2b-only 更新引用）。
 

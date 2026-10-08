@@ -1275,7 +1275,13 @@ where
         );
         attributes.insert("input_size".to_string(), Value::from(input_size as u64));
         self.emit_turn_timing("tool_execution_started", attributes.clone());
-        crate::otel_tool::otel_tool_started(tool_use_id, tool_name);
+        crate::otel_tool::otel_tool_started(
+            tool_use_id,
+            tool_name,
+            iteration,
+            turn_id,
+            input_size,
+        );
 
         let Some(session_tracer) = &self.session_tracer else {
             return;
@@ -1334,7 +1340,7 @@ where
             "duration_ms".to_string(),
             Value::from(u64::try_from(duration_ms).unwrap_or(u64::MAX)),
         );
-        if *is_error {
+        let error_preview = if *is_error {
             let output_char_count = output.chars().count();
             let error_preview: String = output.chars().take(400).collect();
             attributes.insert(
@@ -1345,9 +1351,18 @@ where
                 "error_preview_truncated".to_string(),
                 Value::Bool(output_char_count > 400),
             );
-        }
+            Some(error_preview)
+        } else {
+            None
+        };
         self.emit_turn_timing("tool_execution_finished", attributes.clone());
-        crate::otel_tool::otel_tool_finished(tool_use_id, *is_error, duration_ms);
+        crate::otel_tool::otel_tool_finished(
+            tool_use_id,
+            *is_error,
+            duration_ms,
+            output.chars().count(),
+            error_preview.as_deref(),
+        );
 
         let Some(session_tracer) = &self.session_tracer else {
             return;
