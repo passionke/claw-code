@@ -45,8 +45,7 @@ impl LlmOtelGuard {
     /// Optional iteration attr when the caller has agent-loop context. Author: kejiqing
     #[allow(dead_code)]
     pub fn set_iteration(&self, iteration: u64) {
-        self.inner
-            .set_attribute("iteration", iteration.to_string());
+        self.inner.set_attribute("iteration", iteration.to_string());
     }
 
     pub fn push_completion_delta(&mut self, text: &str) {
