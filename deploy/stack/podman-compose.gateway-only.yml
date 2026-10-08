@@ -79,3 +79,10 @@ services:
       timeout: 5s
       retries: 6
       start_period: 5s
+
+# Same pin as podman-compose.yml — avoid office 172.19/16 collision. Author: kejiqing
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
