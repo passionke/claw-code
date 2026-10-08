@@ -1,4 +1,4 @@
-//! OpenTelemetry OTLP HTTP export (SkyWalking / any OTLP backend). Author: kejiqing
+//! OpenTelemetry OTLP HTTP export (`SkyWalking` / any OTLP backend). Author: kejiqing
 //!
 //! Reads `CLAW_OTEL_*` + `OTEL_EXPORTER_OTLP_*` from the environment; independent of `TelemetrySink` / JSONL.
 

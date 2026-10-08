@@ -185,6 +185,7 @@ impl OpenAiCompatClient {
         self
     }
 
+    #[allow(clippy::too_many_lines)] // OTEL guard paths mirror anthropic send_message. Author: kejiqing
     pub async fn send_message(
         &self,
         request: &MessageRequest,
@@ -524,6 +525,7 @@ impl Provider for OpenAiCompatClient {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)] // stream debug + otel finish flags. Author: kejiqing
 #[derive(Debug)]
 pub struct MessageStream {
     request_id: Option<String>,
