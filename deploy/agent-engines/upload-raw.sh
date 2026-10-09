@@ -48,6 +48,38 @@ if [[ -n "${RAW_USERNAME:-}" || -n "${RAW_PASSWORD:-}" ]]; then
   AUTH=(-u "${RAW_USERNAME}:${RAW_PASSWORD}")
 fi
 
-curl -fsS --retry 3 --retry-connrefused "${AUTH[@]}" -T "$TAR_PATH" "$URL"
+# Nora raw returns 409 when the object already exists. Same digest → idempotent OK.
+# Author: kejiqing
+BODY="$(mktemp)"
+HTTP_CODE="$(
+  curl -sS --retry 3 --retry-connrefused -o "$BODY" -w '%{http_code}' \
+    "${AUTH[@]}" -T "$TAR_PATH" "$URL" || true
+)"
+case "$HTTP_CODE" in
+  200 | 201 | 204) rm -f "$BODY" ;;
+  409)
+    rm -f "$BODY"
+    DL="$(mktemp)"
+    curl -fsS --retry 3 --retry-connrefused -o "$DL" "$URL"
+    if command -v sha256sum >/dev/null 2>&1; then
+      REMOTE="sha256:$(sha256sum "$DL" | awk '{print $1}')"
+    else
+      REMOTE="sha256:$(shasum -a 256 "$DL" | awk '{print $1}')"
+    fi
+    rm -f "$DL"
+    if [[ "$REMOTE" != "sha256:${SHA256}" ]]; then
+      echo "raw 409 but digest differs: local=sha256:${SHA256} remote=${REMOTE}" >&2
+      echo "bump ENGINE_VERSION to publish a new artifact" >&2
+      exit 1
+    fi
+    echo "raw already present with matching digest (409 idempotent)" >&2
+    ;;
+  *)
+    echo "raw upload failed HTTP ${HTTP_CODE}" >&2
+    cat "$BODY" >&2 || true
+    rm -f "$BODY"
+    exit 1
+    ;;
+esac
 printf 'ref=%s\n' "$URL"
 printf 'digest=sha256:%s\n' "$SHA256"
