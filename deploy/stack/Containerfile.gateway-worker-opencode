@@ -5,7 +5,8 @@ ARG NODE_BASE_IMAGE=docker.1ms.run/library/node:22-bookworm-slim
 
 FROM ${NODE_BASE_IMAGE} AS opencode-fetch
 ARG NPM_REGISTRY=https://registry.npmjs.org
-ARG TARGETARCH
+# Classic docker builder does not inject TARGETARCH; script must pass --build-arg. Author: kejiqing
+ARG TARGETARCH=amd64
 ARG OPENCODE_VERSION=1.18.34
 ARG OPENCODE_INTEGRITY_AMD64=sha512-RTAMjCve4euxP2QKLuvRmdoW5J5DQK1DiZqt+7slfixyjAEi79QC2Df2oYKogibaAI4IEU8uzenoJeEl3k+UEw==
 ARG OPENCODE_INTEGRITY_ARM64=sha512-ZSjqcH0MEbAzLEmkRC9Aop1PbWZxe2NuKONAE/x8MRQdjKdOepX7M50UpjbsNoiLMkP584Z98Mg4a42fJhouvA==
