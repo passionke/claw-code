@@ -104,9 +104,13 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   if [[ -n "${GATEWAY_PLAYGROUND_IMAGE:-}" ]]; then
     claw_release_pull_image_if_needed "${rt}" "${GATEWAY_PLAYGROUND_IMAGE}"
   fi
+  # e2b workers are templates, not host CLAW_DOCKER_IMAGE. Pull only if explicitly set.
+  # Author: kejiqing
   case "${CLAW_SOLVE_ISOLATION:-e2b}" in
     e2b)
-      claw_release_pull_image_if_needed "${rt}" "${CLAW_DOCKER_IMAGE}"
+      if [[ -n "${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-}}" ]]; then
+        claw_release_pull_image_if_needed "${rt}" "${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE}}"
+      fi
       ;;
   esac
   if [[ -n "${CLAW_RELAXED_PODMAN_IMAGE:-}" ]]; then
