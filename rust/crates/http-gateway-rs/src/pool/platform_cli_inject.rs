@@ -114,13 +114,7 @@ async fn inject_pin(
     let script = guest_registry_install_script(image, expected_paths)?;
     let env = registry_pull_env(&image)?;
     client
-        .exec_shell_script_stdout_with(
-            handle,
-            &script,
-            Some(&env),
-            Some("root"),
-            Some(900),
-        )
+        .exec_shell_script_stdout_with(handle, &script, Some(&env), Some("root"), Some(900))
         .await
         .map_err(|e| format!("guest registry install {image}: {e}"))?;
     Ok(())
@@ -201,11 +195,13 @@ fn read_docker_config_json() -> Option<String> {
             if p.as_os_str().is_empty() {
                 continue;
             }
-            paths.push(if p.file_name().and_then(|s| s.to_str()) == Some("config.json") {
-                p
-            } else {
-                p.join("config.json")
-            });
+            paths.push(
+                if p.file_name().and_then(|s| s.to_str()) == Some("config.json") {
+                    p
+                } else {
+                    p.join("config.json")
+                },
+            );
         }
     }
     paths.extend([
@@ -259,14 +255,15 @@ fn shell_single_quote(s: &str) -> String {
 }
 
 /// worker.init-style guest script: ensure python3, pull OCI tree, install paths. Author: kejiqing
-fn guest_registry_install_script(image_ref: &str, expected_paths: &[&str]) -> Result<String, String> {
+fn guest_registry_install_script(
+    image_ref: &str,
+    expected_paths: &[&str],
+) -> Result<String, String> {
     let extract_py = registry_extract_py_source()?;
     let image_q = shell_single_quote(image_ref);
     let mut checks = String::new();
     for p in expected_paths {
-        let rel = p
-            .trim_start_matches("/usr/local/")
-            .trim_start_matches('/');
+        let rel = p.trim_start_matches("/usr/local/").trim_start_matches('/');
         let rel_q = shell_single_quote(rel);
         let dest_q = shell_single_quote(p);
         checks.push_str(&format!(
