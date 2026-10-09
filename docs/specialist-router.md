@@ -23,7 +23,7 @@ Author: kejiqing
 |------|------|------|
 | **设计** | [`specialist-router-design.md`](specialist-router-design.md) | 架构边界、角色、路由原则、与 Master/Mesh 关系 |
 | **系分** | [`specialist-router-system-analysis.md`](specialist-router-system-analysis.md) | 表结构、API、tool 流程、物化、代码触点 |
-| **验收** | [`specialist-router-acceptance.md`](specialist-router-acceptance.md) | 六场景 + sid/参数/SSE 断言 |
+| **验收** | [`specialist-router-acceptance.md`](specialist-router-acceptance.md) | 场景 1–9 + sid/参数/SSE 断言 |
 
 ## 维护约定
 
@@ -31,8 +31,8 @@ Author: kejiqing
 2. **Mind 上评审结论** → 回合写入本地（Mind 不作 git 真源）。
 3. 每篇文首 **变更记录** 表追加一行（日期 / 作者 / 摘要）。
 4. 相关但不在本专题内的契约：
-   - [`live-report-contract.md`](live-report-contract.md) — SSE / passthrough
-   - [`project-config-model.md`](project-config-model.md) — project_role / Master
+   - [`live-report-contract.md`](live-report-contract.md) — SSE / passthrough / `biz.delegate.*` / bodyRelay
+   - [`project-config-model.md`](project-config-model.md) — project_role / router_json
    - [`gpos-intent-routing-regress.md`](gpos-intent-routing-regress.md) — 意图回归
    - [`gpos-assistant-prompt-content.md`](gpos-assistant-prompt-content.md) — 三路意图迁移源
 
@@ -40,4 +40,5 @@ Author: kejiqing
 
 | 日期 | 版本 | 说明 |
 |------|------|------|
+| 2026-10-09 | kejiqing | v1.5 router 嵌套 hub；防环；bodyRelay；biz.delegate SSE |
 | 2026-08-14 | kejiqing | v1.2 本机验收 runbook；Mind 迁入 NeruoGate 子目录 |

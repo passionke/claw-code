@@ -311,52 +311,6 @@ pub async fn seed_router_project(db: &GatewaySessionDb, proj_id: i64) -> Result<
     Ok(())
 }
 
-/// Enable nested delegate on ops specialist (scenario 7). Author: kejiqing
-pub async fn enable_ops_delegate_tool(db: &GatewaySessionDb, proj_id: i64) -> Result<(), String> {
-    let mut row = db
-        .get_project_config(proj_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("project {proj_id} not found"))?;
-    let mut allowed: Vec<String> =
-        serde_json::from_value(row.allowed_tools_json.clone()).unwrap_or_default();
-    if !allowed.iter().any(|t| t == "delegate_project_tool") {
-        allowed.push("delegate_project_tool".to_string());
-    }
-    row.allowed_tools_json = json!(allowed);
-    let now = now_ms_for_registry();
-    let content_rev = project_config_draft::format_formal_content_rev_local_ms(now);
-    db.upsert_project_config(ProjectConfigUpsert {
-        proj_id,
-        content_rev: &content_rev,
-        stable_content_rev: row.stable_content_rev.as_deref(),
-        draft_open: row.draft_open,
-        updated_at_ms: now,
-        rules_json: &row.rules_json,
-        mcp_servers_json: &row.mcp_servers_json,
-        skills_sources_json: &row.skills_sources_json,
-        skills_json: &row.skills_json,
-        allowed_tools_json: &row.allowed_tools_json,
-        claude_md: row.claude_md.as_deref(),
-        git_sync_json: &row.git_sync_json,
-        solve_preflight_json: &row.solve_preflight_json,
-        solve_orchestration_json: &row.solve_orchestration_json,
-        language_pipeline_json: &row.language_pipeline_json,
-        extra_session_fields_json: &row.extra_session_fields_json,
-        prompt_limits_json: &row.prompt_limits_json,
-        worker_profile_json: &row.worker_profile_json,
-        worker_env_json: &row.worker_env_json,
-        kb_sources_json: &row.kb_sources_json,
-        project_code: &row.project_code,
-        project_description: &row.project_description,
-        max_iterations: row.max_iterations,
-        thinking_enabled: row.thinking_enabled,
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 /// Shared bearer for master MCP (worker → gateway). Author: kejiqing
 #[must_use]
 pub fn master_mcp_shared_token() -> Option<String> {

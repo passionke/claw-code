@@ -18,9 +18,16 @@ pub(crate) async fn get_delegate_targets(
         .list_delegate_targets(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
+    let router_json = state
+        .session_db
+        .get_router_json(proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let body_relay = crate::delegate_router::body_relay_from_router_json(&router_json).to_string();
     Ok(Json(crate::delegate_router::DelegateTargetsResponse {
         initiator_proj_id: proj_id,
         targets,
+        body_relay,
     }))
 }
 
@@ -39,6 +46,8 @@ pub(crate) async fn put_delegate_targets(
     Json(req): Json<crate::delegate_router::PutDelegateTargetsRequest>,
 ) -> Result<Json<crate::delegate_router::DelegateTargetsResponse>, ApiError> {
     ensure_delegate_initiator(&state, initiator_proj_id).await?;
+    let body_relay = crate::delegate_router::parse_body_relay(Some(req.body_relay.as_str()))
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     for spec in &req.targets {
         if spec.target_proj_id == initiator_proj_id {
             return Err(ApiError::new(
@@ -55,7 +64,7 @@ pub(crate) async fn put_delegate_targets(
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
                 format!(
-                    "target {} must be project_role=normal|knowledge_base (got {role})",
+                    "target {} must be project_role=normal|knowledge_base|router (got {role})",
                     spec.target_proj_id
                 ),
             ));
@@ -76,6 +85,12 @@ pub(crate) async fn put_delegate_targets(
         .session_db
         .replace_delegate_targets(initiator_proj_id, &req.targets)
         .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let router_json = serde_json::json!({ "bodyRelay": body_relay });
+    state
+        .session_db
+        .set_router_json(initiator_proj_id, &router_json)
+        .await
         .map_err(|e| session_db_err(&e))?;
     let targets = state
         .session_db
@@ -85,6 +100,7 @@ pub(crate) async fn put_delegate_targets(
     Ok(Json(crate::delegate_router::DelegateTargetsResponse {
         initiator_proj_id,
         targets,
+        body_relay: body_relay.to_string(),
     }))
 }
 
@@ -114,6 +130,18 @@ pub(crate) async fn resolve_delegate_session(
         .assert_delegate_target_allowed(initiator_proj_id, req.delegate_proj_id)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let label = state
+        .session_db
+        .get_delegate_target(initiator_proj_id, req.delegate_proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .and_then(|t| t.label);
+    let router_json = state
+        .session_db
+        .get_router_json(initiator_proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let body_relay = crate::delegate_router::body_relay_from_router_json(&router_json).to_string();
     let (delegate_session_id, root_session_id, created) = state
         .session_db
         .resolve_or_create_delegate_session(
@@ -129,6 +157,8 @@ pub(crate) async fn resolve_delegate_session(
             delegate_session_id,
             root_session_id,
             created,
+            body_relay,
+            label,
         },
     ))
 }
@@ -139,10 +169,10 @@ async fn ensure_delegate_initiator(state: &AppState, proj_id: i64) -> Result<(),
         .get_project_role(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
-    if role != master_observer::PROJECT_ROLE_ROUTER && role != master_observer::PROJECT_ROLE_NORMAL {
+    if role != master_observer::PROJECT_ROLE_ROUTER {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            format!("project {proj_id} cannot initiate delegate (role={role})"),
+            format!("project {proj_id} cannot initiate delegate (role={role}; only router)"),
         ));
     }
     Ok(())

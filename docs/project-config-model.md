@@ -250,13 +250,13 @@ Admin：Rules / Skills / MCP / **CLAUDE.md** 编辑页折叠面板「条目历�
 **职责**：BFF / 用户 **只** 打 router 的 `projId`；router 本地路由（CLAUDE + `specialist-registry` skill）后通过 **`delegate_project_tool`** tool 串行委托 specialist。
 
 **配对**：`PUT /v1/projects/{routerProjId}/delegate-targets` body
-`{ "targets": [{ "targetProjId", "enabled?", "label?", "capabilityHint?" }] }`（**独立表** `gateway_delegate_target`，**不**共用 `project_master_link`）。
+`{ "bodyRelay": "passthrough"|"progress", "targets": [{ "targetProjId", "enabled?", "label?", "capabilityHint?" }] }`（`project_relation` / `router_delegate` + `project_config.router_json`，**不**共用 `project_master_link`）。
 
-**Session**：用户 `sessionId` 只对 router；每次 `delegate_project_tool` 查 `gateway_delegate_session_link` 换算 delegate sid（模型不传 `sessionId`）。
+**Session**：用户 `sessionId` 对入口 router；每次 `delegate_project_tool` 查 `gateway_delegate_session_link` 换算 delegate sid（模型不传 `sessionId`）。
 
-**物化**：`role=router` activate 时注入 `delegate_project_tool` allowed tool，并从 `gateway_delegate_target` 生成 **specialist-registry 附录**（projId + label + capabilityHint）。Admin 增删 target 后 **重 activate router**。
+**物化**：`role=router` activate 时注入 `delegate_project_tool` / `complete_router_turn`，并从 delegate-targets 生成 **specialist-registry 附录**。Admin 增删 target 后 **重 activate router**。
 
-**嵌套 delegate（场景 7）**：ops 等 specialist 可单独开 `delegate_project_tool` + 自有 `delegate-targets`；kb **不开**。
+**嵌套**：仅 **router→router→…→specialist**；`normal` / `knowledge_base` **不能**发起委托。委托图无环。`bodyRelay=progress` 时本层 SSE 不抄子正文，只发 `biz.delegate.*` + 引用桩。
 
 文档：[`docs/specialist-router.md`](specialist-router.md)。
 

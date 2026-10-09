@@ -72,6 +72,8 @@ export default function ProjectPage() {
   const [delegateTargets, setDelegateTargets] = useState<
     { key: string; targetProjId: number | null; enabled: boolean; label: string; capabilityHint: string }[]
   >([]);
+  /** true = passthrough (bubble body); false = progress. Author: kejiqing */
+  const [bodyRelayPassthrough, setBodyRelayPassthrough] = useState(true);
   const [savingDelegateTargets, setSavingDelegateTargets] = useState(false);
   /** Draft rows for apprentice pairing (gatewayBase empty = this gateway). Author: kejiqing */
   const [apprenticeDrafts, setApprenticeDrafts] = useState<
@@ -143,12 +145,11 @@ export default function ProjectPage() {
   const showRolePage = loc.pathname.startsWith("/project-role");
   const showConfigPage = !showRolePage;
   const delegateTargetOptions = projects
-    .filter(
-      (p) =>
-        p.projId !== projId &&
-        ((p.projectRole || "normal") === "normal" ||
-          (p.projectRole || "normal") === "knowledge_base")
-    )
+    .filter((p) => {
+      if (p.projId === projId) return false;
+      const role = p.projectRole || "normal";
+      return role === "normal" || role === "knowledge_base" || role === "router";
+    })
     .map((p) => ({
       value: p.projId,
       label: `${p.projId} · ${p.projectCode || p.projectDescription || p.projectRole || "project"}`,
@@ -273,6 +274,7 @@ export default function ProjectPage() {
   const loadDelegateTargets = useCallback(async () => {
     if (projectRole !== "router") {
       setDelegateTargets([]);
+      setBodyRelayPassthrough(true);
       return;
     }
     try {
@@ -290,8 +292,10 @@ export default function ProjectPage() {
           capabilityHint: t.capabilityHint || "",
         }))
       );
+      setBodyRelayPassthrough((resp.bodyRelay || "passthrough") !== "progress");
     } catch {
       setDelegateTargets([]);
+      setBodyRelayPassthrough(true);
     }
   }, [gatewayBase, projId, projectRole]);
 
@@ -446,13 +450,14 @@ export default function ProjectPage() {
     }
     const allowedIds = new Set(delegateTargetOptions.map((o) => o.value));
     if (ids.some((id) => !allowedIds.has(id))) {
-      message.error("delegate target 必须选择现有 normal / knowledge_base 项目");
+      message.error("delegate target 必须选择现有 normal / knowledge_base / router 项目");
       return;
     }
     setSavingDelegateTargets(true);
     try {
       await proxyHttp(gatewayBase, "PUT", `/v1/projects/${projId}/delegate-targets`, {
         targets,
+        bodyRelay: bodyRelayPassthrough ? "passthrough" : "progress",
       });
       message.success("Router targets 已更新");
       await loadDelegateTargets();
@@ -815,10 +820,25 @@ export default function ProjectPage() {
       {showRolePage && projectRole === "router" && (
       <Card title="委托目标" size="small" style={{ marginBottom: 16 }}>
             <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-              Router delegate-targets 改为受控下拉选择，target 项目必须是现有
-              <Typography.Text code>project_role=normal</Typography.Text> 或
-              <Typography.Text code>project_role=knowledge_base</Typography.Text>。
+              Router 为纯 hub，可委托
+              <Typography.Text code>normal</Typography.Text> /
+              <Typography.Text code>knowledge_base</Typography.Text> /
+              <Typography.Text code>router</Typography.Text>
+              （嵌套）。委托图禁止环路。
             </Typography.Paragraph>
+            <Space style={{ marginBottom: 12 }} align="center">
+              <Switch
+                checked={bodyRelayPassthrough}
+                onChange={setBodyRelayPassthrough}
+              />
+              <Typography.Text>
+                子代理正文冒泡到本层
+                <Typography.Text type="secondary">
+                  {" "}
+                  （开=passthrough 流式抄正文；关=progress 只报工作态，点开再看下层）
+                </Typography.Text>
+              </Typography.Text>
+            </Space>
             <Table
               size="small"
               pagination={false}

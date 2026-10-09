@@ -2599,6 +2599,38 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    /// Router hub config (`bodyRelay` etc.). Author: kejiqing
+    pub async fn get_router_json(&self, proj_id: i64) -> Result<Value, SqlxError> {
+        let row: Option<Json<Value>> = sqlx::query_scalar(
+            "SELECT router_json FROM project_config WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|j| j.0).unwrap_or_else(|| json!({})))
+    }
+
+    pub async fn set_router_json(
+        &self,
+        proj_id: i64,
+        router_json: &Value,
+    ) -> Result<(), SqlxError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            r"UPDATE project_config
+               SET router_json = $3, updated_at_ms = $4
+               WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .bind(Json(router_json))
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Append one worker rotation audit event (history only; never updated/deleted). Author: kejiqing
     pub async fn insert_worker_rotation_event(
         &self,

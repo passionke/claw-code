@@ -16,6 +16,7 @@ Author: kejiqing
 | 2026-08-14 | kejiqing | v1.0 六场景 + 全局不变量 |
 | 2026-08-14 | kejiqing | v1.2 Mind 迁入 NeruoGate/Specialist Router 子目录；本机验收 runbook |
 | 2026-08-20 | kejiqing | v1.4 harness restore：tool result 含 message；SSE=task=PG；撤 output yield |
+| 2026-10-09 | kejiqing | v1.5 场景7 改 router 嵌套；场景8深嵌套；场景9 progress；normal 拒发起 |
 
 ---
 
@@ -25,94 +26,90 @@ v1 以本节为 **验收真源**。实现服务于可观测断言，不以内部
 
 | 维度 | 标准 | 验证 |
 |------|------|------|
-| 用户 session | 续聊同一 `sessionId` → router；新开 = 新 sid | DB / `GET /v1/sessions` |
+| 用户 session | 续聊同一 `sessionId` → 入口 router；新开 = 新 sid | DB / `GET /v1/sessions` |
 | 模型不传 sid | 各级 `delegate_project_tool` 均无 `sessionId` | tool 日志 |
-| root 锚点 | **所有** link 行 `root_session_id` = 用户 router session（含嵌套跳） | SQL |
+| root 锚点 | **所有** link 行 `root_session_id` = 本场入口 session（含嵌套跳） | SQL |
 | sid 复用 | 同 `(parent_session_id, parent_proj_id, delegate_proj_id)` 复用 delegate sid | 多轮对比 |
-| sid 隔离 | 不同 target / 不同 parent 上下文不得串 sid | 多行 link 对比 |
 | allowlist | 每级发起方仅可 delegate 其 `delegate-targets` 内 proj | 负例 |
+| 发起方 | **仅** `project_role=router` | PUT / resolve-session |
+| 无环 | enabled 委托图无环 | PUT 负例 |
 | extraSession | 各级 **原样**透传 | 各层 turn JSON |
-| userPrompt | 单意图原问；混合问子问 | specialist 日志 |
-| SSE 订阅 | **只**订 router task | 抓包 |
-| SSE 内容 | 嵌套时下游 delta **链式**出现在 router 流；同级无交错 | 单连接顺序 |
-| executionMode | v1 serial：每级 tool 顺序完成 | 时间线 |
-| output align | router 终稿：`SSE done` = `GET /v1/tasks` message = PG `report_message` | 场景 1/4 + refresh |
-| tool result | `delegate_project_tool` 回 `reportPath`（router session 下文件可读全文）+ ids；**不含**内嵌 `message` | jsonl / tools API + 打开文件 |
+| SSE 订阅 | **只**订入口 task（展开另订除外） | 抓包 |
+| SSE passthrough | 嵌套时下游 delta **链式**出现在入口流 | 单连接顺序 |
+| SSE progress | 入口无正文 delta；有 `biz.delegate.active` | 场景 9 |
+| executionMode | v1 serial | 时间线 |
+| tool result | `reportPath` + ids；**不含**内嵌 `message` | jsonl |
 
-## 2. 场景（1–7）
+## 2. 场景（1–9）
 
 | # | 场景 | 示例 | delegate 链 | sid | SSE |
 |---|------|------|-------------|-----|-----|
-| 1 | 单意图固定 proj 续聊 | 多轮手册问 | router→kb ×1 | `S_kb` 稳定 | 每轮一块 |
-| 2 | 双意图跨轮交替 | T1 手册/T2 问数/T3 手册 | router→kb/ops 各 1 | `S_kb`,`S_ops` 各稳定 | 每轮单块 |
-| 3 | 单意图/轮、多 agent 任意序 | T1 kb→T2 ops→T3 kb… | router→target ×1/轮 | 各 target sid 稳定 | 无系统随机 |
-| 4 | 混合一轮 | 手册+问数同句 | router→kb → router→ops（serial） | 两 target 各 sid | 一条 SSE 两块 |
-| 5 | 混合持续 | T1 混合→T2 追问问数→T3 追问手册 | 2/1/1 | 复用 T1 sid | 续聊不断链 |
-| 6 | 混合↔单意图交叉 | T1 混合→…→T4 再混合 | 2/1/1/2 | 全程 `S_router` | 块数匹配 |
-| **7** | **嵌套 delegate** | 用户问数 → router→ops → ops 再→marketing（同轮） | router→ops→marketing | 见 **§2.1** | 用户仍只连 router；marketing 正文经 ops 链式 passthrough |
+| 1 | 单意图固定 proj 续聊 | 多轮手册问 | R1→kb ×1 | `S_kb` 稳定 | 每轮一块 |
+| 2 | 双意图跨轮交替 | T1 手册/T2 问数 | R1→kb/ops | 各稳定 | 每轮单块 |
+| 3 | 单意图/轮、多 agent 任意序 | kb→ops→kb… | R1→target | 各稳定 | 无系统随机 |
+| 4 | 混合一轮 | 手册+问数同句 | R1→kb → R1→ops | 两 sid | 一条 SSE 两块 |
+| 5 | 混合持续 | T1 混合→追问 | 2/1/1 | 复用 | 续聊不断链 |
+| 6 | 混合↔单意图交叉 | 2/1/1/2 | 全程 `S_R1` | 块数匹配 |
+| **7** | **嵌套（router hub）** | 问数+营销 | R1→R2→ops，再 R2→marketing | 见 §2.1 | 链式 passthrough |
+| **8** | **深嵌套** | R1→R2→R3→leaf | 三跳 | root=`S_R1`；直连 R2 另测 | 全文链到 R1 |
+| **9** | **progress** | R1 progress，R2 passthrough | R1→R2→leaf | root=`S_R1` | R1 无正文，有 active→R2 |
 
-场景 2 vs 3：2 为两 proj 严格交替；3 为多 agent 任意顺序。均非 gateway 随机派单。
+### 2.1 场景 7：嵌套（router→router→specialist）
 
-### 2.1 场景 7：嵌套 delegate（本期必验）
-
-**拓扑（示例）：**
+**拓扑：**
 
 ```text
-用户 SSE ← router stdout ← router.delegate_project_tool 订 ops live
-                              ↑
-                    ops stdout ← ops.delegate_project_tool 订 marketing live
-                                      ↑
-                              marketing solve
+用户 SSE ← R1 stdout ← R1.delegate 订 R2 live
+                         ↑
+               R2 stdout ← R2.delegate 订 ops / marketing live
 ```
 
 **前置：**
 
-- ops（271）物化 `delegate_project_tool`；kb **不**开
-- `PUT /v1/projects/{ops}/delegate-targets` 登记 marketing（`project_role=normal`）
-- router 的 `delegate-targets` 仍含 ops；**不**要求 router 直接登记 marketing
+- R1、R2 均为 `project_role=router`；ops/marketing 为 `normal`
+- R1 targets 含 R2；R2 targets 含 ops、marketing
+- **不**在 ops 上开 `delegate_project_tool`
 
-**同轮断言：**
+**同轮断言：** link ≥2；root 均为 `S_R1`；嵌套行 parent=`S_R2`；用户只订 R1；链式正文。
 
-| 项 | 期望 |
-|----|------|
-| link 行数 | ≥2：` (S_router, router, ops)→S_ops`；`(S_ops, ops, marketing)→S_marketing` |
-| root | 两行 `root_session_id` 均为 `S_router` |
-| parent | 嵌套行 `parent_session_id=S_ops`（非 S_router） |
-| SSE | 单连接；先/后块顺序由 ops skill 决定；**无** marketing task 对用户暴露 |
-| 墙钟 | marketing 阻塞 ops，ops 阻塞 router（serial 叠乘，接受） |
-| 负例 | ops 未登记 marketing → ops 层 tool 失败；router SSE 可见错误；无 orphan marketing turn |
+### 2.2 场景 8：深嵌套 + 直连正交
 
-**续聊（场景 7+）：** 第二轮仍走 ops→marketing 时，`S_ops` / `S_marketing` 分别复用。
+- `R1→R2→R3→leaf`，默认 passthrough；所有 link 的 root = `S_R1`
+- **另案**：BFF 直连 R2 → root/SSE 锚 `S_R2`（与「R2 也被 R1 挂过」无关）
+
+### 2.3 场景 9：progress
+
+- R1 `bodyRelay=progress`；R2 `passthrough`
+- R1 SSE：无 leaf 正文；有 `biz.delegate.active`（指向 R2）；`done` / 重连快照 = 引用桩
+- 另订 R2 turn：可见 leaf 正文
 
 ## 3. 负例
 
 | 用例 | 期望 |
 |------|------|
-| projId=999 未登记 | tool 失败；无 specialist turn |
+| projId=999 未登记 | tool 失败 |
 | enabled=false | 同上 |
 | target=master/observation | 拒绝 |
+| initiator=`normal` PUT / resolve | 拒绝 |
+| `A→B` 已有，再登记 `B→A` | PUT 环错误 |
 | userPrompt 空 | 拒绝 |
-| 模型传 sessionId | 忽略或拒绝（实现写死） |
-| router 改 extraSession | specialist 收到与 BFF 一致 |
+| 模型传 sessionId | 拒绝 |
 
 ## 4. 最小回归清单
 
-1. 场景 1：3 轮 kb，`S_kb` 不变  
-2. 场景 3：kb→ops→kb，`S_kb`/`S_ops` 稳定  
-3. 场景 4：混合一句，单 SSE ≥2 段  
-4. 场景 5：混合后 ops 追问，`S_ops` 同 T1  
-5. 场景 6：2/1/1/2 块数  
-6. **场景 7**：router→ops→marketing 同轮；assert link 两行、root 均为 `S_router`、parent 嵌套行=`S_ops`、单 SSE 链式正文  
-7. 负例：未登记 projId  
+1. 场景 1–6（passthrough 回归）  
+2. **场景 7**：R1→R2→ops/marketing  
+3. **场景 8**：三跳 + R2 直连正交  
+4. **场景 9**：progress 引用桩 + active 事件  
+5. 负例：normal 发起、环图、未登记 projId  
 
-配合 [`gpos-intent-routing-regress.md`](gpos-intent-routing-regress.md) 意图冒烟。
+配合 [`gpos-intent-routing-regress.md`](gpos-intent-routing-regress.md)。
 
-**本机验收（不碰预发）：** [`scripts/gpos-router-split/README-local-test.md`](../scripts/gpos-router-split/README-local-test.md)
+**本机验收：** [`scripts/gpos-router-split/README-local-test.md`](../scripts/gpos-router-split/README-local-test.md)
 
 ## 5. 本期不验
 
 - parallel / Hub 合并  
 - master 与用户路由交叉  
-- specialist 快问  
-- Mesh 协同  
-- kb 发起嵌套 delegate（本期仅 **ops→下游** 一条嵌套链路必验）  
+- specialist 快问 / Mesh  
+- 按边配置 bodyRelay  

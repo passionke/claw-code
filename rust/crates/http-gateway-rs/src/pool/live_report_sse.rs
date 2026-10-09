@@ -15,9 +15,9 @@ use tokio::sync::mpsc;
 
 use crate::biz_advice_report::{
     biz_report_sse_event_stream, sanitize_external_report_text, BizAdviceReportPayload,
-    BizReportDeltaChunk, BizReportStreamMsg,
+    BizDelegateActive, BizReportDeltaChunk, BizReportStreamMsg,
 };
-use crate::pool::live_report_hub::{HubDeltaChunk, HubMsg, LiveReportHub};
+use crate::pool::live_report_hub::{DelegateActivePending, HubDeltaChunk, HubMsg, LiveReportHub};
 
 pub fn live_report_sse_response(
     hub: Arc<LiveReportHub>,
@@ -74,7 +74,7 @@ async fn follow_turn_deltas(
     rebound: impl std::future::Future<Output = ()>,
 ) -> FollowEnd {
     tokio::pin!(rebound);
-    let (mut sub, snapshot_chunks) = hub.subscribe_with_snapshot(turn_id);
+    let (mut sub, snapshot_chunks, pending_delegate) = hub.subscribe_with_snapshot(turn_id);
     for chunk in snapshot_chunks {
         if chunk.text.is_empty() {
             continue;
@@ -85,6 +85,16 @@ async fn follow_turn_deltas(
                 text: chunk.text,
                 emit_seq: chunk.emit_seq,
             }))
+            .is_err()
+        {
+            return FollowEnd::HubDone;
+        }
+    }
+    if let Some(pending) = pending_delegate {
+        if tx
+            .send(BizReportStreamMsg::DelegateActive(delegate_pending_to_biz(
+                pending,
+            )))
             .is_err()
         {
             return FollowEnd::HubDone;
@@ -116,6 +126,21 @@ async fn follow_turn_deltas(
                             return FollowEnd::HubDone;
                         }
                     }
+                    Ok(HubMsg::DelegateActive(pending)) => {
+                        if tx
+                            .send(BizReportStreamMsg::DelegateActive(delegate_pending_to_biz(
+                                pending,
+                            )))
+                            .is_err()
+                        {
+                            return FollowEnd::HubDone;
+                        }
+                    }
+                    Ok(HubMsg::DelegateClear) => {
+                        if tx.send(BizReportStreamMsg::DelegateClear).is_err() {
+                            return FollowEnd::HubDone;
+                        }
+                    }
                     Ok(HubMsg::AskUser(_) | HubMsg::AskUserCleared | HubMsg::Process(_)) => {}
                     Ok(HubMsg::SolveDone) | Err(RecvError::Closed) => {
                         return FollowEnd::HubDone;
@@ -128,6 +153,15 @@ async fn follow_turn_deltas(
                 }
             }
         }
+    }
+}
+
+fn delegate_pending_to_biz(pending: DelegateActivePending) -> BizDelegateActive {
+    BizDelegateActive {
+        session_id: pending.session_id,
+        turn_id: pending.turn_id,
+        proj_id: pending.proj_id,
+        label: pending.label,
     }
 }
 

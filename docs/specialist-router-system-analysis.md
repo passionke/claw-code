@@ -15,6 +15,7 @@ Author: kejiqing
 |------|------|------|
 | 2026-08-14 | kejiqing | v1.0 初稿 |
 | 2026-08-14 | kejiqing | v1.1 嵌套 delegate 物化与 allowlist（ops initiator） |
+| 2026-10-09 | kejiqing | v1.2 仅 router 发起；target 含 router；router_json.bodyRelay；防环；biz.delegate SSE |
 
 ---
 
@@ -22,59 +23,51 @@ Author: kejiqing
 
 | 模块 | 路径 | 职责 |
 |------|------|------|
-| project_role | `migrations/*.sql`、`master_observer.rs` | 扩展 CHECK 含 `router` |
-| delegate 配对 | 新 `delegate_target.rs` 或 `master_observer` 旁新模块 | CRUD `gateway_delegate_target` |
-| session link | `session_db.rs` + 新 repository | CRUD `gateway_delegate_session_link` |
-| Admin API | `routes/fragments/` | `GET/PUT .../delegate-targets` |
-| 物化 | `project_config_apply.rs` | `role=router` 注入 `delegate_project_tool`；registry 附录 |
-| tool | `tools/` 或 `gateway-solve-turn` | `delegate_project_tool` 执行器 |
-| live passthrough | `live_report_hub.rs` 等 | 订 specialist live → 抄 router stdout |
+| project_role | `migrations/*.sql`、`master_observer.rs` | CHECK 含 `router`；seed 纯 hub |
+| delegate 配对 | `delegate_router.rs` | CRUD relation + 环检测 + bodyRelay |
+| router_json | `migrations/9_project_router_json.sql`、`session_db` | `{ "bodyRelay": "passthrough\|progress" }` |
+| session link | `session_db` / `delegate_router` | `gateway_delegate_session_link` |
+| Admin API | `routes/fragments/delegate.rs` | `GET/PUT .../delegate-targets`；`resolve-session` |
+| 物化 | `prepare_router_materialize_row` | registry 附录 + delegate tools |
+| tool | `gateway-solve-turn::delegate_project_tool` | passthrough / progress 分支 |
+| live | `live_report_hub` / `live_report_sse` | worker 抄正文；`biz.delegate.*` |
 
 ## 2. 数据模型
 
 ### 2.1 `project_config.project_role`
 
-```sql
-CHECK (project_role IN ('normal', 'master', 'observation', 'router'))
-```
-
 | role | 说明 |
 |------|------|
-| `router` | 对外入口；必物化 `delegate_project_tool` |
-| `normal` | specialist；可作 delegate target；**ops 另开** `delegate_project_tool` 供嵌套 |
+| `router` | **唯一**委托发起方；纯 hub；可作 target；可直连入口 |
+| `normal` / `knowledge_base` | specialist；**仅**作 target |
 | `master` / `observation` | 观测拓扑；**不可**作 target |
 
-可选列：`delegate_execution_mode TEXT DEFAULT 'serial'`（或 JSON 配置字段）。
+### 2.2 `project_config.router_json`
 
-### 2.2 `gateway_delegate_target`
+```json
+{ "bodyRelay": "passthrough" }
+```
 
-| 列 | 类型 | 说明 |
-|----|------|------|
-| `cluster_id` | TEXT | PK 之一 |
-| `router_proj_id` | BIGINT | PK 之一；**initiator**（router 或 ops 等） |
-| `target_proj_id` | BIGINT | PK 之一 |
-| `enabled` | BOOLEAN | 默认 true |
-| `label` | TEXT | 可选 |
-| `capability_hint` | TEXT | 可选；物化进 registry |
-| `created_at_ms` / `updated_at_ms` | BIGINT | 审计 |
+缺省 = `passthrough`。
 
-**PK：** `(cluster_id, router_proj_id, target_proj_id)`
+### 2.3 Delegate edges（`project_relation` type `router_delegate`）
 
-### 2.3 `gateway_delegate_session_link`
+| 字段 | 说明 |
+|------|------|
+| `from_proj_id` | initiator（必须是 router） |
+| `to_proj_id` | target：`normal` \| `knowledge_base` \| `router` |
+| meta | `enabled`、`capabilityHint` |
+
+PUT 时：`pg_advisory_xact_lock` + 有向图无环（只计 enabled）。
+
+### 2.4 `gateway_delegate_session_link`
 
 | 列 | 说明 |
 |----|------|
-| `root_session_id` | 用户 router session（整树锚点） |
+| `root_session_id` | 本场入口 session（整树锚点） |
 | `parent_session_id` | 发起委托方 session |
-| `parent_proj_id` | 发起委托方 projId |
-| `delegate_proj_id` | 目标 projId |
-| `delegate_session_id` | 绑定 sid |
-| `cluster_id` | 隔离 |
-| timestamps | 审计 |
-
-**PK：** `(parent_session_id, parent_proj_id, delegate_proj_id)`
-
-首跳 router→specialist：`parent_session_id = root_session_id`。
+| `parent_proj_id` | 发起方 projId |
+| `delegate_proj_id` / `delegate_session_id` | 目标 |
 
 ## 3. Admin API
 
@@ -89,96 +82,74 @@ PUT  /v1/projects/{routerProjId}/delegate-targets
 
 ```json
 {
+  "bodyRelay": "passthrough",
   "targets": [
     { "targetProjId": 272, "enabled": true, "label": "kb-qa", "capabilityHint": "产品手册 how-to" },
-    { "targetProjId": 271, "enabled": true, "label": "ops-analysis", "capabilityHint": "经营问数" }
+    { "targetProjId": 280, "enabled": true, "label": "ops-hub", "capabilityHint": "问数子 hub" }
   ]
 }
 ```
 
 校验：
 
-- initiator 已物化 `delegate_project_tool` 且在其 `delegate-targets` 行中
-- 各 target `project_role=normal` 且存在 stable
+- initiator `project_role=router`
+- target `normal|knowledge_base|router` 且存在 config
+- 委托图无环；禁止自环
 
-**嵌套示例：** `PUT /v1/projects/271/delegate-targets` 登记 marketing；router 不必直接登记 marketing。
+**嵌套示例：** `PUT /v1/projects/{R2}/delegate-targets` 登记 ops/marketing；R1 只登记 R2。
 
-### 3.2 Project role
+### 3.2 Resolve session
 
-复用现有 `PUT /v1/projects/{id}/role`，接受 `router`。
+`POST /v1/projects/{initiator}/delegate/resolve-session` 响应含 `bodyRelay`、`label`（供 worker）。
 
 ## 4. `delegate_project_tool`
 
-### 4.1 入参（与 `SolveRequest` 同形）
-
-```json
-{
-  "name": "delegate_project_tool",
-  "arguments": {
-    "projId": 271,
-    "userPrompt": "…",
-    "extraSession": { "store_id": "…", "tenant_code": "GPOS", … }
-  }
-}
-```
-
 | 字段 | 规则 |
 |------|------|
-| `projId` | 必填；allowlist + normal role |
+| `projId` | 必填；allowlist + 允许角色 |
 | `userPrompt` | 必填 |
 | `extraSession` | 原样透传 |
-| `sessionId` | **模型不传**；tool 查 DB 注入 |
+| `sessionId` | **模型不传** |
 
-### 4.2 执行流程
+### 执行
 
 ```text
-1. assert projId in gateway_delegate_target (initiator=当前 solve proj, enabled)
-2. assert target.project_role == normal
-3. lookup/insert gateway_delegate_session_link → delegate_session_id
-   （嵌套时 parent_session_id = 上级 delegate sid；root 仍 = 用户 router session）
-4. POST /v1/solve_async …
-5. passthrough live …
+1. resolve-session → bodyRelay, label, delegate_session_id
+2. solve_async 子 turn
+3. emit delegate.active（真实 child sessionId）
+4. passthrough: 订子 live → emit_report_delta + 落盘
+   progress: poll 终态 → reportPath 写引用桩（不抄 Hub）
+5. emit delegate.clear
+6. complete_router_turn 校验 reportPath 非空
 ```
 
-### 4.3 userPrompt 改写
+引用桩格式：
 
-| 场景 | 处理 |
-|------|------|
-| 单意图 | 尽量原问 |
-| 混合问 | 只提取该路子问 |
-| 门店 | 走 extraSession，不堆 prompt |
+```markdown
+> 已委托 {label} 处理（projId=…, sessionId=…, turnId=…）
+```
 
 ## 5. 物化
 
 | role | 注入 |
 |------|------|
-| `router` | `delegate_project_tool`；`specialist-registry` skill；从 `gateway_delegate_target` 生成 registry 附录 |
-| `normal` | 各 specialist 原有 MCP/skills |
-| `master` | `claw-master-observer`（不变） |
-
-router **无** SQLBot MCP、**无** KB 挂载。
+| `router` | `delegate_project_tool`；`complete_router_turn`；`specialist-registry`；registry 附录 |
+| `normal` | 各 specialist 原有 MCP/skills（**无** delegate tool） |
 
 ## 6. SSE / Live
 
-- 客户端只订 **router** turn live（[`live-report-contract.md`](live-report-contract.md) 路径 B′）
-- 正文唯一数据面：specialist SSE → `delegate_project_tool` passthrough → router stdout → router Hub → 用户 SSE
-- `delegate.active` / `delegate.clear` 只做控制/进度，**不**改订用户 SSE 数据源
-- serial：同轮 tool₂ 在 tool₁ 终态后开始；禁止双路正文同时写入 router Hub
-- 委派结束后必须调用 `complete_router_turn`；harness 直接结束 turn，禁止复述
-## 7. 实施顺序
+- 客户端订 **入口** turn（[`live-report-contract.md`](live-report-contract.md) 路径 B′）
+- `passthrough`：子 delta → 本层 stdout → Hub → `biz.report.delta`
+- **新增** `biz.delegate.active` / `biz.delegate.clear`（两种模式都发；订阅时回放 active）
+- payload：`{ sessionId, turnId, projId, label? }` — 前端点开另订子 turn
+- serial：同轮 tool₂ 在 tool₁ 终态后开始
+- 委派结束后 `complete_router_turn`；禁止复述
 
-1. 迁移：`router` role + 两表
-2. Admin API：`delegate-targets`
-3. 预发拆 project + router skill
-4. `delegate_project_tool`（维护者实现）
-5. BFF/评测改打 router；跑验收矩阵
+## 7. 预发拓扑（目标）
 
-## 8. 预发拓扑（目标）
-
-| projId | role | 名称 |
-|--------|------|------|
-| TBD | `router` | gpos-router |
-| TBD | `normal` | kb-qa |
-| 271 | `normal` | ops-analysis（去 KB） |
-
-BFF projId → router。
+| role | 名称 |
+|------|------|
+| `router` | gpos-router（R1） |
+| `router` | ops-hub（R2，可选） |
+| `normal` | kb-qa |
+| `normal` | ops-analysis / marketing |

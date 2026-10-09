@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Author: kejiqing
 # Jenkins / private-cluster: same package chain as .github/workflows/claw-code-image.yaml,
-# but push images to Nora only (no GHCR / ACR). Trigger: release-v* tag.
+# but push images to Nora only (no GHCR / ACR).
+# Tags: vX.Y.Z (internal) or release-v* → nora.home.passionke.top
+# (nora.workbox.spone.xyz deprecated).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -16,7 +18,7 @@ source "$ROOT/deploy/stack/lib/linux-compile.sh"
 # shellcheck source=/dev/null
 source "$ROOT/deploy/stack/rust-version.env"
 
-NEXUS_PUSH_REGISTRY="${NEXUS_PUSH_REGISTRY:-nora.workbox.spone.xyz}"
+NEXUS_PUSH_REGISTRY="${NEXUS_PUSH_REGISTRY:-nora.home.passionke.top}"
 NEXUS_NS="${NEXUS_NS:-passionke}"
 REGION="${REGION:-china}"
 : "${NEXUS_USER:?NEXUS_USER is required}"
@@ -31,8 +33,8 @@ RELEASE_TAG="${RELEASE_TAG:-${GIT_TAG:-}}"
 if [[ -z "$RELEASE_TAG" ]]; then
   RELEASE_TAG="$(git -C "$ROOT" describe --tags --exact-match HEAD 2>/dev/null || true)"
 fi
-if [[ ! "$RELEASE_TAG" =~ ^release-v[0-9] ]]; then
-  echo "RELEASE_TAG must match release-v*, got: ${RELEASE_TAG:-<empty>}" >&2
+if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && ! "$RELEASE_TAG" =~ ^release-v[0-9] ]]; then
+  echo "RELEASE_TAG must match vX.Y.Z or release-v*, got: ${RELEASE_TAG:-<empty>}" >&2
   exit 1
 fi
 
@@ -118,6 +120,23 @@ push_package claw-gateway-worker deploy/stack/Containerfile.gateway-worker.prebu
 push_package claw-gateway-playground deploy/stack/Containerfile.gateway-playground
 push_package claw-gateway-worker-relaxed deploy/stack/Containerfile.gateway-worker-relaxed
 
+# Engine workers (opencode + appserver): same as claw-code-image.yaml. Author: kejiqing
+STRICT_WORKER="${NEXUS_PUSH_REGISTRY}/${NEXUS_NS}/claw-gateway-worker:${RELEASE_TAG}"
+echo "==> build engine workers FROM ${STRICT_WORKER}"
+export CONTAINER_BASE_REGISTRY="$REG"
+bash "$ROOT/deploy/neuro-harness/build-worker-images.sh" "$STRICT_WORKER" "$RELEASE_TAG"
+for package in claw-gateway-worker-opencode claw-gateway-worker-appserver; do
+  local_img="${package}:${RELEASE_TAG}"
+  image="${NEXUS_PUSH_REGISTRY}/${NEXUS_NS}/${package}"
+  docker tag "${local_img}" "${image}:${RELEASE_TAG}"
+  docker tag "${local_img}" "${image}:sha-${SHA12}"
+  docker tag "${local_img}" "${image}:latest"
+  for tag in "${RELEASE_TAG}" "sha-${SHA12}" latest; do
+    echo "==> push ${image}:${tag}"
+    docker push "${image}:${tag}"
+  done
+done
+
 echo "==> verify playground admin assets"
 docker run --rm "${NEXUS_PUSH_REGISTRY}/${NEXUS_NS}/claw-gateway-playground:${RELEASE_TAG}" \
   sh -c 'test -f /app/admin-dist/index.html && test -n "$(ls /app/admin-dist/assets/*.js 2>/dev/null)"'
@@ -127,4 +146,4 @@ docker run --rm --entrypoint sh \
   "${NEXUS_PUSH_REGISTRY}/${NEXUS_NS}/claw-gateway-worker-relaxed:${RELEASE_TAG}" \
   -c 'command -v curl && command -v git && command -v python3'
 
-echo "published ${NEXUS_NS}/{claw-code,claw-gateway-worker,claw-gateway-worker-relaxed,claw-gateway-playground}:${RELEASE_TAG}"
+echo "published ${NEXUS_NS}/{claw-code,claw-gateway-worker,claw-gateway-worker-relaxed,claw-gateway-worker-opencode,claw-gateway-worker-appserver,claw-gateway-playground}:${RELEASE_TAG}"
