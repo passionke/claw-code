@@ -6,7 +6,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 _E2B_DIR = Path(__file__).resolve().parent
@@ -20,8 +19,6 @@ from e2b_template_registry import (
     template_gateway_worker_image,
 )
 from e2b_template_build import build_template_with_retry
-from e2b_template_content_hash import digest_parts, try_skip_unchanged
-from registry_extract import try_image_digest
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
@@ -157,32 +154,6 @@ def _build_e2b_relaxed_image(worker_image: str) -> str:
     return e2b_image
 
 
-def _persist_pg(alias: str, build, content_digest: str, image_ref: str) -> None:
-    now_ms = int(time.time() * 1000)
-    try:
-        from e2b_pg_settings import merge_settings_json_key
-
-        merge_settings_json_key(
-            "e2bWorkerRelaxed",
-            {
-                "templateId": build.template_id,
-                "buildId": build.build_id,
-                "contentHash": content_digest,
-                "alias": alias,
-                "imageRef": image_ref,
-                "imageDigest": try_image_digest(image_ref),
-                "updatedAtMs": now_ms,
-            },
-            now_ms=now_ms,
-        )
-        print(
-            f"==> persisted e2bWorkerRelaxed.templateId={build.template_id!r} "
-            f"buildId={build.build_id!r} to PG"
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"warn: skip PG e2bWorkerRelaxed.templateId persist: {exc}", file=sys.stderr)
-
-
 def _is_protocol_relaxed(image: str) -> bool:
     return "claw-worker-base-relaxed" in image and "claw-gateway-worker" not in image
 
@@ -214,17 +185,6 @@ def main() -> int:
 
     e2b_image = _build_e2b_relaxed_image(source_image)
     print(f"==> e2b Template.build from_image={e2b_image!r}")
-    content_digest = digest_parts(
-        [
-            ("image", e2b_image.encode()),
-            ("start", RELAXED_START_CMD.encode()),
-            ("ready", RELAXED_READY_CMD.encode()),
-        ]
-    )
-    if try_skip_unchanged(
-        "e2bWorkerRelaxed", content_digest, image_ref=source_image
-    ):
-        return 0
     template = Template().from_image(e2b_image)
     template = template.set_start_cmd(RELAXED_START_CMD, RELAXED_READY_CMD)
     apply_template_skip_cache_force(template, skip_cache)
@@ -240,12 +200,11 @@ def main() -> int:
 
     print(f"template_id: {build.template_id}")
     print(f"build_id: {build.build_id}")
-    _persist_pg(alias, build, content_digest, e2b_image)
-    print(
-        "hint: rebuild only updates PG; new build is used after gateway restart, "
-        "manual worker reset, or when the sandbox is dead"
-    )
     print(f"OK: relaxed worker template {alias!r} ({build.template_id}) from_image")
+    print(
+        "hint: bind this templateId in Admin → e2b core components; "
+        "Gateway uses it after save / worker reset"
+    )
 
     # Heavy nas-api e2e is opt-in; protocol register already did Template.build.
     # Author: kejiqing

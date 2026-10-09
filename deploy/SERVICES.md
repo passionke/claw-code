@@ -23,8 +23,9 @@ of the other two.
   (`CLAW_E2B_API_URL` / sandbox `:3002`). Do not use bare `10.8.0.1` in this path.
 - Output (Nora worker-series source): `claw-worker-base`, `claw-worker-base-relaxed`
   (protocol binaries; no Agent engines).
-- e2b register (unchanged path): layer → push `debian-bookworm-claw-worker*` →
-  standard `Template.build(from_image=…)` → PG `e2bWorker.templateId`.
+- e2b register: layer → push `debian-bookworm-claw-worker*` →
+  standard `Template.build(from_image=…)`. Does **not** write Gateway PG.
+- Bind `templateId` in Admin → e2b core components (runtime config).
 
 There is no platform tar, platform pin, or runtime download of `claw`/`neuro-*`.
 
@@ -68,9 +69,10 @@ writes `agentEngines.engines`, removes `cliPins`, and refuses an incomplete resu
 ## Dependency direction
 
 ```text
-Gateway/Admin ──creates──> e2b Worker protocol template
-e2b Worker protocol ──hosts──> one selected Agent engine
-Gateway/Admin ──configures──> dynamic Agent engine map
+protocol Job ──publishes──> Nora images + e2b Template.build
+Gateway/Admin ──binds──> e2bWorker.templateId (PG)
+e2b Worker ──hosts──> one selected Agent engine (raw)
+Gateway/Admin ──configures──> agentEngines map
 ```
 
 No combined `track`, `all`, or cross-layer publish entry is supported.

@@ -6,14 +6,11 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 _E2B_DIR = Path(__file__).resolve().parent
 if str(_E2B_DIR) not in sys.path:
     sys.path.insert(0, str(_E2B_DIR))
-from e2b_pg_settings import merge_settings_json_key
-from e2b_template_content_hash import digest_parts, try_skip_unchanged
 from e2b_template_registry import (
     apply_template_skip_cache_force,
     load_repo_dotenv,
@@ -22,7 +19,6 @@ from e2b_template_registry import (
     template_gateway_worker_image,
 )
 from e2b_template_build import build_template_with_retry
-from registry_extract import try_image_digest
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
@@ -218,18 +214,10 @@ def main() -> int:
         )
         return 2
 
-    # Established path: source → debian-bookworm-claw-worker → Template.build. Author: kejiqing
+    # Established path: source → debian-bookworm-claw-worker → Template.build.
+    # Does not write Gateway PG; bind templateId in Admin. Author: kejiqing
     e2b_image = _build_e2b_worker_image(worker_image)
     print(f"==> e2b Template.build from_image={e2b_image!r}")
-    content_digest = digest_parts(
-        [
-            ("image", e2b_image.encode()),
-            ("start", WORKER_START_CMD.encode()),
-            ("ready", WORKER_READY_CMD.encode()),
-        ]
-    )
-    if try_skip_unchanged("e2bWorker", content_digest, image_ref=worker_image):
-        return 0
     template = Template().from_image(e2b_image)
     template = template.set_start_cmd(WORKER_START_CMD, WORKER_READY_CMD)
     apply_template_skip_cache_force(template, skip_cache)
@@ -243,46 +231,12 @@ def main() -> int:
         **opts,
     )
 
-    now_ms = int(time.time() * 1000)
     print(f"template_id: {build.template_id}")
     print(f"build_id: {build.build_id}")
-    skip_pg = os.environ.get("CLAW_E2B_SKIP_WORKER_PG_PERSIST", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    if skip_pg:
-        print(
-            f"==> skip PG e2bWorker.templateId (alias {alias!r} only; strict PG unchanged)",
-            file=sys.stderr,
-        )
-    else:
-        try:
-            merge_settings_json_key(
-                "e2bWorker",
-                {
-                    "templateId": build.template_id,
-                    "buildId": build.build_id,
-                    "contentHash": content_digest,
-                    "alias": alias,
-                    "imageRef": e2b_image,
-                    "sourceImageRef": worker_image,
-                    "imageDigest": try_image_digest(e2b_image, platform=_template_platform()),
-                    "updatedAtMs": now_ms,
-                },
-                now_ms=now_ms,
-            )
-            print(
-                f"==> persisted e2bWorker.templateId={build.template_id!r} "
-                f"buildId={build.build_id!r} to PG"
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"warn: skip PG e2bWorker.templateId persist: {exc}", file=sys.stderr)
-
     print(f"OK: template {alias!r} ({build.template_id}) ready on {opts['api_url']}")
     print(
-        "hint: rebuild only updates PG; new build is used after gateway restart, "
-        "manual worker reset, or when the sandbox is dead"
+        "hint: bind this templateId in Admin → e2b core components; "
+        "Gateway uses it after save / worker reset"
     )
     if verify:
         return _verify(build.template_id, opts)
