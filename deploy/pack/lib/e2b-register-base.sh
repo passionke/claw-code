@@ -29,12 +29,24 @@ claw_pack_e2b_register_base() {
   export CLAW_E2B_TEMPLATE_SKIP_VERIFY="${CLAW_E2B_TEMPLATE_SKIP_VERIFY:-1}"
   # Do NOT build engine templates.
   export CLAW_E2B_SKIP_ENGINE_TEMPLATES=1
+  # home-ubt / Jenkins agents use docker, not podman. Author: kejiqing
+  if [[ -z "${CLAW_CONTAINER_RUNTIME:-}" ]]; then
+    if command -v docker >/dev/null 2>&1; then
+      export CLAW_CONTAINER_RUNTIME=docker
+    elif command -v podman >/dev/null 2>&1; then
+      export CLAW_CONTAINER_RUNTIME=podman
+    fi
+  fi
 
   local py="${CLAW_E2B_VENV:-}/bin/python3"
   if [[ ! -x "$py" ]]; then
     py="$(command -v python3)"
   fi
-  echo "==> e2b from_image register base=${CLAW_E2B_WORKER_IMAGE}" >&2
+  if ! "$py" -c 'import e2b' 2>/dev/null; then
+    echo "error: python missing e2b SDK (set CLAW_E2B_VENV; see deploy/e2b/requirements-e2b-sdk.txt)" >&2
+    return 1
+  fi
+  echo "==> e2b from_image register base=${CLAW_E2B_WORKER_IMAGE} runtime=${CLAW_CONTAINER_RUNTIME:-?}" >&2
   "$py" "$ROOT/deploy/e2b/build-claw-worker-selfhosted.py"
   "$py" "$ROOT/deploy/e2b/build-claw-worker-relaxed-selfhosted.py"
   # nas-api still needed for cluster; keep that script (no claw COPY of solve CLI).

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Build claw-worker-relaxed (debian + tools + claw) on self-hosted e2b. Author: kejiqing"""
+"""Build claw-worker-relaxed on self-hosted e2b.
+Thin path: from_image claw-worker-base-relaxed (CLI via worker.init).
+Legacy: debian + COPY claw. Author: kejiqing
+"""
 from __future__ import annotations
 
 import os
@@ -18,16 +21,18 @@ from e2b_template_registry import (
     load_repo_dotenv,
     log_debian_base_resolution,
     template_apt_prepare_prefix,
+    template_debian_apt_mirror,
     template_debian_base_image,
     template_gateway_worker_image,
 )
 from e2b_template_build import build_template_with_retry
-from e2b_template_content_hash import digest_tree, try_skip_unchanged
+from e2b_template_content_hash import digest_parts, digest_tree, try_skip_unchanged
 from registry_extract import extract_file_from_image, try_image_digest
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
 
+DOCKERFILE_E2B_RELAXED = _E2B_DIR / "Dockerfile.claw-worker-relaxed-selfhosted"
 RELAXED_START_CMD = "/usr/local/bin/claw-worker-relaxed-start"
 RELAXED_READY_CMD = "/usr/local/bin/claw-worker-relaxed-ready"
 
@@ -179,8 +184,73 @@ def _persist_pg(alias: str, build, content_digest: str, image_ref: str) -> None:
         print(f"warn: skip PG e2bWorkerRelaxed.templateId persist: {exc}", file=sys.stderr)
 
 
+def _is_thin_relaxed(image: str) -> bool:
+    return "claw-worker-base-relaxed" in image and "claw-gateway-worker" not in image
+
+
+def _e2b_relaxed_image_tag(worker_image: str) -> str:
+    # Parallel to strict debian-bookworm-claw-worker tagging. Author: kejiqing
+    if ":" in worker_image.rsplit("/", 1)[-1]:
+        base, tag = worker_image.rsplit(":", 1)
+        prefix = base.rsplit("/", 1)[0]
+        return f"{prefix}/debian-bookworm-claw-worker-relaxed:{tag}"
+    return f"{worker_image}-e2b-relaxed"
+
+
+def _acr_login_if_needed(image: str) -> None:
+    if "/" not in image or image.startswith("localhost"):
+        return
+    registry = image.split("/", 1)[0]
+    user = _env("CLAW_REGISTRY_USER", _env("NEXUS_USER"))
+    password = _env("CLAW_REGISTRY_PASSWORD", _env("NEXUS_PASSWORD"))
+    if not user or not password:
+        return
+    rt = _container_runtime()
+    subprocess.run(
+        [shutil.which(rt) or rt, "login", registry, "-u", user, "--password-stdin"],
+        input=password.encode(),
+        check=False,
+    )
+
+
+def _build_e2b_relaxed_image(worker_image: str) -> str:
+    """Layer e2b start/ready on thin relaxed base; push for e2b host pull."""
+    rt = _container_runtime()
+    platform = _env("CLAW_E2B_TEMPLATE_PLATFORM", "linux/amd64")
+    e2b_image = _e2b_relaxed_image_tag(worker_image)
+    if not DOCKERFILE_E2B_RELAXED.is_file():
+        raise SystemExit(f"error: missing {DOCKERFILE_E2B_RELAXED}")
+    apt_mirror = template_debian_apt_mirror()
+    print(
+        f"==> {rt} build e2b relaxed image {e2b_image!r} "
+        f"(FROM {worker_image!r}, {platform})"
+    )
+    subprocess.check_call(
+        [
+            rt,
+            "build",
+            "-f",
+            str(DOCKERFILE_E2B_RELAXED),
+            "--build-arg",
+            f"WORKER_BASE_IMAGE={worker_image}",
+            "--build-arg",
+            f"DEBIAN_APT_MIRROR={apt_mirror}",
+            "--platform",
+            platform,
+            "-t",
+            e2b_image,
+            str(_E2B_DIR),
+        ]
+    )
+    if _env("CLAW_E2B_WORKER_E2B_PUSH", "1") not in ("0", "false", "no"):
+        _acr_login_if_needed(e2b_image)
+        print(f"==> {rt} push {e2b_image!r}")
+        subprocess.check_call([rt, "push", e2b_image])
+    return e2b_image
+
+
 def _registry_bootstrap_mode() -> bool:
-    """Admin/CI-tag path: no nested podman; claw via registry HTTP. Author: kejiqing"""
+    """Legacy Admin path: registry extract claw into debian Dockerfile. Author: kejiqing"""
     return _truthy("CLAW_E2B_WORKER_RELAXED_FROM_IMAGE") or _truthy(
         "CLAW_E2B_WORKER_SKIP_LOCAL_BUILD"
     )
@@ -202,24 +272,56 @@ def main() -> int:
     from e2b import Template, default_build_logger
 
     skip_cache = _env("CLAW_E2B_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no")
-    registry_mode = _registry_bootstrap_mode()
+    source_image = _env("CLAW_E2B_WORKER_RELAXED_IMAGE") or _worker_base_image()
 
+    # Thin shell: from_image only (no COPY claw). Author: kejiqing
+    if _is_thin_relaxed(source_image):
+        e2b_image = _build_e2b_relaxed_image(source_image)
+        print(f"==> e2b Template.build from_image={e2b_image!r} (thin relaxed)")
+        content_digest = digest_parts(
+            [
+                ("image", e2b_image.encode()),
+                ("start", RELAXED_START_CMD.encode()),
+                ("ready", RELAXED_READY_CMD.encode()),
+            ]
+        )
+        if try_skip_unchanged(
+            "e2bWorkerRelaxed", content_digest, image_ref=source_image
+        ):
+            return 0
+        template = Template().from_image(e2b_image)
+        template = template.set_start_cmd(RELAXED_START_CMD, RELAXED_READY_CMD)
+        apply_template_skip_cache_force(template, skip_cache)
+        build = build_template_with_retry(
+            Template.build,
+            label=alias,
+            template=template,
+            alias=alias,
+            skip_cache=skip_cache,
+            on_build_logs=default_build_logger(),
+            **opts,
+        )
+        print(f"template_id: {build.template_id}")
+        print(f"build_id: {build.build_id}")
+        _persist_pg(alias, build, content_digest, source_image)
+        print(f"OK: relaxed worker template {alias!r} ({build.template_id}) thin-from_image")
+        return 0
+
+    registry_mode = _registry_bootstrap_mode()
     with tempfile.TemporaryDirectory(prefix="claw-e2b-relaxed-") as tmp:
         staging = Path(tmp)
         if registry_mode:
-            image = _env("CLAW_E2B_WORKER_RELAXED_IMAGE") or _worker_base_image()
             print(
-                f"==> bootstrap relaxed: debian + COPY claw from {image!r} "
-                "(registry extract, no nested podman)",
+                f"==> legacy relaxed: debian + COPY claw from {source_image!r}",
                 file=sys.stderr,
             )
-            _stage_claw_from_registry(staging, image)
+            _stage_claw_from_registry(staging, source_image)
         else:
             _stage_claw_into(staging)
 
         dockerfile = staging / "Dockerfile"
         dockerfile.write_text(_relaxed_dockerfile(), encoding="utf-8")
-        print(f"==> e2b Template.build from_dockerfile (debian + tools, sleep infinity)")
+        print("==> e2b Template.build from_dockerfile (legacy debian + claw)")
         content_digest = digest_tree(
             staging,
             [
@@ -229,7 +331,7 @@ def main() -> int:
             ],
         )
         if try_skip_unchanged(
-            "e2bWorkerRelaxed", content_digest, image_ref=_env("CLAW_E2B_WORKER_RELAXED_IMAGE") or _worker_base_image()
+            "e2bWorkerRelaxed", content_digest, image_ref=source_image
         ):
             return 0
         template = (
@@ -250,7 +352,6 @@ def main() -> int:
 
     print(f"template_id: {build.template_id}")
     print(f"build_id: {build.build_id}")
-    source_image = _env("CLAW_E2B_WORKER_RELAXED_IMAGE") or _worker_base_image()
     _persist_pg(alias, build, content_digest, source_image)
     print(
         "hint: rebuild only updates PG; new build is used after gateway restart, "
