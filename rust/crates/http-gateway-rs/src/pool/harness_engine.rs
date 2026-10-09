@@ -320,25 +320,27 @@ mod tests {
     }
 
     #[test]
-    fn template_defaults_to_alias_and_pins_build() {
+    fn template_defaults_to_shared_shell_and_pins_build() {
+        // Shared claw-worker shell; engines via cliPins inject. Author: kejiqing
         let mut store = GatewayGlobalSettingsStore::default();
         let t = HarnessEngine::Opencode
             .strategy()
             .worker_template(&store)
             .unwrap();
-        assert_eq!(t.template_id, "claw-worker-opencode");
-        assert_eq!(t.alias, "claw-worker-opencode");
+        assert_eq!(t.template_id, "claw-worker");
+        assert_eq!(t.alias, "claw-worker");
         assert_eq!(t.build_id, None);
         assert_eq!(t.profile_label, "strict+opencode");
-        store.e2b_worker_appserver =
-            serde_json::from_value(json!({"templateId":"tpl_x","buildId":"b1"})).unwrap();
+        store.e2b_worker =
+            serde_json::from_value(json!({"templateId":"tpl_shared","buildId":"b1"})).unwrap();
         let t = HarnessEngine::Appserver
             .strategy()
             .worker_template(&store)
             .unwrap();
-        assert_eq!(t.template_id, "tpl_x");
+        assert_eq!(t.template_id, "tpl_shared");
         assert_eq!(t.build_id.as_deref(), Some("b1"));
-        assert_eq!(t.alias, "claw-worker-appserver");
+        assert_eq!(t.alias, "claw-worker");
+        assert_eq!(t.profile_label, "strict+appserver");
         assert!(HarnessEngine::Claw
             .strategy()
             .worker_template(&store)
