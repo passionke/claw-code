@@ -23,23 +23,43 @@ export NEXUS_USER NEXUS_PASSWORD
 export CLAW_REGISTRY_USER="${CLAW_REGISTRY_USER:-$NEXUS_USER}"
 export CLAW_REGISTRY_PASSWORD="${CLAW_REGISTRY_PASSWORD:-$NEXUS_PASSWORD}"
 
-# home29 agents may lack python3-venv; use --target instead of venv. Author: kejiqing
-E2B_PY="${CLAW_E2B_VENV:+${CLAW_E2B_VENV}/bin/python3}"
-if [[ -z "${E2B_PY:-}" || ! -x "${E2B_PY}" ]]; then
-  PKG_DIR="${ROOT}/.e2b-packages"
-  if ! PYTHONPATH="${PKG_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 -c 'import e2b' >/dev/null 2>&1; then
-    echo "==> install pinned e2b SDK into ${PKG_DIR}"
-    mkdir -p "$PKG_DIR"
-    PIP_ARGS=(install --upgrade --target "$PKG_DIR" -r "$ROOT/deploy/e2b/requirements-e2b-sdk.txt")
-    if [[ "$REGION" == "china" ]]; then
-      PIP_ARGS+=(-i https://mirrors.aliyun.com/pypi/simple --trusted-host mirrors.aliyun.com)
-    fi
-    python3 -m pip "${PIP_ARGS[@]}"
-  fi
-  export PYTHONPATH="${PKG_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
-  # publish-worker-protocol.sh prefers CLAW_E2B_VENV/bin/python3; leave unset so it uses PATH python3.
-  unset CLAW_E2B_VENV || true
-fi
-python3 -c 'import e2b'
+# home29 has Python 3.14 without pip/venv. Run pinned e2b SDK in a mirrored
+# CPython container; host docker still builds/pushes protocol images.
+# Author: kejiqing
+E2B_PY_IMAGE="${E2B_PY_IMAGE:-docker.m.daocloud.io/library/python:3.12-slim}"
+WRAPPER="${ROOT}/.ci-e2b-python.sh"
+python3 - "$ROOT" "$E2B_PY_IMAGE" "$WRAPPER" <<'PY'
+import pathlib
+import sys
+
+root, image, path = sys.argv[1], sys.argv[2], sys.argv[3]
+pathlib.Path(path).write_text(
+    f"""#!/usr/bin/env bash
+set -euo pipefail
+ROOT_DIR={root!r}
+IMAGE={image!r}
+REQ=\"${{ROOT_DIR}}/deploy/e2b/requirements-e2b-sdk.txt\"
+args=()
+while IFS= read -r line; do
+  key=${{line%%=*}}
+  case \"$key\" in
+    CLAW_*|E2B_*|PG*|DATABASE_URL|REGION) args+=(-e \"$line\") ;;
+  esac
+done < <(env)
+exec docker run --rm --network host \\
+  -v \"${{ROOT_DIR}}:${{ROOT_DIR}}:rw\" \\
+  -w \"${{ROOT_DIR}}\" \\
+  -e HOME=/tmp \\
+  \"${{args[@]}}\" \\
+  \"${{IMAGE}}\" \\
+  bash -lc 'set -euo pipefail; pip install -q -i https://mirrors.aliyun.com/pypi/simple --trusted-host mirrors.aliyun.com -r \"$0\"; exec python \"$@\"' \\
+  \"$REQ\" \"$@\"
+""",
+    encoding="utf-8",
+)
+PY
+chmod +x "$WRAPPER"
+export CLAW_E2B_PYTHON="$WRAPPER"
+unset CLAW_E2B_VENV || true
 
 exec bash "$ROOT/deploy/e2b/publish-worker-protocol.sh"

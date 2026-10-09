@@ -88,7 +88,11 @@ export CLAW_E2B_WORKER_IMAGE="${STRICT}:${TAG}"
 export CLAW_E2B_TEMPLATE_FROM_IMAGE="${STRICT}:${TAG}"
 export CLAW_E2B_WORKER_RELAXED_IMAGE="${RELAXED}:${TAG}"
 
-PYTHON="${CLAW_E2B_VENV:+${CLAW_E2B_VENV}/bin/python3}"
+# CLAW_E2B_PYTHON wins (e.g. docker-wrapped interpreter on home29). Author: kejiqing
+PYTHON="${CLAW_E2B_PYTHON:-}"
+if [[ -z "$PYTHON" ]]; then
+  PYTHON="${CLAW_E2B_VENV:+${CLAW_E2B_VENV}/bin/python3}"
+fi
 if [[ -z "$PYTHON" || ! -x "$PYTHON" ]]; then
   PYTHON="$(command -v python3)"
 fi
