@@ -105,19 +105,33 @@ claw_rust_compile_build_local() {
   # shellcheck source=/dev/null
   source "${root_dir}/deploy/stack/rust-version.env"
   local rust_base="${reg}/library/rust:${CLAW_RUST_IMAGE_TAG}"
-  echo "==> building compile image ${image_name} (FROM ${rust_base}${CLAW_LINUX_COMPILE_PLATFORM:+, platform=${CLAW_LINUX_COMPILE_PLATFORM}}; apt_cn=${apt_cn})" >&2
+  # sccache OCI: Nora when publishing there; else local tag (GHA/seed-sccache-local). Author: kejiqing
+  local sccache_ver="${SCCACHE_VERSION:-v0.10.0}"
+  local sccache_image="${CLAW_SCCACHE_IMAGE:-}"
+  if [[ -z "${sccache_image}" ]]; then
+    if [[ -n "${NEXUS_PUSH_REGISTRY:-}" ]]; then
+      sccache_image="${NEXUS_PUSH_REGISTRY}/${NEXUS_NS:-passionke}/sccache:${sccache_ver}"
+    else
+      sccache_image="sccache:${sccache_ver}"
+      REGION="${REGION:-else}" SCCACHE_VERSION="${sccache_ver}" \
+        bash "${root_dir}/deploy/stack/lib/seed-sccache-local.sh" >&2
+    fi
+  fi
+  echo "==> building compile image ${image_name} (FROM ${rust_base}${CLAW_LINUX_COMPILE_PLATFORM:+, platform=${CLAW_LINUX_COMPILE_PLATFORM}}; apt_cn=${apt_cn}; sccache=${sccache_image})" >&2
   if [[ ${#platform_args[@]} -gt 0 ]]; then
     "${root_dir}/deploy/stack/lib/container-build.sh" "${container_cli}" \
       deploy/stack/Containerfile.rust-compile \
       "${platform_args[@]}" \
       --build-arg "RUST_BASE_IMAGE=${rust_base}" \
       --build-arg "CLAW_USE_CN_APT_MIRROR=${apt_cn}" \
+      --build-arg "SCCACHE_IMAGE=${sccache_image}" \
       -t "${image_name}" >&2
   else
     "${root_dir}/deploy/stack/lib/container-build.sh" "${container_cli}" \
       deploy/stack/Containerfile.rust-compile \
       --build-arg "RUST_BASE_IMAGE=${rust_base}" \
       --build-arg "CLAW_USE_CN_APT_MIRROR=${apt_cn}" \
+      --build-arg "SCCACHE_IMAGE=${sccache_image}" \
       -t "${image_name}" >&2
   fi
 }

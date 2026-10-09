@@ -1,0 +1,5 @@
+# Static sccache binary at /sccache for COPY --from into claw-rust-compile.
+# Seed: deploy/stack/lib/seed-sccache-nora.sh → nora.home.passionke.top/passionke/sccache:vX.Y.Z
+# Author: kejiqing
+FROM scratch
+COPY sccache /sccache

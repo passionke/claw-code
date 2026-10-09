@@ -47,6 +47,31 @@ struct ResolveSessionResponse {
     #[allow(dead_code)]
     root_session_id: String,
     created: bool,
+    #[serde(default = "default_body_relay")]
+    body_relay: String,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+fn default_body_relay() -> String {
+    "passthrough".to_string()
+}
+
+/// Progress-mode report stub (no body bubble). Author: kejiqing
+#[must_use]
+pub fn progress_delegate_stub(
+    label: Option<&str>,
+    child_proj_id: i64,
+    child_session_id: &str,
+    child_turn_id: &str,
+) -> String {
+    let name = label
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("delegate");
+    format!(
+        "> 已委托 {name} 处理（projId={child_proj_id}, sessionId={child_session_id}, turnId={child_turn_id}）\n"
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -431,6 +456,8 @@ pub fn run_delegate_project(
 
     let resolved =
         resolve_delegate_session(&client, &base, initiator, &router_session, parsed.proj_id)?;
+    let body_relay = resolved.body_relay.trim();
+    let progress_only = body_relay == "progress";
 
     let async_resp = enqueue_solve_async(
         &client,
@@ -444,54 +471,74 @@ pub fn run_delegate_project(
     let (report_path, out_path) = ensure_router_report_file(&session_home_dir(), &router_turn)?;
     append_serial_separator(&out_path)?;
 
+    let label_ref = resolved.label.as_deref();
     emit_delegate_active(
-        &async_resp.task_id,
-        &async_resp.turn_id,
-        parsed.proj_id,
-        parsed.proj_id,
-    )
-    .map_err(|e| ToolError::new(format!("delegate.active stdout: {e}")))?;
-
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_t = Arc::clone(&stop);
-    let base_t = base.clone();
-    let spec_session = resolved.delegate_session_id.clone();
-    let spec_turn = async_resp.turn_id.clone();
-    let spec_proj = parsed.proj_id;
-    let out_t = out_path.clone();
-    let stream_client = http_client()?;
-    let stream_join = thread::spawn(move || {
-        stream_specialist_to_hub_and_disk(
-            &stream_client,
-            &base_t,
-            &spec_session,
-            &spec_turn,
-            spec_proj,
-            &out_t,
-            stop_t,
-        );
-    });
-
-    let terminal = poll_task_terminal(&client, &base, &async_resp.task_id).inspect_err(|_| {
-        stop.store(true, Ordering::Relaxed);
-        let _ = emit_delegate_clear();
-    })?;
-
-    // Give the SSE reader a moment to finish done, then stop.
-    thread::sleep(Duration::from_millis(300));
-    stop.store(true, Ordering::Relaxed);
-    let _ = stream_join.join();
-
-    emit_delegate_clear().map_err(|e| ToolError::new(format!("delegate.clear stdout: {e}")))?;
-
-    fill_router_file_from_terminal_if_empty(
-        &client,
-        &base,
         &resolved.delegate_session_id,
         &async_resp.turn_id,
         parsed.proj_id,
-        &out_path,
-    )?;
+        parsed.proj_id,
+        label_ref,
+    )
+    .map_err(|e| ToolError::new(format!("delegate.active stdout: {e}")))?;
+
+    let terminal = if progress_only {
+        // No live body bubble: wait for child terminal, write stub only. Author: kejiqing
+        let terminal =
+            poll_task_terminal(&client, &base, &async_resp.task_id).inspect_err(|_| {
+                let _ = emit_delegate_clear();
+            })?;
+        let stub = progress_delegate_stub(
+            label_ref,
+            parsed.proj_id,
+            &resolved.delegate_session_id,
+            &async_resp.turn_id,
+        );
+        append_router_report(&out_path, &stub)?;
+        terminal
+    } else {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_t = Arc::clone(&stop);
+        let base_t = base.clone();
+        let spec_session = resolved.delegate_session_id.clone();
+        let spec_turn = async_resp.turn_id.clone();
+        let spec_proj = parsed.proj_id;
+        let out_t = out_path.clone();
+        let stream_client = http_client()?;
+        let stream_join = thread::spawn(move || {
+            stream_specialist_to_hub_and_disk(
+                &stream_client,
+                &base_t,
+                &spec_session,
+                &spec_turn,
+                spec_proj,
+                &out_t,
+                stop_t,
+            );
+        });
+
+        let terminal =
+            poll_task_terminal(&client, &base, &async_resp.task_id).inspect_err(|_| {
+                stop.store(true, Ordering::Relaxed);
+                let _ = emit_delegate_clear();
+            })?;
+
+        // Give the SSE reader a moment to finish done, then stop.
+        thread::sleep(Duration::from_millis(300));
+        stop.store(true, Ordering::Relaxed);
+        let _ = stream_join.join();
+
+        fill_router_file_from_terminal_if_empty(
+            &client,
+            &base,
+            &resolved.delegate_session_id,
+            &async_resp.turn_id,
+            parsed.proj_id,
+            &out_path,
+        )?;
+        terminal
+    };
+
+    emit_delegate_clear().map_err(|e| ToolError::new(format!("delegate.clear stdout: {e}")))?;
 
     let written = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
     if written == 0 {
@@ -503,6 +550,7 @@ pub fn run_delegate_project(
     serde_json::to_string_pretty(&json!({
         "status": terminal,
         "projId": parsed.proj_id,
+        "bodyRelay": if progress_only { "progress" } else { "passthrough" },
         "delegateSessionCreated": resolved.created,
         "delegateSessionId": resolved.delegate_session_id,
         "delegateTurnId": async_resp.turn_id,
@@ -576,5 +624,21 @@ mod tests {
         assert!(path.exists());
         append_router_report(&path, "hello").expect("append");
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
+    }
+
+    #[test]
+    fn progress_stub_has_child_refs_not_body() {
+        let stub = progress_delegate_stub(Some("ops"), 271, "dgt_abc", "T_child");
+        assert!(stub.contains("已委托 ops 处理"));
+        assert!(stub.contains("projId=271"));
+        assert!(stub.contains("sessionId=dgt_abc"));
+        assert!(stub.contains("turnId=T_child"));
+        assert!(!stub.contains("report.delta"));
+    }
+
+    #[test]
+    fn progress_stub_default_label() {
+        let stub = progress_delegate_stub(None, 1, "dgt_x", "T_y");
+        assert!(stub.contains("已委托 delegate 处理"));
     }
 }

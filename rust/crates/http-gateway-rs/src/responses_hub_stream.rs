@@ -363,7 +363,11 @@ fn project_responses_msg(cursor: &mut ResponsesCursor, msg: &HubMsg) -> Vec<(Str
                 }),
             ));
         }
-        HubMsg::Process(_) | HubMsg::AskUserCleared | HubMsg::SolveDone => {
+        HubMsg::Process(_)
+        | HubMsg::AskUserCleared
+        | HubMsg::DelegateActive(_)
+        | HubMsg::DelegateClear
+        | HubMsg::SolveDone => {
             if matches!(msg, HubMsg::SolveDone) {
                 close_text(cursor, &mut out);
                 close_reasoning(cursor, &mut out);

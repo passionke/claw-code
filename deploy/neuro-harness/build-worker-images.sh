@@ -28,8 +28,15 @@ for bin in neuro-opencode neuro-appserver; do
   fi
 done
 
+# Classic docker builder does not inject TARGETARCH; BuildKit/podman do. Author: kejiqing
+PLATFORM="${CLAW_LINUX_COMPILE_PLATFORM:-linux/amd64}"
+case "${PLATFORM}" in
+  *arm64*|*aarch64*) TARGETARCH="${TARGETARCH:-arm64}" ;;
+  *) TARGETARCH="${TARGETARCH:-amd64}" ;;
+esac
+
 echo "==> neuro worker images tag=${TAG} base=${WORKER_BASE_IMAGE}"
-echo "    region=$(claw_region_name) npm=${NPM_REGISTRY} node=${NODE_BASE_IMAGE} cli=${CLI}"
+echo "    region=$(claw_region_name) npm=${NPM_REGISTRY} node=${NODE_BASE_IMAGE} cli=${CLI} platform=${PLATFORM} arch=${TARGETARCH}"
 
 engine_smoke() {
   case "$1" in
@@ -43,9 +50,11 @@ engine_smoke() {
 for engine in opencode appserver; do
   image="claw-gateway-worker-${engine}:${TAG}"
   deploy/stack/lib/container-build.sh "${CLI}" "deploy/stack/Containerfile.gateway-worker-${engine}" \
+    --platform "${PLATFORM}" \
     --build-arg "WORKER_BASE_IMAGE=${WORKER_BASE_IMAGE}" \
     --build-arg "NODE_BASE_IMAGE=${NODE_BASE_IMAGE}" \
     --build-arg "NPM_REGISTRY=${NPM_REGISTRY}" \
+    --build-arg "TARGETARCH=${TARGETARCH}" \
     -t "${image}"
   # neuro-* without args prints usage and exits 2: proves the binary loads in this image.
   "${CLI}" run --rm --entrypoint sh "${image}" -c "

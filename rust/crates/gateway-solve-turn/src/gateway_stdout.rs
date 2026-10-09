@@ -26,6 +26,8 @@ struct StdoutEnvelope<'a> {
     proj_id: Option<i64>,
     #[serde(rename = "delegateProjId", skip_serializing_if = "Option::is_none")]
     delegate_proj_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<&'a str>,
     #[serde(rename = "clawExitCode", skip_serializing_if = "Option::is_none")]
     claw_exit_code: Option<i32>,
     #[serde(rename = "outputText", skip_serializing_if = "Option::is_none")]
@@ -58,6 +60,7 @@ pub fn emit_report_delta(text: &str) -> io::Result<()> {
         turn_id: None,
         proj_id: None,
         delegate_proj_id: None,
+        label: None,
         claw_exit_code: None,
         output_text: None,
         output_json: None,
@@ -72,6 +75,7 @@ pub fn emit_delegate_active(
     turn_id: &str,
     proj_id: i64,
     delegate_proj_id: i64,
+    label: Option<&str>,
 ) -> io::Result<()> {
     emit_line(&StdoutEnvelope {
         ev: "delegate.active",
@@ -81,6 +85,7 @@ pub fn emit_delegate_active(
         turn_id: Some(turn_id),
         proj_id: Some(proj_id),
         delegate_proj_id: Some(delegate_proj_id),
+        label,
         claw_exit_code: None,
         output_text: None,
         output_json: None,
@@ -99,6 +104,7 @@ pub fn emit_delegate_clear() -> io::Result<()> {
         turn_id: None,
         proj_id: None,
         delegate_proj_id: None,
+        label: None,
         claw_exit_code: None,
         output_text: None,
         output_json: None,
@@ -121,6 +127,7 @@ pub fn emit_solve_done(
         turn_id: None,
         proj_id: None,
         delegate_proj_id: None,
+        label: None,
         claw_exit_code: Some(claw_exit_code),
         output_text: Some(output_text),
         output_json,
@@ -138,6 +145,7 @@ pub fn emit_solve_error(message: &str, http_status_hint: u16) -> io::Result<()> 
         turn_id: None,
         proj_id: None,
         delegate_proj_id: None,
+        label: None,
         claw_exit_code: Some(1),
         output_text: None,
         output_json: None,

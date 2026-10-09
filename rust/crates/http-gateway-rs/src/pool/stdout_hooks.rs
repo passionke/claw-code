@@ -36,9 +36,11 @@ pub fn merge_stdout_hooks(
             if let Some(ref h) = hub_for_worker {
                 if let Some(value) = parse_stdout_line(&line) {
                     if is_delegate_registry_event(&value) {
+                        // PG registry + Hub SSE (biz.delegate.*) both need the event. Author: kejiqing
                         if let Some(ref dtx) = delegate_tx {
-                            let _ = dtx.send(value);
+                            let _ = dtx.send(value.clone());
                         }
+                        h.ingest_json(&tid_for_worker, &value);
                         continue;
                     }
                 }

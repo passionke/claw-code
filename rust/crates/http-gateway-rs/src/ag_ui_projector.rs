@@ -271,7 +271,10 @@ pub fn project_hub_msg(turn_id: &str, msg: &HubMsg, steps: &mut Vec<ProcessStep>
             "name": "a2ui.cleared",
             "value": { "catalogId": "claw-ask/v1" }
         })],
-        HubMsg::Delta(_) | HubMsg::SolveDone => Vec::new(),
+        HubMsg::Delta(_)
+        | HubMsg::DelegateActive(_)
+        | HubMsg::DelegateClear
+        | HubMsg::SolveDone => Vec::new(),
     }
 }
 

@@ -147,6 +147,8 @@ export interface DelegateTargetRow {
 export interface DelegateTargetsResponse {
   initiatorProjId: number;
   targets: DelegateTargetRow[];
+  /** passthrough (default) | progress — router-level body bubble mode. Author: kejiqing */
+  bodyRelay?: "passthrough" | "progress" | string;
 }
 
 export interface SkillJsonItem {

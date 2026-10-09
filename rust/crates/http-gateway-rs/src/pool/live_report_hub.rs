@@ -33,12 +33,23 @@ pub struct ProcessEvent {
     pub payload: Value,
 }
 
+/// Active nested delegate for user SSE (`biz.delegate.active`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct DelegateActivePending {
+    pub session_id: String,
+    pub turn_id: String,
+    pub proj_id: i64,
+    pub label: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum HubMsg {
     Delta(HubDeltaChunk),
     Process(ProcessEvent),
     AskUser(AskUserPending),
     AskUserCleared,
+    DelegateActive(DelegateActivePending),
+    DelegateClear,
     SolveDone,
 }
 
@@ -51,6 +62,7 @@ struct TurnStdoutState {
     solve_done: bool,
     first_report_at_ms: Option<i64>,
     pending_ask: Option<AskUserPending>,
+    pending_delegate: Option<DelegateActivePending>,
     tx: broadcast::Sender<HubMsg>,
 }
 
@@ -63,8 +75,37 @@ fn empty_turn_state() -> TurnStdoutState {
         solve_done: false,
         first_report_at_ms: None,
         pending_ask: None,
+        pending_delegate: None,
         tx: broadcast::channel(HUB_CHANNEL_CAP).0,
     }
+}
+
+fn parse_delegate_active(value: &Value) -> Option<DelegateActivePending> {
+    let session_id = value
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let turn_id = value
+        .get("turnId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let proj_id = value.get("projId").and_then(Value::as_i64)?;
+    let label = value
+        .get("label")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some(DelegateActivePending {
+        session_id,
+        turn_id,
+        proj_id,
+        label,
+    })
 }
 
 fn parse_ask_pending(value: &Value) -> Option<AskUserPending> {
@@ -176,12 +217,26 @@ impl LiveReportHub {
             "solve.done" => {
                 state.solve_done = true;
                 state.pending_ask = None;
+                state.pending_delegate = None;
                 let _ = state.tx.send(HubMsg::SolveDone);
                 drop(guard);
                 self.try_remove_turn(turn_id);
             }
-            "delegate.active" | "delegate.clear" => {
-                // Handled by delegate_active_ingest before hub ingest.
+            "delegate.active" => {
+                let Some(pending) = parse_delegate_active(value) else {
+                    tracing::warn!(
+                        target: "claw_live_report",
+                        turn_id = %turn_id,
+                        "live_report.ingest_skipped — delegate.active missing session/turn/proj"
+                    );
+                    return;
+                };
+                state.pending_delegate = Some(pending.clone());
+                let _ = state.tx.send(HubMsg::DelegateActive(pending));
+            }
+            "delegate.clear" => {
+                state.pending_delegate = None;
+                let _ = state.tx.send(HubMsg::DelegateClear);
             }
             other => {
                 tracing::warn!(
@@ -272,19 +327,24 @@ impl LiveReportHub {
         }
     }
 
-    /// Atomic (subscribe, snapshot-chunks): no overlap between replay and broadcast tail.
+    /// Atomic (subscribe, snapshot-chunks + pending delegate): no overlap with broadcast tail.
     #[must_use]
     pub fn subscribe_with_snapshot(
         &self,
         turn_id: &str,
-    ) -> (broadcast::Receiver<HubMsg>, Vec<HubDeltaChunk>) {
+    ) -> (
+        broadcast::Receiver<HubMsg>,
+        Vec<HubDeltaChunk>,
+        Option<DelegateActivePending>,
+    ) {
         let mut guard = self.inner.lock().expect("live_report_hub lock");
         let state = guard
             .entry(turn_id.to_string())
             .or_insert_with(empty_turn_state);
         let rx = state.tx.subscribe();
         let snapshot = state.chunks.clone();
-        (rx, snapshot)
+        let pending_delegate = state.pending_delegate.clone();
+        (rx, snapshot, pending_delegate)
     }
 
     /// Subscribe with report + process event snapshots for AG-UI. Author: kejiqing
@@ -360,9 +420,13 @@ mod tests {
             match rx.recv().await {
                 Ok(HubMsg::Delta(delta)) => return delta.text,
                 Ok(HubMsg::SolveDone) => panic!("unexpected SolveDone"),
-                Ok(HubMsg::AskUser(_)) | Ok(HubMsg::AskUserCleared) | Ok(HubMsg::Process(_)) => {
-                    continue
-                }
+                Ok(
+                    HubMsg::AskUser(_)
+                    | HubMsg::AskUserCleared
+                    | HubMsg::Process(_)
+                    | HubMsg::DelegateActive(_)
+                    | HubMsg::DelegateClear,
+                ) => continue,
                 Err(_) => continue,
             }
         }
@@ -455,7 +519,8 @@ mod tests {
     async fn delta_and_snapshot() {
         let hub = LiveReportHub::default();
         let turn = "T1";
-        let (mut rx, _) = hub.subscribe_with_snapshot(turn);
+        let (mut rx, _, pending) = hub.subscribe_with_snapshot(turn);
+        assert!(pending.is_none());
         ingest_delta(&hub, turn, "a");
         assert_eq!(recv_delta(&mut rx).await, "a");
         assert_eq!(hub.snapshot_text(turn), "a");
@@ -466,5 +531,30 @@ mod tests {
             text: String::new(),
             emit_seq: None,
         };
+    }
+
+    #[tokio::test]
+    async fn delegate_active_replays_on_subscribe() {
+        let hub = LiveReportHub::default();
+        let turn = "T_dgt";
+        hub.ingest_json(
+            turn,
+            &json!({
+                "ev": "delegate.active",
+                "sessionId": "dgt_x",
+                "turnId": "T_child",
+                "projId": 99,
+                "label": "ops"
+            }),
+        );
+        let (_, _, pending) = hub.subscribe_with_snapshot(turn);
+        let p = pending.expect("replay");
+        assert_eq!(p.session_id, "dgt_x");
+        assert_eq!(p.turn_id, "T_child");
+        assert_eq!(p.proj_id, 99);
+        assert_eq!(p.label.as_deref(), Some("ops"));
+        hub.ingest_json(turn, &json!({"ev": "delegate.clear"}));
+        let (_, _, cleared) = hub.subscribe_with_snapshot(turn);
+        assert!(cleared.is_none());
     }
 }

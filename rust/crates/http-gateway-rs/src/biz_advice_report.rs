@@ -208,9 +208,20 @@ pub struct BizReportDeltaChunk {
     pub emit_seq: Option<u64>,
 }
 
+/// Nested delegate active payload for `biz.delegate.active`. Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct BizDelegateActive {
+    pub session_id: String,
+    pub turn_id: String,
+    pub proj_id: i64,
+    pub label: Option<String>,
+}
+
 /// Messages from the in-process polish worker to the HTTP SSE stream.
 pub enum BizReportStreamMsg {
     Delta(BizReportDeltaChunk),
+    DelegateActive(BizDelegateActive),
+    DelegateClear,
     Done(BizAdviceReportPayload),
     Error(String),
 }
@@ -279,6 +290,22 @@ pub fn stream_msg_to_event_obs(msg: &BizReportStreamMsg, obs: Option<(u64, u64, 
                 .to_string()
             };
             Event::default().event("biz.report.delta").data(body)
+        }
+        BizReportStreamMsg::DelegateActive(active) => {
+            let mut body = serde_json::json!({
+                "sessionId": active.session_id,
+                "turnId": active.turn_id,
+                "projId": active.proj_id,
+            });
+            if let Some(label) = &active.label {
+                body["label"] = serde_json::json!(label);
+            }
+            Event::default()
+                .event("biz.delegate.active")
+                .data(body.to_string())
+        }
+        BizReportStreamMsg::DelegateClear => {
+            Event::default().event("biz.delegate.clear").data("{}")
         }
         BizReportStreamMsg::Done(payload) => {
             let mut payload = payload.clone();
@@ -378,6 +405,9 @@ pub fn biz_report_sse_event_stream(
                         &msg,
                         Some((seq, stream_started_at_ms, server_delta_ms)),
                     )
+                }
+                BizReportStreamMsg::DelegateActive(_) | BizReportStreamMsg::DelegateClear => {
+                    stream_msg_to_event_obs(&msg, None)
                 }
                 BizReportStreamMsg::Done(payload) => {
                     let stream_duration_ms =
