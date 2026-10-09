@@ -100,11 +100,9 @@ async fn probe_image_digest(image_ref: &str) -> Result<String, String> {
     let script = std::env::var("CLAW_REPO_ROOT").unwrap_or_else(|_| "/app".into());
     let py = format!("{script}/deploy/e2b/registry_extract.py");
     if tokio::fs::try_exists(&py).await.unwrap_or(false) {
-        let code = format!(
-            "from registry_extract import try_image_digest; import sys; d=try_image_digest(sys.argv[1]) or ''; print(d)",
-        );
+        let code = "from registry_extract import try_image_digest; import sys; d=try_image_digest(sys.argv[1]) or ''; print(d)";
         let out = tokio::process::Command::new("python3")
-            .args(["-c", &code, image_ref])
+            .args(["-c", code, image_ref])
             .current_dir(format!("{script}/deploy/e2b"))
             .output()
             .await

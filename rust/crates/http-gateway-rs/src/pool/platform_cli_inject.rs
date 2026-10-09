@@ -31,7 +31,7 @@ pub async fn run_platform_cli_inject(
             inject_optional(
                 client,
                 handle,
-                &pins.neuro_opencode,
+                pins.neuro_opencode.as_ref(),
                 "cliPins.neuroOpencode",
                 &["/usr/local/bin/neuro-opencode"],
             )
@@ -39,7 +39,7 @@ pub async fn run_platform_cli_inject(
             inject_optional(
                 client,
                 handle,
-                &pins.acp_opencode,
+                pins.acp_opencode.as_ref(),
                 "cliPins.acpOpencode",
                 &["/usr/local/lib/neuro-engines/opencode/bin/opencode"],
             )
@@ -49,7 +49,7 @@ pub async fn run_platform_cli_inject(
             inject_optional(
                 client,
                 handle,
-                &pins.neuro_appserver,
+                pins.neuro_appserver.as_ref(),
                 "cliPins.neuroAppserver",
                 &["/usr/local/bin/neuro-appserver"],
             )
@@ -57,7 +57,7 @@ pub async fn run_platform_cli_inject(
             inject_optional(
                 client,
                 handle,
-                &pins.acp_appserver,
+                pins.acp_appserver.as_ref(),
                 "cliPins.acpAppserver",
                 &["/usr/local/lib/neuro-engines/codex-acp"],
             )
@@ -91,7 +91,7 @@ pub async fn run_platform_cli_inject(
 async fn inject_optional(
     client: &E2bSandboxClient,
     handle: &E2bSandboxHandle,
-    pin: &Option<CliPinEntry>,
+    pin: Option<&CliPinEntry>,
     label: &str,
     expected_paths: &[&str],
 ) -> Result<(), String> {
