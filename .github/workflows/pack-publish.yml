@@ -35,13 +35,9 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           REGION: ${{ inputs.region }}
-          CLAW_IMAGE_PREFIX: ${{ vars.CLAW_IMAGE_PREFIX || secrets.CLAW_IMAGE_PREFIX }}
-          CLAW_REGISTRY_USER: ${{ secrets.CLAW_REGISTRY_USER || secrets.NEXUS_USER }}
-          CLAW_REGISTRY_PASSWORD: ${{ secrets.CLAW_REGISTRY_PASSWORD || secrets.NEXUS_PASSWORD }}
-          NEXUS_USER: ${{ secrets.NEXUS_USER }}
-          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
-          NEXUS_PUSH_REGISTRY: ${{ vars.NEXUS_PUSH_REGISTRY }}
-          NEXUS_NS: ${{ vars.NEXUS_NS || 'passionke' }}
+          CLAW_IMAGE_PREFIX: ${{ vars.ACR_REGISTRY }}
+          CLAW_REGISTRY_USER: ${{ secrets.ACR_USERNAME }}
+          CLAW_REGISTRY_PASSWORD: ${{ secrets.ACR_PASSWORD }}
         run: |
           set -euo pipefail
           chmod +x deploy/pack/publish.sh
