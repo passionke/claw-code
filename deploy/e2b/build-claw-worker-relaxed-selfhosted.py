@@ -247,7 +247,9 @@ def main() -> int:
     )
     print(f"OK: relaxed worker template {alias!r} ({build.template_id}) from_image")
 
-    if _env("CLAW_E2B_TEMPLATE_SKIP_VERIFY", "0") not in ("1", "true", "yes"):
+    # Heavy nas-api e2e is opt-in; protocol register already did Template.build.
+    # Author: kejiqing
+    if _env("CLAW_E2B_RELAXED_POST_VERIFY") in ("1", "true", "yes"):
         verify_py = _E2B_DIR / "verify-claw-worker-relaxed-sandbox.py"
         if verify_py.is_file():
             print("==> post-build sandbox verify …")
