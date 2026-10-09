@@ -31,7 +31,7 @@ const GLOBAL_MENU_CHILDREN = [
   { key: "/global/inference", label: "全局推理" },
   { key: "/global/e2b-platform", label: "e2b 平台" },
   { key: "/global/e2b-core", label: "核心组件" },
-  { key: "/global/cli-pins", label: "Worker CLI 版本" },
+  { key: "/global/agent-engines", label: "Agent 引擎" },
   { key: "/global/oss", label: "OSS 附件存储" },
   { key: "/global/strict-landlock", label: "Strict Landlock" },
   { key: "/global/pats", label: "PAT 配置" },

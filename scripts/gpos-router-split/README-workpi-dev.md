@@ -24,7 +24,7 @@ Author: kejiqing
 |----|--------|-------------|----------|
 | A1 | GitHub | Actions → `claw-code-branch-worker` → **Run workflow**（手工；push 不再自动打） | ACR 有 `claw-code:branch-<分支名>`（amd64，给 e2b） |
 | A2 | workPi | `git pull` 同分支 | 部署脚本/配置对齐 |
-| A3 | workPi | `cp -n .env.workpi .env`（首次）后 `./deploy/stack/lib/workpi-branch-deploy.sh branch-<分支名>` | e2b 模板 PG `buildId` 更新；**本地 arm64** `build local` + `restart` |
+| A3 | workPi | Gateway 用 `gateway.sh pack-deploy`；e2b 协议层单独执行 `deploy/e2b/publish-worker-protocol.sh` | 两层独立验证，不再使用组合发布脚本 |
 | A4 | workPi | `curl http://127.0.0.1:18088/healthz` | `ok=true`；worker 合同含新 `buildId`；`deployImageTag=local` |
 
 Tag 示例：`branch-feat-delegate-project-tool-results`（勿用 `release-v*`）。

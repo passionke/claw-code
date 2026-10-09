@@ -119,7 +119,7 @@ pub struct ClawEngine;
 impl EngineStrategy for ClawEngine {}
 
 /// A neuro-harness engine: ACP agent behind `neuro-<name>` on the **shared** strict shell
-/// template; CLI/engines installed via platform worker.init (cliPins). Author: kejiqing
+/// template; the selected Agent engine is installed during worker.init. Author: kejiqing
 pub struct NeuroEngine {
     name: &'static str,
     worker_bin: &'static str,
@@ -155,7 +155,7 @@ impl EngineStrategy for NeuroEngine {
     }
 
     fn worker_template(&self, store: &GatewayGlobalSettingsStore) -> Option<EngineWorkerTemplate> {
-        // Shared claw-worker / claw-worker-base shell; engines via cliPins inject.
+        // Shared e2b protocol template; the selected Agent engine is installed at init.
         let settings = &store.e2b_worker;
         Some(EngineWorkerTemplate {
             template_id: settings
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn template_defaults_to_shared_shell_and_pins_build() {
-        // Shared claw-worker shell; engines via cliPins inject. Author: kejiqing
+        // Shared e2b protocol template; the selected Agent engine is installed at init.
         let mut store = GatewayGlobalSettingsStore::default();
         let t = HarnessEngine::Opencode
             .strategy()

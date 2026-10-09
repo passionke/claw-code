@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Helpers for pinning remote registry gateway/worker tags (GHCR, ACR, …) without editing .env. Author: kejiqing
+# Helpers for pinning Gateway/Admin image tags without editing .env. Author: kejiqing
 
 # Default namespaces when `.env` omits CLAW_IMAGE_PREFIX (personal ACR + passionke org on GHCR).
 claw_default_acr_image_prefix() {
@@ -25,11 +25,11 @@ claw_image_registry_prefix_from_env() {
   # Prefer new name http-gateway-rs; accept legacy claw-code for prefix parse only.
   for name in http-gateway-rs claw-code; do
     if [[ "$gw" == *"/${name}:"* ]]; then
-      printf '%s' "${gw%%/${name}:*}"
+      printf '%s' "${gw%%/"${name}":*}"
       return 0
     fi
     if [[ "$gw" == */"${name}" ]]; then
-      printf '%s' "${gw%/${name}}"
+      printf '%s' "${gw%/"${name}"}"
       return 0
     fi
   done
@@ -49,11 +49,8 @@ claw_image_registry_prefix_from_env() {
   esac
 }
 
-# After sourcing .env: set GATEWAY_IMAGE + worker image to <prefix>/...:<tag>.
-# Optional overrides (branch CI has no playground / relaxed host images). Author: kejiqing
+# After sourcing .env: set only Gateway/Admin images to <prefix>/...:<tag>.
 #   CLAW_RELEASE_PLAYGROUND_IMAGE  — pin playground (e.g. claw-gateway-playground:local)
-#   CLAW_RELEASE_RELAXED_IMAGE     — pin relaxed worker image
-#   CLAW_RELEASE_OMIT_RELAXED_IMAGE=1 — do not set CLAW_RELAXED_PODMAN_IMAGE (e2b templates only)
 claw_apply_release_image_tag() {
   local tag="${1:?}"
   local prefix
@@ -64,119 +61,40 @@ claw_apply_release_image_tag() {
   else
     export GATEWAY_PLAYGROUND_IMAGE="${prefix}/http-gateway-playground:${tag}"
   fi
-  # Empty worker shells (CLI via worker.init). Author: kejiqing
-  export CLAW_DOCKER_IMAGE="${prefix}/claw-worker-base:${tag}"
-  if [[ -n "${CLAW_RELEASE_RELAXED_IMAGE:-}" ]]; then
-    export CLAW_RELAXED_PODMAN_IMAGE="${CLAW_RELEASE_RELAXED_IMAGE}"
-  elif [[ "${CLAW_RELEASE_OMIT_RELAXED_IMAGE:-0}" == "1" ]]; then
-    unset CLAW_RELAXED_PODMAN_IMAGE || true
-  else
-    export CLAW_RELAXED_PODMAN_IMAGE="${prefix}/claw-worker-base-relaxed:${tag}"
-  fi
 }
 
-# One upgrade knob: pool worker image follows GATEWAY_IMAGE tag/registry (unless explicit opt-out). kejiqing
-claw_export_pool_worker_image_matched_to_gateway() {
-  local gw="${GATEWAY_IMAGE:-}"
-  [[ -n "$gw" ]] || return 0
-  if [[ "${CLAW_POOL_WORKER_IMAGE_EXPLICIT:-0}" == "1" ]]; then
-    return 0
-  fi
-  local derived="" derived_relaxed=""
-  if [[ "$gw" == *http-gateway-rs* ]]; then
-    derived="${gw/http-gateway-rs/claw-worker-base}"
-    derived_relaxed="${gw/http-gateway-rs/claw-worker-base-relaxed}"
-  elif [[ "$gw" == *claw-code* ]]; then
-    # Legacy deploy images still on cluster. Author: kejiqing
-    derived="${gw/claw-code/claw-gateway-worker}"
-    derived_relaxed="${gw/claw-code/claw-gateway-worker-relaxed}"
-  else
-    return 0
-  fi
-  export CLAW_DOCKER_IMAGE="$derived"
-  if [[ "${CLAW_RELEASE_OMIT_RELAXED_IMAGE:-0}" == "1" ]]; then
-    unset CLAW_RELAXED_PODMAN_IMAGE || true
-  elif [[ -n "${CLAW_RELEASE_RELAXED_IMAGE:-}" ]]; then
-    export CLAW_RELAXED_PODMAN_IMAGE="${CLAW_RELEASE_RELAXED_IMAGE}"
-  else
-    export CLAW_RELAXED_PODMAN_IMAGE="$derived_relaxed"
-  fi
-}
-
-# Same worker image ref as solve pool / pack-deploy build (no separate CLAW_E2B_WORKER_IMAGE). kejiqing
+# Protocol images are explicit and never derived from a Gateway release tag. Author: kejiqing
 claw_resolve_worker_image_ref() {
-  if [[ -n "${CLAW_PODMAN_IMAGE:-}" ]]; then
-    printf '%s' "${CLAW_PODMAN_IMAGE}"
-    return 0
+  local image="${CLAW_E2B_WORKER_IMAGE:-${CLAW_PODMAN_IMAGE:-${CLAW_DOCKER_IMAGE:-}}}"
+  if [[ -z "$image" ]]; then
+    echo "set CLAW_E2B_WORKER_IMAGE to an independently published protocol image" >&2
+    return 1
   fi
-  if [[ -n "${CLAW_DOCKER_IMAGE:-}" ]]; then
-    printf '%s' "${CLAW_DOCKER_IMAGE}"
-    return 0
-  fi
-  local gw="${GATEWAY_IMAGE:-}"
-  if [[ -n "$gw" ]]; then
-    if [[ "$gw" == *claw-gateway-rs* ]]; then
-      printf '%s' "${gw/claw-gateway-rs/claw-gateway-worker}"
-      return 0
-    fi
-    if [[ "$gw" == *claw-code* ]]; then
-      printf '%s' "${gw/claw-code/claw-gateway-worker}"
-      return 0
-    fi
-    printf '%s' "claw-gateway-worker:${gw##*:}"
-    return 0
-  fi
-  printf '%s' "claw-gateway-worker:local"
+  printf '%s' "$image"
 }
 
-# pack-deploy: one tag for gateway + worker + sandbox (local or release-*). Author: kejiqing
+# Local Gateway/Admin pack-deploy. Author: kejiqing
 claw_apply_pack_deploy_image_tag() {
   local tag="${1:?pack-deploy image tag required}"
   export GATEWAY_IMAGE="claw-gateway-rs:${tag}"
   export GATEWAY_PLAYGROUND_IMAGE="claw-gateway-playground:${tag}"
-  export CLAW_PODMAN_IMAGE="claw-gateway-worker:${tag}"
-  export CLAW_RELAXED_PODMAN_IMAGE="claw-gateway-worker-relaxed:${tag}"
-  if [[ -z "${CLAW_SANDBOX_IMAGE:-}" || "${CLAW_SANDBOX_IMAGE}" == claw-sandbox:* ]]; then
-    export CLAW_SANDBOX_IMAGE="claw-sandbox:${tag}"
-  fi
 }
 
-# Compose pool sidecar reads env files from disk — last file wins; override stale CLAW_*_IMAGE in repo .env.
+# e2b owns Worker lifecycle; Gateway release does not write Worker image overrides.
 claw_write_pool_worker_env_override() {
   local script_dir="${1:?}"
   local f="${script_dir}/.claw-pool-worker.env"
-  local gw="${GATEWAY_IMAGE:-}"
-  if [[ "$gw" != *claw-code* ]] || [[ "${CLAW_POOL_WORKER_IMAGE_EXPLICIT:-0}" == "1" ]]; then
-    {
-      printf '%s\n' '# GENERATED — no CLAW_* worker override (no claw-code in GATEWAY_IMAGE or CLAW_POOL_WORKER_IMAGE_EXPLICIT=1). kejiqing'
-    } >"${f}"
-    return 0
-  fi
-  [[ -n "${CLAW_DOCKER_IMAGE:-}" ]] || {
-    {
-      printf '%s\n' '# GENERATED — CLAW_DOCKER_IMAGE unset; pool sidecar uses repo .env only. kejiqing'
-    } >"${f}"
-    return 0
-  }
-  {
-    printf '%s\n' '# GENERATED — do not edit. CLAW_DOCKER_IMAGE synced from GATEWAY_IMAGE (claw-code→claw-gateway-worker). Set CLAW_POOL_WORKER_IMAGE_EXPLICIT=1 to use repo .env only. kejiqing'
-    printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}"
-  } >"${f}"
+  printf '%s\n' '# GENERATED — Gateway releases do not pin e2b Worker protocol images. kejiqing' >"${f}"
 }
 
 # Compose reads --env-file from disk; second file overrides keys from repo .env.
 claw_write_release_pin_env() {
   local podman_dir="$1"
-  claw_export_pool_worker_image_matched_to_gateway
   local f="${podman_dir}/.claw-image-release.env"
   {
     printf '%s\n' "# GENERATED — do not edit. rm file to drop pin. Author: kejiqing"
     printf '%s\n' "GATEWAY_IMAGE=${GATEWAY_IMAGE}"
     printf '%s\n' "GATEWAY_PLAYGROUND_IMAGE=${GATEWAY_PLAYGROUND_IMAGE}"
-    printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}"
-    if [[ -n "${CLAW_RELAXED_PODMAN_IMAGE:-}" ]]; then
-      printf '%s\n' "CLAW_RELAXED_PODMAN_IMAGE=${CLAW_RELAXED_PODMAN_IMAGE}"
-    fi
   } >"${f}"
 }
 
@@ -211,18 +129,15 @@ claw_reapply_pool_image_pins() {
     claw_write_release_pin_env "${podman_dir}"
   elif [[ -f "${podman_dir}/.claw-image-release.env" ]]; then
     set -a
-    # shellcheck disable=SC1090
+    # shellcheck disable=SC1090,SC1091
     source "${podman_dir}/.claw-image-release.env"
     set +a
-    claw_export_pool_worker_image_matched_to_gateway
     claw_write_release_pin_env "${podman_dir}"
-  else
-    claw_export_pool_worker_image_matched_to_gateway
   fi
   claw_write_pool_worker_env_override "${podman_dir}"
   if [[ -f "${podman_dir}/.claw-pool-worker.env" ]]; then
     set -a
-    # shellcheck disable=SC1090
+    # shellcheck disable=SC1090,SC1091
     source "${podman_dir}/.claw-pool-worker.env"
     set +a
   fi

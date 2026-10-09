@@ -4,8 +4,18 @@
 # Author: kejiqing
 set -euo pipefail
 
-# Release bins kept under .linux-artifacts/release (neuro-* = neuro-harness engine workers). Author: kejiqing
-CLAW_LINUX_RELEASE_BINS="claw http-gateway-rs neuro-opencode neuro-appserver"
+# Callers select binaries at their release boundary. Author: kejiqing
+CLAW_LINUX_RELEASE_BINS="${CLAW_LINUX_RELEASE_BINS:-claw http-gateway-rs neuro-opencode neuro-appserver}"
+for _claw_release_bin in ${CLAW_LINUX_RELEASE_BINS}; do
+  case "${_claw_release_bin}" in
+    claw | http-gateway-rs | neuro-opencode | neuro-appserver) ;;
+    *)
+      echo "linux compile: unsupported release binary ${_claw_release_bin}" >&2
+      exit 2
+      ;;
+  esac
+done
+unset _claw_release_bin
 
 # Resolve container platform arch (override via CLAW_LINUX_COMPILE_PLATFORM=linux/amd64). Author: kejiqing
 claw_linux_compile_arch() {
@@ -81,7 +91,7 @@ claw_linux_compile_release() {
   linux_arch="$(claw_linux_compile_arch)"
   echo "  platform: linux/${linux_arch}"
 
-  # shellcheck disable=SC2086
+  # shellcheck disable=SC2086,SC2016
   # shellcheck source=/dev/null
   source "${root_dir}/deploy/stack/rust-version.env"
   export CLAW_RUST_VERSION
@@ -180,8 +190,8 @@ claw_linux_compile_release() {
     vol_args+=(-v "${swagger_dir}:/swagger-ui:ro")
   fi
 
-  # shellcheck disable=SC2086
   local compile_rc=0
+  # shellcheck disable=SC2086,SC2016
   "${container_cli}" run --rm --pull=never --platform "linux/${linux_arch}" \
     -e "CLAW_RUST_VERSION=${CLAW_RUST_VERSION}" \
     -e "RUSTUP_DIST_SERVER=${rustup_dist}" \
@@ -215,11 +225,27 @@ claw_linux_compile_release() {
       if command -v sccache >/dev/null 2>&1; then
         sccache --show-stats || true
       fi
-      cargo build --release -p rusty-claude-cli --bin claw \
-        -p http-gateway-rs --bin http-gateway-rs
+      main_args=()
+      case " ${CLAW_LINUX_RELEASE_BINS} " in
+        *" claw "*) main_args+=(-p rusty-claude-cli --bin claw) ;;
+      esac
+      case " ${CLAW_LINUX_RELEASE_BINS} " in
+        *" http-gateway-rs "*) main_args+=(-p http-gateway-rs --bin http-gateway-rs) ;;
+      esac
+      if [ "${#main_args[@]}" -gt 0 ]; then
+        cargo build --release "${main_args[@]}"
+      fi
       # neuro-harness is its own workspace: ACP serde_json features must not unify into claw/gateway.
-      cargo build --release --manifest-path crates/neuro-harness/Cargo.toml \
-        --bin neuro-opencode --bin neuro-appserver
+      neuro_args=()
+      case " ${CLAW_LINUX_RELEASE_BINS} " in
+        *" neuro-opencode "*) neuro_args+=(--bin neuro-opencode) ;;
+      esac
+      case " ${CLAW_LINUX_RELEASE_BINS} " in
+        *" neuro-appserver "*) neuro_args+=(--bin neuro-appserver) ;;
+      esac
+      if [ "${#neuro_args[@]}" -gt 0 ]; then
+        cargo build --release --manifest-path crates/neuro-harness/Cargo.toml "${neuro_args[@]}"
+      fi
       if command -v sccache >/dev/null 2>&1; then
         sccache --show-stats || true
       fi

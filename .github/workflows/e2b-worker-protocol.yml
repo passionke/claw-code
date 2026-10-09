@@ -1,0 +1,70 @@
+name: e2b-worker-protocol
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Independent e2b protocol version"
+        required: true
+        type: string
+      region:
+        description: "china | else"
+        required: true
+        default: china
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: [self-hosted, home-ubt]
+    environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
+    timeout-minutes: 360
+    steps:
+      - name: Self-hosted workspace prep
+        run: |
+          set -euo pipefail
+          docker run --rm -v "${GITHUB_WORKSPACE}:/w:rw" alpine:3.20 \
+            chown -R "$(id -u):$(id -g)" /w
+
+      - uses: actions/checkout@v4
+
+      - name: Verify release boundaries
+        run: bash deploy/verify-release-boundaries.sh
+
+      - name: Prepare pinned e2b SDK
+        env:
+          REGION: ${{ inputs.region }}
+        run: |
+          set -euo pipefail
+          python3 -m venv .e2b-venv
+          if [ "${REGION}" = "china" ]; then
+            .e2b-venv/bin/pip install \
+              -i https://mirrors.aliyun.com/pypi/simple \
+              --trusted-host mirrors.aliyun.com \
+              -r deploy/e2b/requirements-e2b-sdk.txt
+          else
+            .e2b-venv/bin/pip install -r deploy/e2b/requirements-e2b-sdk.txt
+          fi
+
+      - name: Publish e2b Worker protocol
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REGION: ${{ inputs.region }}
+          CLAW_IMAGE_PREFIX: ${{ vars.ACR_REGISTRY }}
+          CLAW_REGISTRY_USER: ${{ secrets.ACR_USERNAME }}
+          CLAW_REGISTRY_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          CLAW_E2B_API_KEY: ${{ secrets.CLAW_E2B_API_KEY }}
+          CLAW_E2B_API_URL: ${{ vars.CLAW_E2B_API_URL }}
+          CLAW_E2B_SANDBOX_URL: ${{ vars.CLAW_E2B_SANDBOX_URL }}
+          CLAW_E2B_DOMAIN: ${{ vars.CLAW_E2B_DOMAIN }}
+          CLAW_E2B_VENV: ${{ github.workspace }}/.e2b-venv
+          CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
+        run: bash deploy/e2b/publish-worker-protocol.sh
+
+      - name: Self-hosted workspace cleanup
+        if: always()
+        run: |
+          rm -rf .e2b-venv deploy/stack/.linux-artifacts
+          bash deploy/stack/lib/ci-home-ubt-post-image-cleanup.sh

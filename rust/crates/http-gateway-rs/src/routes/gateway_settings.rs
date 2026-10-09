@@ -14,8 +14,8 @@ use crate::routes::app::{
     post_gateway_bootstrap_publish_observe_templates_handler,
     post_gateway_bootstrap_publish_templates_handler, post_gateway_bootstrap_reopen_handler,
     post_gateway_bootstrap_reset_handler, probe_gateway_claw_tap_handler,
-    put_gateway_active_llm_config_handler, put_gateway_claw_tap_handler,
-    put_gateway_cli_pins_handler, put_gateway_e2b_observe_settings_handler,
+    put_gateway_active_llm_config_handler, put_gateway_agent_engines_handler,
+    put_gateway_claw_tap_handler, put_gateway_e2b_observe_settings_handler,
     put_gateway_e2b_singleton_templates_handler, put_gateway_e2b_worker_settings_handler,
     put_gateway_strict_landlock_default_handler, reset_gateway_e2b_singleton_handler,
     reset_gateway_observe_tap_handler, revoke_gateway_admin_mcp_token_handler,
@@ -93,8 +93,8 @@ pub(crate) fn router() -> Router<AppState> {
             put(put_gateway_e2b_singleton_templates_handler),
         )
         .route(
-            "/v1/gateway/global-settings/cli-pins",
-            put(put_gateway_cli_pins_handler),
+            "/v1/gateway/global-settings/agent-engines",
+            put(put_gateway_agent_engines_handler),
         )
         .route(
             "/v1/gateway/global-settings/e2b-worker",

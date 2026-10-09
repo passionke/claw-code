@@ -22,10 +22,9 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY deploy/stack/.linux-artifacts/release/claw /usr/local/bin/claw
 COPY deploy/stack/.linux-artifacts/release/http-gateway-rs /usr/local/bin/http-gateway-rs
 COPY deploy/e2b/e2b_exec.py /app/deploy/e2b/
-COPY deploy/e2b/guest-install-cli-pin.sh /app/deploy/e2b/
+COPY deploy/e2b/guest-install-agent-engine.sh /app/deploy/e2b/
 COPY deploy/e2b/requirements-e2b-sdk.txt /tmp/requirements-e2b-sdk.txt
 COPY scripts/mind-kb/ /app/scripts/mind-kb/
 COPY docs/gpos-assistant-prompt-content.md /app/docs/
@@ -41,7 +40,7 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
     fi \
     && chmod +x /app/deploy/e2b/e2b_exec.py
 # Artifact upload may drop +x; enforce before ENTRYPOINT. kejiqing
-RUN chmod +x /usr/local/bin/claw /usr/local/bin/http-gateway-rs
+RUN chmod +x /usr/local/bin/http-gateway-rs
 # Host pool: claw-sandbox from linux-compile (.linux-artifacts/release/claw-sandbox), not in gateway image. kejiqing
 
 ENV CLAW_HTTP_ADDR=0.0.0.0:8080

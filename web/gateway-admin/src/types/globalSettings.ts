@@ -238,18 +238,14 @@ export interface PutE2bWorkerSettingsInput {
   poolSize?: number;
 }
 
-/** Platform CLI pin (full registry ref + digest). Author: kejiqing */
-export interface CliPinEntry {
+/** One independently published Agent engine artifact. Author: kejiqing */
+export interface AgentEngineEntry {
   ref: string;
-  digest?: string;
+  digest: string;
 }
 
-export interface CliPins {
-  claw?: CliPinEntry;
-  neuroOpencode?: CliPinEntry;
-  neuroAppserver?: CliPinEntry;
-  acpOpencode?: CliPinEntry;
-  acpAppserver?: CliPinEntry;
+export interface AgentEngines {
+  engines: Record<string, AgentEngineEntry>;
 }
 
 export interface GlobalSettingsResponse {
@@ -273,8 +269,8 @@ export interface GlobalSettingsResponse {
   /** Derived from gateway PG URL; read-only. */
   clusterId?: string;
   strictLandlockDefault?: LandlockDsl;
-  /** Worker CLI versions installed at sandbox create. Author: kejiqing */
-  cliPins?: CliPins;
+  /** Agent engine selected and installed at Worker create. Author: kejiqing */
+  agentEngines?: AgentEngines;
 }
 
 export interface AdminMcpTokenRow {
