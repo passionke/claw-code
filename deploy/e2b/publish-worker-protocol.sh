@@ -86,10 +86,41 @@ for image in "${STRICT}:${TAG}" "${RELAXED}:${TAG}"; do
     'command -v claw && command -v neuro-opencode && command -v neuro-appserver && test ! -e /usr/local/lib/neuro-engines'
 done
 
+# Host docker builds the e2b-facing layer (python may run inside a container without docker).
+# Author: kejiqing
+E2B_STRICT="${PREFIX}/debian-bookworm-claw-worker"
+E2B_RELAXED="${PREFIX}/debian-bookworm-claw-worker-relaxed"
+APT_MIRROR=""
+if claw_region_is_china; then
+  APT_MIRROR="mirrors.aliyun.com"
+fi
+docker build \
+  -f "$ROOT/deploy/e2b/Dockerfile.claw-worker-selfhosted" \
+  --build-arg "WORKER_BASE_IMAGE=${STRICT}:${TAG}" \
+  --build-arg "DEBIAN_APT_MIRROR=${APT_MIRROR}" \
+  --platform "$PLATFORM" \
+  -t "${E2B_STRICT}:${TAG}" \
+  "$ROOT/deploy/e2b"
+"$ROOT/deploy/stack/lib/ci-push-acr-skopeo.sh" \
+  "${E2B_STRICT}:${TAG}" "${E2B_STRICT}:${TAG}" "${E2B_STRICT}:sha-${SHA12}"
+
+docker build \
+  -f "$ROOT/deploy/e2b/Dockerfile.claw-worker-relaxed-selfhosted" \
+  --build-arg "WORKER_BASE_IMAGE=${RELAXED}:${TAG}" \
+  --build-arg "DEBIAN_APT_MIRROR=${APT_MIRROR}" \
+  --platform "$PLATFORM" \
+  -t "${E2B_RELAXED}:${TAG}" \
+  "$ROOT/deploy/e2b"
+"$ROOT/deploy/stack/lib/ci-push-acr-skopeo.sh" \
+  "${E2B_RELAXED}:${TAG}" "${E2B_RELAXED}:${TAG}" "${E2B_RELAXED}:sha-${SHA12}"
+
 export CLAW_E2B_TEMPLATE_BUILD_STRATEGY=from_image
 export CLAW_E2B_WORKER_IMAGE="${STRICT}:${TAG}"
 export CLAW_E2B_TEMPLATE_FROM_IMAGE="${STRICT}:${TAG}"
 export CLAW_E2B_WORKER_RELAXED_IMAGE="${RELAXED}:${TAG}"
+export CLAW_E2B_WORKER_E2B_IMAGE="${E2B_STRICT}:${TAG}"
+export CLAW_E2B_WORKER_RELAXED_E2B_IMAGE="${E2B_RELAXED}:${TAG}"
+export CLAW_E2B_WORKER_SKIP_LOCAL_BUILD=1
 
 # CLAW_E2B_PYTHON wins (e.g. docker-wrapped interpreter on home29). Author: kejiqing
 PYTHON="${CLAW_E2B_PYTHON:-}"
@@ -103,4 +134,4 @@ fi
 "$PYTHON" "$ROOT/deploy/e2b/build-claw-worker-selfhosted.py"
 "$PYTHON" "$ROOT/deploy/e2b/build-claw-worker-relaxed-selfhosted.py"
 
-echo "published e2b Worker protocol ${TAG}: ${STRICT}, ${RELAXED}"
+echo "published e2b Worker protocol ${TAG}: ${STRICT}, ${RELAXED} → ${E2B_STRICT}, ${E2B_RELAXED}"

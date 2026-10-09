@@ -114,6 +114,11 @@ def _registry_login_if_needed(image_ref: str) -> None:
 
 
 def _build_e2b_relaxed_image(worker_image: str) -> str:
+    prebuilt = _env("CLAW_E2B_WORKER_RELAXED_E2B_IMAGE")
+    if prebuilt and _env("CLAW_E2B_WORKER_SKIP_LOCAL_BUILD") in ("1", "true", "yes"):
+        print(f"==> use prebuilt e2b relaxed image {prebuilt!r} (skip local docker build)")
+        return prebuilt
+
     rt = _container_runtime()
     platform = _template_platform()
     e2b_image = _e2b_relaxed_image_tag(worker_image)

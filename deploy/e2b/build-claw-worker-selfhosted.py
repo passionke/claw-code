@@ -117,6 +117,12 @@ def _registry_login_if_needed(image_ref: str) -> None:
 
 def _build_e2b_worker_image(worker_image: str) -> str:
     """Layer e2b runtime on worker-series source; push debian-bookworm-* for Template.build."""
+    # Host may prebuild/push (CLAW_E2B_PYTHON often has no docker). Author: kejiqing
+    prebuilt = _env("CLAW_E2B_WORKER_E2B_IMAGE")
+    if prebuilt and _env("CLAW_E2B_WORKER_SKIP_LOCAL_BUILD") in ("1", "true", "yes"):
+        print(f"==> use prebuilt e2b worker image {prebuilt!r} (skip local docker build)")
+        return prebuilt
+
     rt = _container_runtime()
     platform = _template_platform()
     e2b_image = _e2b_worker_image_tag(worker_image)
