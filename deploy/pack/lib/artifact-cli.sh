@@ -73,18 +73,23 @@ claw_pack_artifact_cli() {
   fi
 
   if [[ "$which" == "all" || "$which" == "acp" ]]; then
-    # Stage ACP engines from local build of worker-opencode/appserver layers when present,
-    # else from npm pack into staging (opencode binary + codex-acp tree).
-    # shellcheck source=/dev/null
-    source "$ROOT/deploy/stack/lib/compose-include.sh"
-    local npm_reg platform targetarch
+    # ACP engines via Node container (Jenkins agents may lack host npm). Author: kejiqing
+    # Pins match Containerfile.gateway-worker-opencode / appserver.
+    claw_apply_region_defaults
+    local npm_reg platform targetarch node_image reg
     npm_reg="$(claw_npm_registry)"
     platform="${CLAW_LINUX_COMPILE_PLATFORM:-linux/amd64}"
     case "$platform" in
       *arm64*|*aarch64*) targetarch=arm64 ;;
       *) targetarch=amd64 ;;
     esac
-    # opencode platform tgz — same pins as Containerfile.gateway-worker-opencode
+    if claw_region_is_china; then
+      reg="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
+    else
+      reg="${CONTAINER_BASE_REGISTRY:-docker.io}"
+    fi
+    node_image="${reg%/}/library/node:22-bookworm-slim"
+
     local st pkg want
     st="$(mktemp -d)"
     mkdir -p "${st}/root/usr/local/lib/neuro-engines/opencode/bin"
@@ -92,25 +97,41 @@ claw_pack_artifact_cli() {
       amd64) pkg=opencode-linux-x64; want='sha512-RTAMjCve4euxP2QKLuvRmdoW5J5DQK1DiZqt+7slVyjAEi79QC2Df2oYKogibaAI4IEU8uzenoJeEl3k+UEw==' ;;
       arm64) pkg=opencode-linux-arm64; want='sha512-ZSjqcH0MEbAzLEmkRC9Aop1PbWZxe2NuKONAE/x8MRQdjKdOepX7M50UpjbsNoiLMkP584Z98Mg4a42fJhouvA==' ;;
     esac
-    (
-      cd "$st"
-      npm pack "${pkg}@1.18.34" --registry "$npm_reg" --pack-destination "$st" >/dev/null
-      tgz="${st}/${pkg}-1.18.34.tgz"
-      node -e 'const c=require("crypto"),f=require("fs");const got="sha512-"+c.createHash("sha512").update(f.readFileSync(process.argv[1])).digest("base64");if(got!==process.argv[2]){console.error("integrity mismatch: "+got);process.exit(1)}' "$tgz" "$want"
-      tar -xzf "$tgz" -C "$st"
-      cp "$st/package/bin/opencode" "${st}/root/usr/local/lib/neuro-engines/opencode/bin/opencode"
-      chmod 0755 "${st}/root/usr/local/lib/neuro-engines/opencode/bin/opencode"
-    )
+    cat >"${st}/fetch-opencode.sh" <<'EOS'
+#!/bin/bash
+set -euo pipefail
+npm pack "${PKG}@1.18.34" --registry "${NPM_REGISTRY}" --pack-destination /work >/dev/null
+tgz="/work/${PKG}-1.18.34.tgz"
+node -e 'const c=require("crypto"),f=require("fs");const got="sha512-"+c.createHash("sha512").update(f.readFileSync(process.argv[1])).digest("base64");if(got!==process.argv[2]){console.error("integrity mismatch: "+got);process.exit(1)}' "$tgz" "$WANT"
+tar -xzf "$tgz" -C /work
+cp /work/package/bin/opencode /work/root/usr/local/lib/neuro-engines/opencode/bin/opencode
+chmod 0755 /work/root/usr/local/lib/neuro-engines/opencode/bin/opencode
+rm -rf /root/.npm
+EOS
+    chmod +x "${st}/fetch-opencode.sh"
+    docker run --rm --platform "$platform" \
+      -v "${st}:/work" -w /work \
+      -e "NPM_REGISTRY=${npm_reg}" \
+      -e "PKG=${pkg}" -e "WANT=${want}" \
+      "$node_image" \
+      bash /work/fetch-opencode.sh
     _claw_pack_push_staged "claw-cli/acp-opencode" "$st"
     rm -rf "$st"
 
     st="$(mktemp -d)"
     mkdir -p "${st}/root/usr/local/lib/neuro-engines/codex-acp"
-    (
-      cd "$ROOT/deploy/neuro-harness/codex-acp"
-      npm ci --omit=dev --ignore-scripts --registry "$npm_reg"
-      cp -a node_modules package.json package-lock.json "${st}/root/usr/local/lib/neuro-engines/codex-acp/"
-    )
+    docker run --rm --platform "$platform" \
+      -v "$ROOT/deploy/neuro-harness/codex-acp:/src:ro" \
+      -v "${st}/root/usr/local/lib/neuro-engines/codex-acp:/out" \
+      -w /src \
+      -e "NPM_REGISTRY=${npm_reg}" \
+      "$node_image" \
+      bash -c 'set -euo pipefail
+        cp package.json package-lock.json /out/
+        cd /out
+        npm ci --omit=dev --ignore-scripts --no-audit --no-fund --registry "${NPM_REGISTRY}"
+        test -x node_modules/.bin/codex-acp
+        rm -rf /root/.npm'
     _claw_pack_push_staged "claw-cli/acp-appserver" "$st"
     rm -rf "$st"
   fi
