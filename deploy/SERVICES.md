@@ -16,9 +16,11 @@ of the other two.
 
 - Scope: the stable Gateway-to-Agent protocol runtime.
 - Contains `claw`, `neuro-opencode`, and `neuro-appserver`.
-- Private Jenkins entry: `deploy/e2b/ci-publish-nora.sh` (manual Job).
+- Private Jenkins entry: `deploy/e2b/ci-publish-nora.sh` (manual Job on home29).
 - Jenkins Pipeline source: `deploy/jenkins/claw-e2b-protocol-nora.Jenkinsfile`.
 - Build and publish entry: `deploy/e2b/publish-worker-protocol.sh`.
+- Template register API (home series): `http://e2b.home.passionke.top:3000`
+  (`CLAW_E2B_API_URL` / sandbox `:3002`). Do not use bare `10.8.0.1` in this path.
 - Output: `claw-worker-base`, `claw-worker-base-relaxed`, and their e2b template build records.
 
 There is no platform tar, platform pin, or runtime download of `claw`/`neuro-*`.

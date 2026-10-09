@@ -17,6 +17,12 @@ export REGION="${REGION:-china}"
 export CLAW_IMAGE_PREFIX="${CLAW_IMAGE_PREFIX:-nora.home.passionke.top/passionke}"
 export CLAW_LINUX_COMPILE_PLATFORM="${CLAW_LINUX_COMPILE_PLATFORM:-linux/amd64}"
 
+# Private home series only. Do not fall back to bare 10.8.0.1. Author: kejiqing
+export CLAW_E2B_API_URL="${CLAW_E2B_API_URL:-http://e2b.home.passionke.top:3000}"
+export CLAW_E2B_SANDBOX_URL="${CLAW_E2B_SANDBOX_URL:-http://e2b.home.passionke.top:3002}"
+export E2B_API_URL="${E2B_API_URL:-$CLAW_E2B_API_URL}"
+export E2B_SANDBOX_URL="${E2B_SANDBOX_URL:-$CLAW_E2B_SANDBOX_URL}"
+
 : "${NEXUS_USER:?NEXUS_USER is required (Jenkins nora-deployer)}"
 : "${NEXUS_PASSWORD:?NEXUS_PASSWORD is required (Jenkins nora-deployer)}"
 export NEXUS_USER NEXUS_PASSWORD

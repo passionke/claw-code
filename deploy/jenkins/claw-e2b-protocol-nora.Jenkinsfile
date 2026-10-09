@@ -6,7 +6,7 @@ pipeline {
     disableConcurrentBuilds()
   }
   parameters {
-    string(name: 'GIT_TAG', defaultValue: 'release-v2.0.25', description: 'Tag that contains the protocol sources')
+    string(name: 'GIT_TAG', defaultValue: 'release-v2.0.30', description: 'Tag that contains the protocol sources')
   }
   environment {
     REGION = 'china'
@@ -14,6 +14,8 @@ pipeline {
     CLAW_LINUX_COMPILE_PLATFORM = 'linux/amd64'
     TARGETARCH = 'amd64'
     CLAW_IMAGE_PREFIX = 'nora.home.passionke.top/passionke'
+    CLAW_E2B_API_URL = 'http://e2b.home.passionke.top:3000'
+    CLAW_E2B_SANDBOX_URL = 'http://e2b.home.passionke.top:3002'
     CLAW_REPO = 'https://code.passionke.top/passionke/claw-code.git'
   }
   stages {
