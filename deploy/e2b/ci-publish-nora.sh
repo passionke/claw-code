@@ -23,21 +23,23 @@ export NEXUS_USER NEXUS_PASSWORD
 export CLAW_REGISTRY_USER="${CLAW_REGISTRY_USER:-$NEXUS_USER}"
 export CLAW_REGISTRY_PASSWORD="${CLAW_REGISTRY_PASSWORD:-$NEXUS_PASSWORD}"
 
-# Pinned e2b SDK for template register (same pins as GitHub e2b-worker-protocol).
-VENV="${CLAW_E2B_VENV:-${ROOT}/.e2b-venv}"
-if [[ ! -x "${VENV}/bin/python3" ]]; then
-  echo "==> prepare pinned e2b SDK venv at ${VENV}"
-  python3 -m venv "$VENV"
-  if [[ "$REGION" == "china" ]]; then
-    "${VENV}/bin/pip" install \
-      -i https://mirrors.aliyun.com/pypi/simple \
-      --trusted-host mirrors.aliyun.com \
-      -r "$ROOT/deploy/e2b/requirements-e2b-sdk.txt"
-  else
-    "${VENV}/bin/pip" install -r "$ROOT/deploy/e2b/requirements-e2b-sdk.txt"
+# home29 agents may lack python3-venv; use --target instead of venv. Author: kejiqing
+E2B_PY="${CLAW_E2B_VENV:+${CLAW_E2B_VENV}/bin/python3}"
+if [[ -z "${E2B_PY:-}" || ! -x "${E2B_PY}" ]]; then
+  PKG_DIR="${ROOT}/.e2b-packages"
+  if ! PYTHONPATH="${PKG_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 -c 'import e2b' >/dev/null 2>&1; then
+    echo "==> install pinned e2b SDK into ${PKG_DIR}"
+    mkdir -p "$PKG_DIR"
+    PIP_ARGS=(install --upgrade --target "$PKG_DIR" -r "$ROOT/deploy/e2b/requirements-e2b-sdk.txt")
+    if [[ "$REGION" == "china" ]]; then
+      PIP_ARGS+=(-i https://mirrors.aliyun.com/pypi/simple --trusted-host mirrors.aliyun.com)
+    fi
+    python3 -m pip "${PIP_ARGS[@]}"
   fi
+  export PYTHONPATH="${PKG_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+  # publish-worker-protocol.sh prefers CLAW_E2B_VENV/bin/python3; leave unset so it uses PATH python3.
+  unset CLAW_E2B_VENV || true
 fi
-export CLAW_E2B_VENV="$VENV"
-"${VENV}/bin/python3" -c 'import e2b'
+python3 -c 'import e2b'
 
 exec bash "$ROOT/deploy/e2b/publish-worker-protocol.sh"
