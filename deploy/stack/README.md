@@ -10,7 +10,7 @@ Author: kejiqing
 
 | 场景 | 容器引擎 | Worker | 镜像 / 模板从哪来 | 入口命令 |
 | --- | --- | --- | --- | --- |
-| **本地开发** | Podman（`auto` 优先 podman） | **e2b** | gateway：`quick` / `pack-deploy`；**e2b 模板：Admin 发布 / `bootstrap-templates-from-ci-tag.sh`** | `./deploy/stack/gateway.sh quick` |
+| **本地开发** | Podman（`auto` 优先 podman） | **e2b** | gateway：`quick` / `pack-deploy`；打包：`deploy/pack/publish.sh`；e2b 空壳：`e2b-register` | `./deploy/stack/gateway.sh quick` |
 | **线上 Linux** | Docker + compose | **e2b** | **只拉 CI tag**（GHCR/ACR）；e2b 模板 `from_image` | `./deploy/stack/gateway.sh up --release release-v…` |
 
 两套环境用 **同一份脚本树** `deploy/stack/lib/`；差别在根 `.env`（模板见下表）。**solve / interactive 均经 e2b**，无宿主机 `claw-sandbox` `:9944`。
@@ -42,9 +42,9 @@ Author: kejiqing
 # 改 rust 网关（http-gateway-rs）后：build + 重启
 ./deploy/stack/gateway.sh pack-deploy
 
-# 改 e2b 沙箱里的 claw：Admin 重打模板（唯一通道）
-./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
-# 手册：deploy/e2b/WORKER-BUILD.md
+# 改 e2b 沙箱里的 claw：publish CLI + Admin 钉死版本 + reset worker
+./deploy/pack/publish.sh cli-claw
+# 手册：deploy/e2b/WORKER-BUILD.md、deploy/SERVICES.md
 
 # 怀疑缓存脏了：先 clean 或 pack-deploy --clean
 

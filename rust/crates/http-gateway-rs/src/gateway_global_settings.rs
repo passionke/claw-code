@@ -314,6 +314,9 @@ pub struct GatewayGlobalSettingsStore {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) strict_landlock_default: Option<gateway_solve_turn::LandlockDsl>,
+    /// Platform CLI pins (full ref + digest). Author: kejiqing
+    #[serde(rename = "cliPins", default)]
+    pub(crate) cli_pins: crate::gateway_cli_pins::CliPins,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -401,6 +404,8 @@ pub struct GatewayGlobalSettingsResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub strict_landlock_default: Option<gateway_solve_turn::LandlockDsl>,
+    #[serde(rename = "cliPins", default)]
+    pub cli_pins: crate::gateway_cli_pins::CliPins,
 }
 
 fn cluster_id_public() -> Option<String> {
@@ -969,6 +974,7 @@ fn salvage_settings_store(v: &serde_json::Value) -> GatewayGlobalSettingsStore {
             .get("strictLandlockDefault")
             .cloned()
             .and_then(|x| serde_json::from_value(x).ok()),
+        cli_pins: crate::gateway_cli_pins::cli_pins_from_value(v),
     };
     store.claw_tap.normalize_mode();
     store
@@ -1066,6 +1072,7 @@ pub async fn load_response(
         admin_mcp_tokens: admin_mcp_tokens_public(&settings),
         cluster_id: cluster_id_public(),
         strict_landlock_default: settings.strict_landlock_default.clone(),
+        cli_pins: settings.cli_pins.clone(),
     })
 }
 

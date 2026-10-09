@@ -16,7 +16,7 @@ Commands:
   clean         Remove rust/target (or --debug-only) + .linux-artifacts; optional podman cache/images
   build         clean (default) + build images (Darwin: podman run compile; log: .build.log)
   pack-deploy   Build gateway images + restart stack (slow; after Rust/image changes; log: .build.log)
-  e2b-worker-deploy  REMOVED — publish templates from Admin (bootstrap-templates-from-ci-tag.sh)
+  e2b-worker-deploy  REMOVED — use deploy/pack/publish.sh e2b-register
   playground    Run host playground UI (solve_async + /admin; builds admin dist first)
   admin-build   Local only: gateway-admin dist (needs Node>=18; set CLAW_GATEWAY_ADMIN_LOCAL_BUILD=1)
   admin-reload  Local only: admin-build + copy dist into playground container (not for --release servers)
@@ -82,7 +82,7 @@ case "${cmd}" in
   pack-deploy) run_with_manual_hint "${LIB}/pack-deploy.sh" "$@" ;;
   e2b-worker-deploy)
     echo "error: e2b-worker-deploy removed. Publish e2b templates from Admin init / 重打模板." >&2
-    echo "    script: deploy/e2b/bootstrap-templates-from-ci-tag.sh <release-or-branch-tag>" >&2
+    echo "    script: deploy/pack/publish.sh e2b-register (RELEASE_TAG=…)" >&2
     exit 1
     ;;
   playground) "${LIB}/playground.sh" "$@" ;;

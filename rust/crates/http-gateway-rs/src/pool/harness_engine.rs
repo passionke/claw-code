@@ -8,7 +8,7 @@
 use gateway_solve_turn::GatewaySolveTaskFile;
 use serde::{Deserialize, Serialize};
 
-use crate::gateway_e2b_worker_settings::{e2b_worker_build_id, E2bWorkerSettings};
+use crate::gateway_e2b_worker_settings::e2b_worker_build_id;
 use crate::gateway_global_settings::{get_gateway_global_settings, GatewayGlobalSettingsStore};
 use crate::session_db::GatewaySessionDb;
 
@@ -118,39 +118,25 @@ pub struct ClawEngine;
 
 impl EngineStrategy for ClawEngine {}
 
-/// A neuro-harness engine: an ACP agent behind `neuro-<name>` in its own strict e2b template.
+/// A neuro-harness engine: ACP agent behind `neuro-<name>` on the **shared** strict shell
+/// template; CLI/engines installed via platform worker.init (cliPins). Author: kejiqing
 pub struct NeuroEngine {
     name: &'static str,
     worker_bin: &'static str,
-    /// e2b template alias, also the template when PG has no `templateId`.
-    template_alias: &'static str,
-    template_settings: fn(&GatewayGlobalSettingsStore) -> &E2bWorkerSettings,
     /// Read-only paths the engine runtime needs inside the strict Landlock jail, appended to the
     /// resolved DSL (e.g. Bun aborts without `/proc` and `/dev/urandom`).
     landlock_runtime_ro: &'static [&'static str],
 }
 
-fn opencode_settings(s: &GatewayGlobalSettingsStore) -> &E2bWorkerSettings {
-    &s.e2b_worker_opencode
-}
-
-fn appserver_settings(s: &GatewayGlobalSettingsStore) -> &E2bWorkerSettings {
-    &s.e2b_worker_appserver
-}
-
 static OPENCODE: NeuroEngine = NeuroEngine {
     name: "opencode",
     worker_bin: "/usr/local/bin/neuro-opencode",
-    template_alias: "claw-worker-opencode",
-    template_settings: opencode_settings,
     landlock_runtime_ro: &["/proc", "/dev/urandom"],
 };
 
 static APPSERVER: NeuroEngine = NeuroEngine {
     name: "appserver",
     worker_bin: "/usr/local/bin/neuro-appserver",
-    template_alias: "claw-worker-appserver",
-    template_settings: appserver_settings,
     landlock_runtime_ro: &[],
 };
 
@@ -169,15 +155,16 @@ impl EngineStrategy for NeuroEngine {
     }
 
     fn worker_template(&self, store: &GatewayGlobalSettingsStore) -> Option<EngineWorkerTemplate> {
-        let settings = (self.template_settings)(store);
+        // Shared claw-worker / claw-worker-base shell; engines via cliPins inject.
+        let settings = &store.e2b_worker;
         Some(EngineWorkerTemplate {
             template_id: settings
                 .template_id
                 .clone()
                 .filter(|t| !t.trim().is_empty())
-                .unwrap_or_else(|| self.template_alias.to_string()),
+                .unwrap_or_else(|| "claw-worker".to_string()),
             build_id: e2b_worker_build_id(settings),
-            alias: self.template_alias.to_string(),
+            alias: "claw-worker".to_string(),
             profile_label: format!("strict+{}", self.name),
         })
     }

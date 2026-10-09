@@ -19,6 +19,7 @@ mod session_mount_ownership;
 mod stdout_hooks;
 mod traits;
 mod worker_env;
+mod platform_cli_inject;
 mod worker_lifecycle_preflight;
 mod worker_profile;
 
@@ -74,6 +75,7 @@ pub use worker_env::{
     default_kb_sync_worker_env_json, default_worker_env_json, merge_kb_sync_worker_env_defaults,
     parse_worker_env_map, validate_worker_env_json,
 };
+pub use platform_cli_inject::run_platform_cli_inject;
 pub use worker_lifecycle_preflight::{
     run_worker_init_on_create, run_worker_reuse_start_on_acquire, steps_from_solve_preflight_json,
 };
