@@ -1340,21 +1340,13 @@ fn is_tool_allowed(tool_name: &str, allowed_tools: &[String]) -> bool {
     false
 }
 
-/// Router role (finish tool allowed) enters control-only; nested specialist stays Continue.
-/// Author: kejiqing
+/// After successful delegate, always Continue (no control-only hard gate). Author: kejiqing
 #[must_use]
 pub(crate) fn tool_outcome_for_delegate_success(
     output: String,
-    allowed_tools: &[String],
+    _allowed_tools: &[String],
 ) -> ToolOutcome {
-    if allowed_tools
-        .iter()
-        .any(|t| t == COMPLETE_ROUTER_TURN_TOOL_NAME)
-    {
-        ToolOutcome::continue_control_only(output)
-    } else {
-        ToolOutcome::continue_with(output)
-    }
+    ToolOutcome::continue_with(output)
 }
 
 fn convert_runtime_messages_to_api(messages: &[ConversationMessage]) -> Vec<InputMessage> {
@@ -2752,13 +2744,13 @@ mod router_protocol_outcome_tests {
     };
 
     #[test]
-    fn router_with_finish_tool_enters_control_only() {
+    fn router_with_finish_tool_stays_continue() {
         let allowed = vec![
             DELEGATE_PROJECT_TOOL_NAME.to_string(),
             COMPLETE_ROUTER_TURN_TOOL_NAME.to_string(),
         ];
         let out = tool_outcome_for_delegate_success(r#"{"status":"succeeded"}"#.into(), &allowed);
-        assert_eq!(out.directive, ToolLoopDirective::ContinueControlOnly);
+        assert_eq!(out.directive, ToolLoopDirective::Continue);
         assert!(out.output.contains("succeeded"));
     }
 

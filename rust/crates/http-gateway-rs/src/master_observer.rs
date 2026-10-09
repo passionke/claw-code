@@ -197,34 +197,87 @@ pub fn master_seed_skills_json() -> Value {
     json!([master_daily_digest_skill(), master_quality_repair_skill()])
 }
 
-const ROUTER_CLAUDE_TEMPLATE: &str = r#"# GPOS Router (entry project)
+/// Soft persona / intent narrative only — hard protocol lives in rules_json. Author: kejiqing
+const ROUTER_CLAUDE_TEMPLATE: &str = r"# Router (entry project)
 
-You are the **GPOS router**: classify user intent and delegate to specialist projects via delegate_project_tool.
-You do **not** answer product manual or business analytics yourself.
+You are the **router**: classify user intent and delegate to specialist projects via delegate_project_tool.
+You do **not** answer specialist domains yourself — read specialist-registry for targets and capability hints.
 
 ## Intent routing
 1. **Off-topic / chitchat** → Skill(self-introduction) only; no delegate.
-2. **Product how-to** (POS / Back Office setup) → delegate_project_tool to kb-qa target (see specialist-registry).
-3. **Business analytics / 问数** → delegate_project_tool to ops-analysis target.
-4. **Mixed** (how-to + metrics in one message) → serial delegates: extract sub-questions; default order how-to then analytics.
+2. **In-scope specialist work** → Skill(specialist-registry), then delegate_project_tool to the matching targetProjId.
+3. **Mixed** (multiple specialist intents in one message) → serial delegates: extract sub-questions; order by registry capability when unclear.
+";
 
-## Hard rules
+pub const ROUTER_HARD_RULE_ID: &str = "router-hard";
+pub const ROUTER_HARD_RULE_RELATIVE_PATH: &str = ".cursor/rules/router-hard.mdc";
+
+const ROUTER_HARD_RULE_CONTENT: &str = r#"---
+description: Router hard protocol
+alwaysApply: true
+---
+
+# Router hard protocol
+
+## Routing protocol
 - **First step before any `delegate_project_tool`**: `Skill("specialist-registry")` and copy the numeric `targetProjId` from the Active delegate targets table.
-- **`projId` must be that integer** (e.g. ops-analysis row) — never use label names as Skill calls; never guess ids like `1` or `2`.
+- **`projId` must be that registry integer** — never use label names as Skill calls; never guess ids.
 - Delegate **only** necessary targets; never delegate chitchat.
-- Pass extraSession unchanged; do not embed store_id in userPrompt.
-- Do **not** pass sessionId to delegate_project_tool.
+- Pass `extraSession` unchanged; do not embed business fields in `userPrompt`.
+- Do **not** pass `sessionId` to `delegate_project_tool`.
 - Read specialist-registry for target projIds (refreshed on activate).
-- Each assistant turn after the first successful delegate is **control-only**: emit exactly one tool_use and **no user-visible text**.
 
 ## After delegate_project_tool
 - Tool result has `status`, ids, and `reportPath` under **this router session** (`.claw/delegate-agents-results/<routerTurnId>.md`). Body is **not** inlined as `message`.
 - User-visible live text during delegate comes from specialist body pushed onto this router turn SSE (worker passthrough). Do **not** paste `reportPath` contents into your own report.delta.
-- **Still more specialists needed**: call exactly one next `delegate_project_tool` (no text).
-- **Done**: call `complete_router_turn` (no text). Harness ends the turn; do not summarize.
-- Never write a final summary that merges or replaces specialist segments.
-- NEVER reply with handoff-only filler such as 已转交 / 稍后解答 / 请稍候.
+- Prefer finishing with tools: next `delegate_project_tool` if more specialists are needed, else `complete_router_turn`. Avoid a final summary that merges or replaces specialist segments.
+- Brief handoff text is acceptable if it does not block specialist output.
 "#;
+
+/// Kernel router hard-protocol rule entry (rules_json). Author: kejiqing
+#[must_use]
+pub fn router_hard_rule_item() -> Value {
+    json!({
+        "ruleId": ROUTER_HARD_RULE_ID,
+        "ruleTitle": "Router hard protocol",
+        "ruleScope": "ALWAYS",
+        "relativePath": ROUTER_HARD_RULE_RELATIVE_PATH,
+        "content": ROUTER_HARD_RULE_CONTENT,
+    })
+}
+
+/// Upsert router-hard rule into rules_json (seed-time only). Author: kejiqing
+#[must_use]
+pub fn ensure_router_hard_rules(rules_json: &Value) -> Value {
+    let item = router_hard_rule_item();
+    let mut out: Vec<Value> = match rules_json.as_array() {
+        Some(arr) => arr.clone(),
+        None => Vec::new(),
+    };
+    let mut replaced = false;
+    for entry in &mut out {
+        let Some(obj) = entry.as_object_mut() else {
+            continue;
+        };
+        let id_match = obj
+            .get("ruleId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == ROUTER_HARD_RULE_ID);
+        let path_match = obj
+            .get("relativePath")
+            .and_then(Value::as_str)
+            .is_some_and(|p| p == ROUTER_HARD_RULE_RELATIVE_PATH);
+        if id_match || path_match {
+            *entry = item.clone();
+            replaced = true;
+            break;
+        }
+    }
+    if !replaced {
+        out.push(item);
+    }
+    Value::Array(out)
+}
 
 #[must_use]
 pub fn router_seed_skills_json() -> Value {
@@ -247,7 +300,7 @@ pub fn router_allowed_tools_json() -> Value {
     json!(["delegate_project_tool", "complete_router_turn", "Skill"])
 }
 
-/// Apply router seed CLAUDE + skills and set role. Author: kejiqing
+/// Apply router seed CLAUDE + rules + skills and set role. Author: kejiqing
 pub async fn seed_router_project(db: &GatewaySessionDb, proj_id: i64) -> Result<(), String> {
     let row = db
         .get_project_config(proj_id)
@@ -257,6 +310,7 @@ pub async fn seed_router_project(db: &GatewaySessionDb, proj_id: i64) -> Result<
     let now = now_ms_for_registry();
     let content_rev = project_config_draft::format_formal_content_rev_local_ms(now);
     let claude = ROUTER_CLAUDE_TEMPLATE.to_string();
+    let rules = ensure_router_hard_rules(&row.rules_json);
     let skills = router_seed_skills_json();
     let allowed = router_allowed_tools_json();
     let empty_sources = json!([]);
@@ -267,7 +321,7 @@ pub async fn seed_router_project(db: &GatewaySessionDb, proj_id: i64) -> Result<
         stable_content_rev: Some(content_rev.as_str()),
         draft_open: false,
         updated_at_ms: now,
-        rules_json: &row.rules_json,
+        rules_json: &rules,
         mcp_servers_json: &empty_mcp,
         skills_sources_json: &empty_sources,
         skills_json: &skills,
@@ -294,7 +348,7 @@ pub async fn seed_router_project(db: &GatewaySessionDb, proj_id: i64) -> Result<
         content_rev: content_rev.clone(),
         created_at_ms: now,
         note: Some("router role seed".into()),
-        rules_json: row.rules_json.clone(),
+        rules_json: rules,
         mcp_servers_json: empty_mcp,
         skills_sources_json: empty_sources,
         skills_json: skills,
@@ -1259,6 +1313,45 @@ mod tests {
         assert_eq!(validate_project_role("scope").unwrap(), "scope");
         assert!(validate_project_role("boss").is_err());
         assert!(validate_project_role("").is_err());
+    }
+
+    #[test]
+    fn ensure_router_hard_rules_upserts_idempotent() {
+        let once = ensure_router_hard_rules(&json!([]));
+        let twice = ensure_router_hard_rules(&once);
+        assert_eq!(once, twice);
+        let arr = once.as_array().expect("rules array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["ruleId"].as_str(), Some(ROUTER_HARD_RULE_ID));
+        assert_eq!(
+            arr[0]["relativePath"].as_str(),
+            Some(ROUTER_HARD_RULE_RELATIVE_PATH)
+        );
+        assert!(arr[0]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("specialist-registry"));
+    }
+
+    #[test]
+    fn ensure_router_hard_rules_preserves_other_rules() {
+        let existing = json!([{
+            "ruleId": "custom",
+            "relativePath": ".cursor/rules/custom.mdc",
+            "content": "keep me"
+        }]);
+        let out = ensure_router_hard_rules(&existing);
+        let arr = out.as_array().expect("rules array");
+        assert_eq!(arr.len(), 2);
+        assert!(arr.iter().any(|r| r["ruleId"] == "custom"));
+        assert!(arr.iter().any(|r| r["ruleId"] == ROUTER_HARD_RULE_ID));
+    }
+
+    #[test]
+    fn router_claude_template_omits_hard_protocol() {
+        assert!(!ROUTER_CLAUDE_TEMPLATE.contains("## Hard rules"));
+        assert!(ROUTER_CLAUDE_TEMPLATE.contains("## Intent routing"));
+        assert!(ROUTER_HARD_RULE_CONTENT.contains("Routing protocol"));
     }
 
     #[test]
