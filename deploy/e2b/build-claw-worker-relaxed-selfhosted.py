@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -15,6 +16,7 @@ from e2b_template_registry import (
     apply_template_skip_cache_force,
     load_repo_dotenv,
     log_debian_base_resolution,
+    template_debian_apt_mirror,
     template_gateway_worker_image,
 )
 from e2b_template_build import build_template_with_retry
@@ -24,6 +26,7 @@ from registry_extract import try_image_digest
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
 
+DOCKERFILE_E2B_RELAXED = _E2B_DIR / "Dockerfile.claw-worker-relaxed-selfhosted"
 RELAXED_START_CMD = "/usr/local/bin/claw-worker-relaxed-start"
 RELAXED_READY_CMD = "/usr/local/bin/claw-worker-relaxed-ready"
 
@@ -42,6 +45,111 @@ def _conn_opts() -> dict[str, str]:
 
 def _worker_base_image() -> str:
     return template_gateway_worker_image()
+
+
+def _container_runtime() -> str:
+    rt = _env("CLAW_CONTAINER_RUNTIME", "docker")
+    if rt == "auto":
+        for candidate in ("docker", "podman"):
+            if shutil.which(candidate):
+                return candidate
+        return "docker"
+    return rt
+
+
+def _template_platform() -> str:
+    return _env("CLAW_E2B_TEMPLATE_PLATFORM", "linux/amd64")
+
+
+def _e2b_relaxed_image_tag(worker_image: str) -> str:
+    explicit = _env("CLAW_E2B_WORKER_RELAXED_E2B_IMAGE")
+    if explicit:
+        return explicit
+    if ":" not in worker_image:
+        return f"{worker_image}-debian"
+    registry_repo, tag = worker_image.rsplit(":", 1)
+    if "/" in registry_repo:
+        registry, _repo = registry_repo.rsplit("/", 1)
+        return f"{registry}/debian-bookworm-claw-worker-relaxed:{tag}"
+    return f"{registry_repo}/debian-bookworm-claw-worker-relaxed:{tag}"
+
+
+def _acr_registry_host(image_ref: str) -> str:
+    if "/" not in image_ref:
+        return ""
+    return image_ref.split("/", 1)[0]
+
+
+def _registry_login_if_needed(image_ref: str) -> None:
+    registry = _acr_registry_host(image_ref)
+    if not registry:
+        return
+    user = (
+        _env("CLAW_REGISTRY_USER")
+        or _env("ACR_USERNAME")
+        or _env("ACR_USER")
+        or _env("NEXUS_USER")
+    )
+    password = (
+        _env("CLAW_REGISTRY_PASSWORD")
+        or _env("ACR_PASSWORD")
+        or _env("ACR_PASSWORK")
+        or _env("NEXUS_PASSWORD")
+    )
+    if not user or not password:
+        return
+    rt = _container_runtime()
+    if subprocess.call(
+        [shutil.which(rt) or rt, "login", registry, "--get-login"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ) == 0:
+        return
+    print(f"==> {rt} login {registry!r}")
+    subprocess.run(
+        [rt, "login", registry, "-u", user, "--password-stdin"],
+        input=password.encode(),
+        check=True,
+    )
+
+
+def _build_e2b_relaxed_image(worker_image: str) -> str:
+    rt = _container_runtime()
+    platform = _template_platform()
+    e2b_image = _e2b_relaxed_image_tag(worker_image)
+    if not DOCKERFILE_E2B_RELAXED.is_file():
+        raise SystemExit(f"error: missing {DOCKERFILE_E2B_RELAXED}")
+
+    apt_mirror = template_debian_apt_mirror()
+    if apt_mirror:
+        print(f"==> debian apt mirror (relaxed layer): {apt_mirror!r}")
+
+    print(
+        f"==> {rt} build e2b relaxed image {e2b_image!r} "
+        f"(FROM {worker_image!r}, {platform}); e2b host will pull this image"
+    )
+    subprocess.check_call(
+        [
+            rt,
+            "build",
+            "-f",
+            str(DOCKERFILE_E2B_RELAXED),
+            "--build-arg",
+            f"WORKER_BASE_IMAGE={worker_image}",
+            "--build-arg",
+            f"DEBIAN_APT_MIRROR={apt_mirror}",
+            "--platform",
+            platform,
+            "-t",
+            e2b_image,
+            str(_E2B_DIR),
+        ]
+    )
+    if _env("CLAW_E2B_WORKER_E2B_PUSH", "1") not in ("0", "false", "no"):
+        _registry_login_if_needed(e2b_image)
+        print(f"==> {rt} push {e2b_image!r}")
+        subprocess.check_call([rt, "push", e2b_image])
+    return e2b_image
 
 
 def _persist_pg(alias: str, build, content_digest: str, image_ref: str) -> None:
@@ -71,14 +179,7 @@ def _persist_pg(alias: str, build, content_digest: str, image_ref: str) -> None:
 
 
 def _is_protocol_relaxed(image: str) -> bool:
-    # Author: kejiqing
-    return (
-        (
-            "debian-bookworm-claw-worker-relaxed" in image
-            or "claw-worker-base-relaxed" in image
-        )
-        and "claw-gateway-worker" not in image
-    )
+    return "claw-worker-base-relaxed" in image and "claw-gateway-worker" not in image
 
 
 def main() -> int:
@@ -101,16 +202,16 @@ def main() -> int:
 
     if not _is_protocol_relaxed(source_image):
         print(
-            "error: relaxed e2b Worker template requires the independently "
-            "published debian-bookworm-claw-worker-relaxed protocol image",
+            "error: relaxed e2b Worker template requires …/claw-worker-base-relaxed:<tag>",
             file=sys.stderr,
         )
         return 2
 
-    print(f"==> e2b Template.build from_image={source_image!r} (protocol relaxed)")
+    e2b_image = _build_e2b_relaxed_image(source_image)
+    print(f"==> e2b Template.build from_image={e2b_image!r}")
     content_digest = digest_parts(
         [
-            ("image", source_image.encode()),
+            ("image", e2b_image.encode()),
             ("start", RELAXED_START_CMD.encode()),
             ("ready", RELAXED_READY_CMD.encode()),
         ]
@@ -119,7 +220,7 @@ def main() -> int:
         "e2bWorkerRelaxed", content_digest, image_ref=source_image
     ):
         return 0
-    template = Template().from_image(source_image)
+    template = Template().from_image(e2b_image)
     template = template.set_start_cmd(RELAXED_START_CMD, RELAXED_READY_CMD)
     apply_template_skip_cache_force(template, skip_cache)
     build = build_template_with_retry(
@@ -134,12 +235,12 @@ def main() -> int:
 
     print(f"template_id: {build.template_id}")
     print(f"build_id: {build.build_id}")
-    _persist_pg(alias, build, content_digest, source_image)
+    _persist_pg(alias, build, content_digest, e2b_image)
     print(
         "hint: rebuild only updates PG; new build is used after gateway restart, "
         "manual worker reset, or when the sandbox is dead"
     )
-    print(f"OK: relaxed worker template {alias!r} ({build.template_id}) protocol-from_image")
+    print(f"OK: relaxed worker template {alias!r} ({build.template_id}) from_image")
 
     if _env("CLAW_E2B_TEMPLATE_SKIP_VERIFY", "0") not in ("1", "true", "yes"):
         verify_py = _E2B_DIR / "verify-claw-worker-relaxed-sandbox.py"

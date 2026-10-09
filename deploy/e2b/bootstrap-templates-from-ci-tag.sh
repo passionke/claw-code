@@ -15,9 +15,9 @@ fi
 PREFIX="$(claw_image_registry_prefix_from_env)"
 
 export CLAW_E2B_TEMPLATE_BUILD_STRATEGY=from_image
-export CLAW_E2B_WORKER_IMAGE="${CLAW_E2B_WORKER_IMAGE:-${PREFIX}/debian-bookworm-claw-worker:${TAG}}"
+export CLAW_E2B_WORKER_IMAGE="${CLAW_E2B_WORKER_IMAGE:-${PREFIX}/claw-worker-base:${TAG}}"
 export CLAW_E2B_TEMPLATE_FROM_IMAGE="$CLAW_E2B_WORKER_IMAGE"
-export CLAW_E2B_WORKER_RELAXED_IMAGE="${CLAW_E2B_WORKER_RELAXED_IMAGE:-${PREFIX}/debian-bookworm-claw-worker-relaxed:${TAG}}"
+export CLAW_E2B_WORKER_RELAXED_IMAGE="${CLAW_E2B_WORKER_RELAXED_IMAGE:-${PREFIX}/claw-worker-base-relaxed:${TAG}}"
 
 export E2B_API_KEY="${E2B_API_KEY:-${CLAW_E2B_API_KEY:-}}"
 export E2B_API_URL="${E2B_API_URL:-${CLAW_E2B_API_URL:-}}"

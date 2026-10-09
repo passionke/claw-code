@@ -24,7 +24,7 @@ reject 'gateway-playground|agent-engines/|stack/lib/ci-publish-nora' \
   "$ROOT/deploy/e2b/ci-publish-nora.sh" \
   "$ROOT/deploy/jenkins/claw-e2b-protocol-nora.Jenkinsfile"
 
-reject 'publish-worker-protocol|debian-bookworm-claw-worker|claw-worker-base|stack/lib/ci-publish-nora|deploy/pack' \
+reject 'publish-worker-protocol|claw-worker-base|debian-bookworm-claw-worker|stack/lib/ci-publish-nora|deploy/pack' \
   "$ROOT/deploy/agent-engines/upload-raw.sh" \
   "$ROOT/deploy/agent-engines/ci-publish-nora.sh" \
   "$ROOT/deploy/agent-engines/opencode/build.sh" \
