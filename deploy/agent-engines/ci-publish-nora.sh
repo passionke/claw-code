@@ -43,8 +43,10 @@ fi
 
 echo "==> build Agent engine ${ENGINE_ID} (${VERSION_LABEL})"
 export TARGETARCH="$ARCH"
-TAR_PATH="$(bash "$BUILD_SH")"
-[[ -f "$TAR_PATH" ]] || { echo "build produced no tar: $TAR_PATH" >&2; exit 1; }
+# Engine build.sh prints only the tar path on stdout.
+TAR_PATH="$(bash "$BUILD_SH" | tail -n 1)"
+TAR_PATH="${TAR_PATH//$'\r'/}"
+[[ -f "$TAR_PATH" ]] || { echo "build produced no tar: ${TAR_PATH:-<empty>}" >&2; exit 1; }
 
 echo "==> upload to Nora raw ${RAW_BASE}"
 OUT="$(
