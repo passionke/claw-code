@@ -71,7 +71,14 @@ def _persist_pg(alias: str, build, content_digest: str, image_ref: str) -> None:
 
 
 def _is_protocol_relaxed(image: str) -> bool:
-    return "claw-worker-base-relaxed" in image and "claw-gateway-worker" not in image
+    # Author: kejiqing
+    return (
+        (
+            "debian-bookworm-claw-worker-relaxed" in image
+            or "claw-worker-base-relaxed" in image
+        )
+        and "claw-gateway-worker" not in image
+    )
 
 
 def main() -> int:
@@ -95,7 +102,7 @@ def main() -> int:
     if not _is_protocol_relaxed(source_image):
         print(
             "error: relaxed e2b Worker template requires the independently "
-            "published claw-worker-base-relaxed protocol image",
+            "published debian-bookworm-claw-worker-relaxed protocol image",
             file=sys.stderr,
         )
         return 2

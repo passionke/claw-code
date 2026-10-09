@@ -6,7 +6,7 @@ pipeline {
     disableConcurrentBuilds()
   }
   parameters {
-    string(name: 'GIT_TAG', defaultValue: 'release-v2.0.30', description: 'Tag that contains the protocol sources')
+    string(name: 'GIT_TAG', defaultValue: 'release-v2.0.32', description: 'Tag that contains the protocol sources')
   }
   environment {
     REGION = 'china'

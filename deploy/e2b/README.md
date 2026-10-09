@@ -25,8 +25,8 @@ e2b sandbox runtime is billed separately (MicroVM uptime; use sleep/wake to redu
 
 ## Template Build Guardrail
 
-Worker 协议模板走 e2b `from_image`。`claw-worker-base` 固定包含 `claw` 与两个
-`neuro-*` 协议程序，不包含 Agent 引擎。
+Worker 协议模板走 e2b `from_image`。`debian-bookworm-claw-worker` 固定包含 `claw` 与两个
+`neuro-*` 协议程序，不包含 Agent 引擎。镜像名须含 `debian`（e2b.home 名称闸门）。
 
 - **协议层发布**：[`publish-worker-protocol.sh`](publish-worker-protocol.sh)
 - **已有镜像注册**：[`bootstrap-templates-from-ci-tag.sh`](bootstrap-templates-from-ci-tag.sh)

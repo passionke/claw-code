@@ -21,7 +21,9 @@ of the other two.
 - Build and publish entry: `deploy/e2b/publish-worker-protocol.sh`.
 - Template register API (home series): `http://e2b.home.passionke.top:3000`
   (`CLAW_E2B_API_URL` / sandbox `:3002`). Do not use bare `10.8.0.1` in this path.
-- Output: `claw-worker-base`, `claw-worker-base-relaxed`, and their e2b template build records.
+- Output: `debian-bookworm-claw-worker`, `debian-bookworm-claw-worker-relaxed`
+  (Nora tags; names must contain `debian` for e2b.home `is_debian_based_image`),
+  and their e2b template build records.
 
 There is no platform tar, platform pin, or runtime download of `claw`/`neuro-*`.
 

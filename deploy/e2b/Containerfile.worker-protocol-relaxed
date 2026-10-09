@@ -1,5 +1,5 @@
 # Relaxed e2b protocol runtime: same claw/neuro layer plus development tools. Author: kejiqing
-ARG WORKER_BASE_IMAGE=claw-worker-base:local
+ARG WORKER_BASE_IMAGE=debian-bookworm-claw-worker:local
 
 FROM ${WORKER_BASE_IMAGE}
 

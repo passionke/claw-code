@@ -56,8 +56,10 @@ PASSWORD="${CLAW_REGISTRY_PASSWORD:-${ACR_PASSWORD:-${NEXUS_PASSWORD:-}}}"
 printf '%s' "$PASSWORD" | docker login "${PREFIX%%/*}" -u "$USER_NAME" --password-stdin
 
 SHA12="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
-STRICT="${PREFIX}/claw-worker-base"
-RELAXED="${PREFIX}/claw-worker-base-relaxed"
+# e2bserver is_debian_based_image() only substring-matches the image ref
+# (debian|ubuntu|python|node|e2b-base). Keep home-proven names. Author: kejiqing
+STRICT="${PREFIX}/debian-bookworm-claw-worker"
+RELAXED="${PREFIX}/debian-bookworm-claw-worker-relaxed"
 DEBIAN="${BASE_REGISTRY}/library/debian:bookworm-slim"
 
 "$ROOT/deploy/stack/lib/container-build.sh" docker \

@@ -94,11 +94,20 @@ def main() -> int:
     # Legacy claw-gateway-worker used to force debian+COPY; that path is retired.
     # Author: kejiqing
     worker_img = _worker_base_image()
-    protocol_base = "claw-worker-base" in worker_img and "claw-gateway-worker" not in worker_img
+    # e2bserver gates on image-name substrings; home canonical name includes debian-.
+    # Author: kejiqing
+    protocol_base = (
+        (
+            "debian-bookworm-claw-worker" in worker_img
+            or "claw-worker-base" in worker_img
+        )
+        and "relaxed" not in worker_img
+        and "claw-gateway-worker" not in worker_img
+    )
     if strategy != "from_image" or not protocol_base:
         print(
             "error: e2b Worker templates require the independently published "
-            "claw-worker-base protocol image",
+            "debian-bookworm-claw-worker protocol image",
             file=sys.stderr,
         )
         return 2
