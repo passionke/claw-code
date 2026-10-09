@@ -73,9 +73,6 @@ CN_FLAG=0
 claw_cn_mirror_enabled && CN_FLAG=1
 claw_linux_compile_release "$ROOT" "$CONTAINER_CLI" "$COMPILE_IMAGE" "$CN_FLAG"
 
-echo "==> package claw-vscode VSIX"
-bash "$ROOT/deploy/stack/lib/package-claw-vscode-vsix.sh"
-
 push_package() {
   local package="$1"
   local dockerfile="$2"
