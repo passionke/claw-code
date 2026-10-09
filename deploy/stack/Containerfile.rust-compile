@@ -1,6 +1,8 @@
 # Rust compile toolchain image: mold linker + sccache (linux-compile only). Author: kejiqing
-# sccache comes from Nora OCI (seed-sccache-nora.sh), not GitHub, for stable internal builds.
-ARG SCCACHE_IMAGE=nora.home.passionke.top/passionke/sccache:v0.10.0
+# SCCACHE_IMAGE must be pullable here:
+#   - Nora CI: nora.home.passionke.top/passionke/sccache:v0.10.0 (seed-sccache-nora.sh)
+#   - GHA/ACR: local sccache:v0.10.0 (seed-sccache-local.sh) — do NOT default to Nora (private).
+ARG SCCACHE_IMAGE=sccache:v0.10.0
 FROM ${SCCACHE_IMAGE} AS sccache_bin
 
 ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm

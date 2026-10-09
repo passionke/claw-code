@@ -92,9 +92,13 @@ jobs:
           # shellcheck source=/dev/null
           source deploy/stack/lib/claw-region.sh
           claw_apply_region_defaults
+          # GHA cannot pull nora.home; seed local sccache OCI then COPY --from. Author: kejiqing
+          chmod +x deploy/stack/lib/seed-sccache-local.sh
+          REGION="${REGION:-else}" bash deploy/stack/lib/seed-sccache-local.sh
           ./deploy/stack/lib/container-build.sh docker deploy/stack/Containerfile.rust-compile \
             --build-arg "RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}" \
             --build-arg "CLAW_USE_CN_APT_MIRROR=${CLAW_USE_CN_APT_MIRROR:-0}" \
+            --build-arg "SCCACHE_IMAGE=sccache:${SCCACHE_VERSION:-v0.10.0}" \
             -t "${LOCAL}"
           echo "local=${LOCAL}" >> "$GITHUB_OUTPUT"
 
