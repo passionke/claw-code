@@ -59,6 +59,11 @@ APT_CN="$CLAW_USE_CN_APT_MIRROR"
 
 echo "==> publish ${RELEASE_TAG} (sha-${SHA12}) → ${NEXUS_PUSH_REGISTRY}/${NEXUS_NS} REGION=${REGION}"
 
+if ! command -v skopeo >/dev/null 2>&1; then
+  echo "skopeo is required to push to Nora (docker push breaks on OCI indexes)" >&2
+  exit 1
+fi
+
 echo "$NEXUS_PASSWORD" | docker login "$NEXUS_PUSH_REGISTRY" -u "$NEXUS_USER" --password-stdin
 
 echo "==> ensure rust compile image"
@@ -102,14 +107,19 @@ push_package() {
   esac
   echo "==> build ${image}:${RELEASE_TAG}"
   "$ROOT/deploy/stack/lib/container-build.sh" docker "${dockerfile}" \
+    --platform linux/amd64 \
     "${build_args[@]}" \
     -t "${image}:${RELEASE_TAG}" \
     -t "${image}:sha-${SHA12}" \
     -t "${image}:latest"
-  for tag in "${RELEASE_TAG}" "sha-${SHA12}" latest; do
-    echo "==> push ${image}:${tag}"
-    docker push "${image}:${tag}"
-  done
+  # Nora (and Docker 29 daemon) reject incomplete OCI indexes from docker push;
+  # same skopeo v2s2 path as ACR. Author: kejiqing
+  chmod +x "$ROOT/deploy/stack/lib/ci-push-acr-skopeo.sh"
+  "$ROOT/deploy/stack/lib/ci-push-acr-skopeo.sh" \
+    "${image}:${RELEASE_TAG}" \
+    "${image}:${RELEASE_TAG}" \
+    "${image}:sha-${SHA12}" \
+    "${image}:latest"
 }
 
 push_package claw-code deploy/stack/Containerfile.gateway-rs.prebuilt
@@ -128,10 +138,12 @@ for package in claw-gateway-worker-opencode claw-gateway-worker-appserver; do
   docker tag "${local_img}" "${image}:${RELEASE_TAG}"
   docker tag "${local_img}" "${image}:sha-${SHA12}"
   docker tag "${local_img}" "${image}:latest"
-  for tag in "${RELEASE_TAG}" "sha-${SHA12}" latest; do
-    echo "==> push ${image}:${tag}"
-    docker push "${image}:${tag}"
-  done
+  chmod +x "$ROOT/deploy/stack/lib/ci-push-acr-skopeo.sh"
+  "$ROOT/deploy/stack/lib/ci-push-acr-skopeo.sh" \
+    "${image}:${RELEASE_TAG}" \
+    "${image}:${RELEASE_TAG}" \
+    "${image}:sha-${SHA12}" \
+    "${image}:latest"
 done
 
 echo "==> verify playground admin assets"

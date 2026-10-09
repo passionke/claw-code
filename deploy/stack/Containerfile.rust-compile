@@ -2,10 +2,10 @@
 # SCCACHE_IMAGE must be pullable here:
 #   - Nora CI: nora.home.passionke.top/passionke/sccache:v0.10.0 (seed-sccache-nora.sh)
 #   - GHA/ACR: local sccache:v0.10.0 (seed-sccache-local.sh) — do NOT default to Nora (private).
+# ARGs used in FROM must be declared before any FROM (global scope). Author: kejiqing
 ARG SCCACHE_IMAGE=sccache:v0.10.0
-FROM ${SCCACHE_IMAGE} AS sccache_bin
-
 ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
+FROM ${SCCACHE_IMAGE} AS sccache_bin
 FROM ${RUST_BASE_IMAGE}
 
 COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
