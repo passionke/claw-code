@@ -25,35 +25,28 @@ e2b sandbox runtime is billed separately (MicroVM uptime; use sleep/wake to redu
 
 ## Template Build Guardrail
 
-Worker / observe / nas-api 模板构建必须走 **e2b 标准构建路径**（SDK `Template.build` 上传）：
+Worker **空壳**注册走 e2b `from_image`（镜像 = `claw-worker-base`，**不含** claw CLI）：
 
-- **唯一发布通道**：Admin 初始化 / 重打模板，脚本 `bootstrap-templates-from-ci-tag.sh <tag>`（从 CI 镜像抽二进制再 `Template.build`）
-- cloud worker: `from_image`，或 `file_context_path` + Dockerfile `COPY`
+- **唯一打包入口**：[`deploy/pack/publish.sh`](../pack/publish.sh)（Jenkins / GHA 同调）
+- **e2b 注册**：`publish.sh e2b-register` 或 Admin「制作模板」（内部同调）
+- **CLI**：`publish.sh cli-*` + Admin「Worker CLI 版本」→ create 时 platform worker.init 注入
 
-严禁使用临时 HTTP artifact server、`RUN curl http://host:port/...`、`dockerfile-http`、`CLAW_*_TEMPLATE_HTTP_*` 等非标准路径。模板构建链路必须由 e2b SDK 负责上传上下文或引用镜像，不允许依赖本机临时端口、内网 HTTP、手写 artifact server。Author: kejiqing
+旧 `bootstrap-templates-from-ci-tag.sh`（抽二进制 + debian COPY）已 **REMOVED**（exit 2）。
+
+严禁临时 HTTP artifact server / `RUN curl http://host` 进模板。Author: kejiqing
 
 ## Dev 模式：worker 模板（不走 CI）
 
 日常改 `rusty-claude-cli`（e2b 沙箱内 `claw`）：
 
 ```bash
-./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
+RELEASE_TAG=release-vX.Y.Z ./deploy/pack/publish.sh e2b-register
+# CLI: ./deploy/pack/publish.sh cli-* then Admin → Worker CLI 版本
 ```
 
-**唯一手册：** [`WORKER-BUILD.md`](./WORKER-BUILD.md)（架构 amd64、PG 上报、gateway 自动 reconcile/续期）。
+**唯一手册：** [`WORKER-BUILD.md`](./WORKER-BUILD.md)、[`../SERVICES.md`](../SERVICES.md)。
 
-自托管 e2b（10.8.0.x）**全是 linux/amd64**；Mac 交叉编译，不要设 `CLAW_E2B_WORKER_ARCH=arm64`。
-
-| 步骤 | 说明 |
-|------|------|
-| 交叉编译 | `linux/amd64` → `deploy/stack/.linux-artifacts/release/claw` |
-| stage | strict：`claw` only → `deploy/stack/.e2b-worker-bins/`；relaxed：`claw` + curl/git/python3/pip（**无** OpenVSCode） |
-| e2b SDK | `Template.build` → 写 PG `e2bWorker.templateId` |
-| gateway | 启动 reconcile + renewal ticker 自动轮换 proj worker |
-
-完整说明：[`WORKER-BUILD.md`](./WORKER-BUILD.md)。脚本：`deploy/e2b/bootstrap-templates-from-ci-tag.sh`。
-
-这一支打 **strict、relaxed、observe、nas-api**（**无** `claw-ovs`）。内容哈希没变的组件跳过 `Template.build`。
+自托管 e2b（10.8.0.x）**全是 linux/amd64**。
 
 ### Observe 单例（clawTap / LLM 代理 + Live）
 
@@ -114,7 +107,7 @@ podman exec claw-gateway-rs sh -c 'echo ok > /var/lib/claw/workspace/.probe'
 
 #### 1. 一次性：把工具装到 NAS（legacy）
 
-`install-nas-fc-tools.sh` **已从仓库移除**。自托管路径用 Admin 发布：`./deploy/e2b/bootstrap-templates-from-ci-tag.sh <tag>`。
+`install-nas-fc-tools.sh` **已从仓库移除**。自托管路径：`deploy/pack/publish.sh e2b-register` + Admin CLI pins。
 
 #### 2. `.env`（交互 e2b 模式，legacy Aliyun）
 

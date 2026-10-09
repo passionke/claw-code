@@ -238,6 +238,20 @@ export interface PutE2bWorkerSettingsInput {
   poolSize?: number;
 }
 
+/** Platform CLI pin (full registry ref + digest). Author: kejiqing */
+export interface CliPinEntry {
+  ref: string;
+  digest?: string;
+}
+
+export interface CliPins {
+  claw?: CliPinEntry;
+  neuroOpencode?: CliPinEntry;
+  neuroAppserver?: CliPinEntry;
+  acpOpencode?: CliPinEntry;
+  acpAppserver?: CliPinEntry;
+}
+
 export interface GlobalSettingsResponse {
   updatedAtMs: number;
   gitPats: GitPatRow[];
@@ -259,6 +273,8 @@ export interface GlobalSettingsResponse {
   /** Derived from gateway PG URL; read-only. */
   clusterId?: string;
   strictLandlockDefault?: LandlockDsl;
+  /** Worker CLI versions installed at sandbox create. Author: kejiqing */
+  cliPins?: CliPins;
 }
 
 export interface AdminMcpTokenRow {

@@ -353,29 +353,23 @@ jobs:
           # shellcheck source=/dev/null
           source deploy/stack/lib/claw-region.sh
           claw_apply_region_defaults
-          STRICT="${PREFIX}/claw-gateway-worker:${BRANCH_TAG}"
-          docker pull "${STRICT}"
-          ./deploy/stack/lib/container-build.sh docker deploy/stack/Containerfile.gateway-worker-relaxed \
-            --build-arg "WORKER_BASE_IMAGE=${STRICT}" \
-            --build-arg "CLAW_USE_CN_APT_MIRROR=${CLAW_USE_CN_APT_MIRROR:-0}" \
-            -t "claw-gateway-worker-relaxed:${BRANCH_TAG}"
-          CONTAINER_BASE_REGISTRY="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}" \
-            bash deploy/neuro-harness/build-worker-images.sh "${STRICT}" "${BRANCH_TAG}"
+          export CLAW_IMAGE_PREFIX="${PREFIX}"
+          export RELEASE_TAG="${BRANCH_TAG}"
+          export CLAW_REGISTRY_USER="${{ secrets.ACR_USERNAME }}"
+          export CLAW_REGISTRY_PASSWORD="${{ secrets.ACR_PASSWORD }}"
+          export REGION="${REGION:-china}"
+          chmod +x deploy/pack/publish.sh
+          ./deploy/pack/publish.sh worker-base
+          ./deploy/pack/publish.sh cli
 
       - name: Push derived workers → ACR
         env:
           PREFIX: ${{ steps.reg.outputs.image_prefix }}
           BRANCH_TAG: ${{ needs.resolve-tag.outputs.branch_tag }}
-          DEV_TAG: ${{ needs.resolve-tag.outputs.dev_tag }}
         run: |
           set -euo pipefail
-          chmod +x ./deploy/stack/lib/ci-push-acr-skopeo.sh
-          for package in claw-gateway-worker-relaxed claw-gateway-worker-opencode claw-gateway-worker-appserver; do
-            ./deploy/stack/lib/ci-push-acr-skopeo.sh \
-              "${package}:${BRANCH_TAG}" \
-              "${PREFIX}/${package}:${BRANCH_TAG}" \
-              "${PREFIX}/${package}:${DEV_TAG}"
-          done
+          echo "worker-base + cli already pushed by publish.sh (tag=${BRANCH_TAG})"
+          docker run --rm --entrypoint sh "${PREFIX}/claw-worker-base:${BRANCH_TAG}" -c '! command -v claw'
 
       - name: Drop local artifact stash
         if: always()

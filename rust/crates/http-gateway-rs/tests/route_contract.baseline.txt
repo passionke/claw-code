@@ -45,6 +45,7 @@ POST	/v1/gateway/global-settings/admin-mcp-tokens	issue_gateway_admin_mcp_token_
 DELETE	/v1/gateway/global-settings/admin-mcp-tokens/{token_id}	revoke_gateway_admin_mcp_token_handler
 PUT	/v1/gateway/global-settings/claw-tap	put_gateway_claw_tap_handler
 POST	/v1/gateway/global-settings/claw-tap/probe	probe_gateway_claw_tap_handler
+PUT	/v1/gateway/global-settings/cli-pins	put_gateway_cli_pins_handler
 PUT	/v1/gateway/global-settings/e2b-observe	put_gateway_e2b_observe_settings_handler
 PUT	/v1/gateway/global-settings/e2b-singleton-templates	put_gateway_e2b_singleton_templates_handler
 GET	/v1/gateway/global-settings/e2b-singletons	get_gateway_e2b_singletons_handler

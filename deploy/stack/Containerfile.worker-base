@@ -1,0 +1,23 @@
+# Thin e2b/worker shell — Debian only, NO claw/neuro/ACP binaries.
+# CLI is installed at sandbox create via platform worker.init. Author: kejiqing
+ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
+
+FROM ${DEBIAN_BASE_IMAGE}
+COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
+ARG CLAW_USE_CN_APT_MIRROR=0
+RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
+      cp /tmp/debian-cn.sources /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 claw \
+    && useradd -m -u 1000 -g 1000 -s /bin/sh claw \
+    && test ! -e /usr/local/bin/claw \
+    && test ! -e /usr/local/bin/neuro-opencode \
+    && test ! -e /usr/local/lib/neuro-engines
+
+WORKDIR /app
+USER claw
+ENTRYPOINT ["sleep", "infinity"]

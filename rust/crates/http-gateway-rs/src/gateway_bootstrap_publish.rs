@@ -196,7 +196,8 @@ fn resolve_publish_script() -> Result<PathBuf, String> {
     let root = resolve_bootstrap_repo_root().ok_or_else(|| {
         "CLAW_REPO_ROOT / deploy .env not found — cannot locate publish script".to_string()
     })?;
-    let script = root.join("deploy/e2b/bootstrap-templates-from-ci-tag.sh");
+    // Thin from_image register only (deploy/pack). Author: kejiqing
+    let script = root.join("deploy/pack/publish.sh");
     if !script.is_file() {
         return Err(format!("missing publish script: {}", script.display()));
     }
@@ -396,9 +397,14 @@ async fn run_publish_script(
         .unwrap_or_else(|| format!("/tmp/claw-bootstrap-{tag}"));
 
     let mut cmd = Command::new("bash");
-    cmd.arg(script)
-        .arg(tag)
-        .current_dir(repo)
+    cmd.arg(script);
+    // deploy/pack/publish.sh track + RELEASE_TAG; legacy scripts took tag as $1.
+    if script.ends_with("publish.sh") {
+        cmd.arg("e2b-register").env("RELEASE_TAG", tag);
+    } else {
+        cmd.arg(tag);
+    }
+    cmd.current_dir(repo)
         .env("CLAW_IMAGE_RELEASE_TAG", tag)
         .env("CLAW_BOOTSTRAP_ARTIFACT_DIR", &art)
         // Product path: registry extract needs docker config inside gateway. Author: kejiqing

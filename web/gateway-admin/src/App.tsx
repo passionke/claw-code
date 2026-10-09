@@ -24,6 +24,7 @@ import AdminMcpTokensPage from "./pages/global/AdminMcpTokensPage";
 import GlobalInferencePage from "./pages/global/GlobalInferencePage";
 import E2bPlatformPage from "./pages/global/E2bPlatformPage";
 import E2bCoreComponentsPage from "./pages/global/E2bCoreComponentsPage";
+import CliPinsPage from "./pages/global/CliPinsPage";
 import OssStoragePage from "./pages/global/OssStoragePage";
 import StrictLandlockDefaultPage from "./pages/global/StrictLandlockDefaultPage";
 import ChatPage from "./pages/ChatPage";
@@ -81,6 +82,7 @@ export default function App() {
               <Route path="global/e2b-platform" element={<E2bPlatformPage />} />
               <Route path="global/e2b-core" element={<E2bCoreComponentsPage />} />
               <Route path="global/e2b-nas" element={<E2bCoreComponentsPage />} />
+              <Route path="global/cli-pins" element={<CliPinsPage />} />
               <Route path="global/oss" element={<OssStoragePage />} />
               <Route path="global/strict-landlock" element={<StrictLandlockDefaultPage />} />
               <Route path="global/models" element={<Navigate to="/global/inference" replace />} />

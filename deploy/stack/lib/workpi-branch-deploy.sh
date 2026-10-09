@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
-# workPi: ACR branch worker (e2b) + local arm64 gateway (host is aarch64; ACR claw-code is amd64).
+# workPi: e2b shell register + local arm64 gateway.
+# ONE path. Author: kejiqing. Do not invent forks.
 # Usage: ./deploy/stack/lib/workpi-branch-deploy.sh <branch-tag> [--skip-gateway-build]
-# Example: ./deploy/stack/lib/workpi-branch-deploy.sh branch-feat-router-finish
-#
-# Path:
-#   1) bootstrap-templates-from-ci-tag.sh <tag>  # same Admin publish channel
-#   2) gateway.sh build local                  # arm64 http-gateway-rs (required on workPi)
-#   3) gateway.sh restart
-#
-# workPi cannot exec ACR amd64 gateway (no usable qemu/binfmt). Author: kejiqing
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,42 +22,29 @@ while [[ $# -gt 0 ]]; do
   shift || true
 done
 
-if [[ "${TAG}" == release-v* ]]; then
-  echo "error: use release tag flow for ${TAG}; this script is for branch-* / dev-* CI tags" >&2
-  exit 1
-fi
-
 cd "${REPO_ROOT}"
 if [[ ! -f .env ]]; then
-  echo "error: ${REPO_ROOT}/.env missing (copy .env.workpi on workPi)" >&2
+  echo "error: ${REPO_ROOT}/.env missing" >&2
   exit 1
 fi
 
 export CLAW_IMAGE_REGISTRY="${CLAW_IMAGE_REGISTRY:-acr}"
 export CLAW_IMAGE_RELEASE_TAG="${TAG}"
-
-# Drop sticky --release pin so compose uses claw-gateway-rs:local (arm64), not ACR amd64.
+export RELEASE_TAG="${TAG}"
 rm -f "${REPO_ROOT}/deploy/stack/.claw-image-release.env"
 
-echo "==> workPi branch deploy: CI tag=${TAG}"
-echo "    worker: ACR claw-code → e2b templates"
-echo "    gateway: local arm64 (ACR amd64 cannot exec on aarch64)"
-echo "    repo=${REPO_ROOT}"
-
-echo "==> 1/3 publish e2b templates from CI tag ${TAG}"
-"${REPO_ROOT}/deploy/e2b/bootstrap-templates-from-ci-tag.sh" "${TAG}"
+echo "==> workPi: e2b-register shell + local gateway (tag=${TAG})"
+echo "==> 1/3 publish.sh e2b-register"
+chmod +x "${REPO_ROOT}/deploy/pack/publish.sh"
+"${REPO_ROOT}/deploy/pack/publish.sh" e2b-register
 
 if [[ "${SKIP_GATEWAY_BUILD}" -eq 0 ]]; then
   echo "==> 2/3 gateway build local (arm64)"
   "${GATEWAY}" build local
 else
-  echo "==> 2/3 skip gateway build (--skip-gateway-build)"
+  echo "==> 2/3 skip gateway build"
 fi
 
-echo "==> 3/3 gateway restart (new PG buildId + local gateway)"
+echo "==> 3/3 gateway restart"
 "${GATEWAY}" restart
-
-echo "==> done. verify:"
-echo "    curl -sS http://127.0.0.1:\${GATEWAY_HOST_PORT:-18088}/healthz | jq ."
-echo "    ${GATEWAY} check"
-echo "    expect e2b buildId from ${TAG}; gateway image claw-gateway-rs:local"
+echo "==> done. Apply CLI pins in Admin → Worker CLI 版本 if needed."

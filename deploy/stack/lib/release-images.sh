@@ -22,16 +22,19 @@ claw_image_registry_prefix_from_env() {
     return 0
   fi
   local gw="${GATEWAY_IMAGE:-}"
-  if [[ "$gw" == *"/claw-code:"* ]]; then
-    printf '%s' "${gw%%/claw-code:*}"
-    return 0
-  fi
-  if [[ "$gw" == */claw-code ]]; then
-    printf '%s' "${gw%/claw-code}"
-    return 0
-  fi
+  # Prefer new name http-gateway-rs; accept legacy claw-code for prefix parse only.
+  for name in http-gateway-rs claw-code; do
+    if [[ "$gw" == *"/${name}:"* ]]; then
+      printf '%s' "${gw%%/${name}:*}"
+      return 0
+    fi
+    if [[ "$gw" == */"${name}" ]]; then
+      printf '%s' "${gw%/${name}}"
+      return 0
+    fi
+  done
 
-  # No explicit prefix and no claw-code in GATEWAY_IMAGE (e.g. local :local tags): pick backend.
+  # No explicit prefix (e.g. local :local tags): pick backend.
   local backend="${CLAW_IMAGE_REGISTRY:-acr}"
   backend="$(printf '%s' "$backend" | tr '[:upper:]' '[:lower:]')"
   case "$backend" in
@@ -55,19 +58,20 @@ claw_apply_release_image_tag() {
   local tag="${1:?}"
   local prefix
   prefix="$(claw_image_registry_prefix_from_env)"
-  export GATEWAY_IMAGE="${prefix}/claw-code:${tag}"
+  export GATEWAY_IMAGE="${prefix}/http-gateway-rs:${tag}"
   if [[ -n "${CLAW_RELEASE_PLAYGROUND_IMAGE:-}" ]]; then
     export GATEWAY_PLAYGROUND_IMAGE="${CLAW_RELEASE_PLAYGROUND_IMAGE}"
   else
-    export GATEWAY_PLAYGROUND_IMAGE="${prefix}/claw-gateway-playground:${tag}"
+    export GATEWAY_PLAYGROUND_IMAGE="${prefix}/http-gateway-playground:${tag}"
   fi
-  export CLAW_DOCKER_IMAGE="${prefix}/claw-gateway-worker:${tag}"
+  # Empty worker shells (CLI via worker.init). Author: kejiqing
+  export CLAW_DOCKER_IMAGE="${prefix}/claw-worker-base:${tag}"
   if [[ -n "${CLAW_RELEASE_RELAXED_IMAGE:-}" ]]; then
     export CLAW_RELAXED_PODMAN_IMAGE="${CLAW_RELEASE_RELAXED_IMAGE}"
   elif [[ "${CLAW_RELEASE_OMIT_RELAXED_IMAGE:-0}" == "1" ]]; then
     unset CLAW_RELAXED_PODMAN_IMAGE || true
   else
-    export CLAW_RELAXED_PODMAN_IMAGE="${prefix}/claw-gateway-worker-relaxed:${tag}"
+    export CLAW_RELAXED_PODMAN_IMAGE="${prefix}/claw-worker-base-relaxed:${tag}"
   fi
 }
 
@@ -75,12 +79,20 @@ claw_apply_release_image_tag() {
 claw_export_pool_worker_image_matched_to_gateway() {
   local gw="${GATEWAY_IMAGE:-}"
   [[ -n "$gw" ]] || return 0
-  [[ "$gw" == *claw-code* ]] || return 0
   if [[ "${CLAW_POOL_WORKER_IMAGE_EXPLICIT:-0}" == "1" ]]; then
     return 0
   fi
-  local derived="${gw/claw-code/claw-gateway-worker}"
-  local derived_relaxed="${gw/claw-code/claw-gateway-worker-relaxed}"
+  local derived="" derived_relaxed=""
+  if [[ "$gw" == *http-gateway-rs* ]]; then
+    derived="${gw/http-gateway-rs/claw-worker-base}"
+    derived_relaxed="${gw/http-gateway-rs/claw-worker-base-relaxed}"
+  elif [[ "$gw" == *claw-code* ]]; then
+    # Legacy deploy images still on cluster. Author: kejiqing
+    derived="${gw/claw-code/claw-gateway-worker}"
+    derived_relaxed="${gw/claw-code/claw-gateway-worker-relaxed}"
+  else
+    return 0
+  fi
   export CLAW_DOCKER_IMAGE="$derived"
   if [[ "${CLAW_RELEASE_OMIT_RELAXED_IMAGE:-0}" == "1" ]]; then
     unset CLAW_RELAXED_PODMAN_IMAGE || true

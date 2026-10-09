@@ -39,6 +39,7 @@ pub mod gateway_bootstrap_deploy;
 pub mod gateway_bootstrap_publish;
 pub mod gateway_claw_tap_lifecycle;
 pub mod gateway_claw_tap_settings;
+pub mod gateway_cli_pins;
 pub mod gateway_cluster_bootstrap;
 pub mod gateway_e2b_core_readiness;
 pub mod gateway_e2b_lifecycle_decision;

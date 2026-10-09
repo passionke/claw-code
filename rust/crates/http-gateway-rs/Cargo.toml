@@ -52,9 +52,9 @@ argon2 = { version = "0.5", features = ["std"] }
 rand = "0.8"
 utoipa = { version = "5.5.0", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 
 [lints]
 workspace = true

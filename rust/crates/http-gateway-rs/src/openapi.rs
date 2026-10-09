@@ -58,6 +58,7 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::app::put_gateway_e2b_observe_settings_handler,
         crate::routes::app::put_gateway_claw_tap_handler,
         crate::routes::app::probe_gateway_claw_tap_handler,
+        crate::routes::app::put_gateway_cli_pins_handler,
         crate::routes::app::put_gateway_strict_landlock_default_handler,
         crate::routes::app::upsert_gateway_git_pat_handler,
         crate::routes::app::delete_gateway_git_pat_handler,

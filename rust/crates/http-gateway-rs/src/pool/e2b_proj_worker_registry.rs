@@ -999,6 +999,24 @@ impl E2bProjWorkerRegistry {
             .await
             .map_err(|e| format!("renew new project worker TTL: {e}"))?;
 
+        // Platform CLI inject (cliPins) before project worker.init.*. Author: kejiqing
+        let harness_engine = harness_engine::load_project_harness_engine(db.as_ref(), proj_id)
+            .await
+            .unwrap_or(harness_engine::HarnessEngine::Claw);
+        if let Err(e) = super::platform_cli_inject::run_platform_cli_inject(
+            db.as_ref(),
+            &self.client,
+            &handle,
+            harness_engine.as_str(),
+        )
+        .await
+        {
+            let _ = self.client.kill_sandbox(&handle.sandbox_id).await;
+            return Err(format!(
+                "platform CLI inject failed for proj {proj_id} worker {worker_id}: {e}"
+            ));
+        }
+
         // Project preflight worker.init.* before slot is ready (pre-Landlock). Author: kejiqing
         let solve_preflight_json = db
             .get_project_config(proj_id)

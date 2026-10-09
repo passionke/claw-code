@@ -291,17 +291,22 @@ def main() -> int:
     skip_cache = _env("CLAW_E2B_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no")
     content_digest = ""
 
-    # e2bserver rejects custom ACR apps (claw-gateway-worker) as "must be Debian-based"
-    # even when the image IS bookworm. Bootstrap therefore uses debian: + COPY claw.
+    # Thin claw-worker-base is real Debian — keep from_image.
+    # Legacy claw-gateway-worker (with baked claw) used to force debian+COPY; that path is retired.
     # Author: kejiqing
     skip_local = _env("CLAW_E2B_WORKER_SKIP_LOCAL_BUILD") in ("1", "true", "yes")
-    if skip_local and strategy == "from_image":
+    worker_img = _worker_base_image()
+    thin_base = "claw-worker-base" in worker_img and "claw-gateway-worker" not in worker_img
+    if skip_local and strategy == "from_image" and not thin_base:
         print(
-            "==> SKIP_LOCAL_BUILD: switch from_image(CI worker) → debian + COPY claw "
-            "(e2b rejects claw-gateway-worker as non-Debian base)",
+            "==> SKIP_LOCAL_BUILD: refusing legacy non-thin worker image for from_image; "
+            "use claw-worker-base via deploy/pack/publish.sh worker-base",
             file=sys.stderr,
         )
-        strategy = "copy"
+        raise SystemExit(
+            "error: set CLAW_E2B_WORKER_IMAGE to …/claw-worker-base:<tag> "
+            "(CLI inject via worker.init; no debian+COPY claw)"
+        )
 
     if strategy == "from_image":
         worker_image = _worker_base_image()

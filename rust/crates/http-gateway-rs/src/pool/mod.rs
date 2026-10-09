@@ -13,6 +13,7 @@ pub mod interactive_backend;
 mod live_ag_ui_sse;
 mod live_report_hub;
 mod live_report_sse;
+mod platform_cli_inject;
 mod result;
 mod session_db_sync;
 mod session_mount_ownership;
@@ -58,6 +59,7 @@ pub use live_report_hub::{
     AskUserPending, DelegateActivePending, HubDeltaChunk, HubMsg, LiveReportHub, ProcessEvent,
 };
 pub use live_report_sse::live_report_sse_response;
+pub use platform_cli_inject::run_platform_cli_inject;
 #[allow(unused_imports)]
 pub use result::parse_gateway_solve_exec_stdout;
 pub use session_db_sync::{

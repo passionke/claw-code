@@ -1,0 +1,48 @@
+# ONE path — major-release pack on self-hosted runner.
+# Author: kejiqing. Do not invent forks.
+#
+# Same entry as Jenkins: deploy/pack/publish.sh <track>
+# Triggers: workflow_dispatch (major) — set RELEASE_TAG + TRACK.
+name: pack-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "vX.Y.Z or release-v*"
+        required: true
+        type: string
+      track:
+        description: "gateway | worker-base | cli | cli-claw | cli-neuro | cli-acp | all"
+        required: true
+        default: all
+        type: string
+      region:
+        description: "china | else"
+        required: true
+        default: china
+        type: string
+
+jobs:
+  publish:
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish via deploy/pack/publish.sh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REGION: ${{ inputs.region }}
+          CLAW_IMAGE_PREFIX: ${{ vars.CLAW_IMAGE_PREFIX || secrets.CLAW_IMAGE_PREFIX }}
+          CLAW_REGISTRY_USER: ${{ secrets.CLAW_REGISTRY_USER || secrets.NEXUS_USER }}
+          CLAW_REGISTRY_PASSWORD: ${{ secrets.CLAW_REGISTRY_PASSWORD || secrets.NEXUS_PASSWORD }}
+          NEXUS_USER: ${{ secrets.NEXUS_USER }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+          NEXUS_PUSH_REGISTRY: ${{ vars.NEXUS_PUSH_REGISTRY }}
+          NEXUS_NS: ${{ vars.NEXUS_NS || 'passionke' }}
+        run: |
+          set -euo pipefail
+          chmod +x deploy/pack/publish.sh
+          ./deploy/pack/publish.sh "${{ inputs.track }}"

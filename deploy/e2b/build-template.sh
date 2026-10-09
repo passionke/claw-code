@@ -44,7 +44,7 @@ case "${cmd}" in
       "fc-e2b-registry.cn-beijing.cr.aliyuncs.com/passionke/claw-worker:release-v1.6.12"
     ;;
   template)
-    echo "error: template publish is Admin-only: deploy/e2b/bootstrap-templates-from-ci-tag.sh <tag>" >&2
+    echo "error: use deploy/pack/publish.sh e2b-register (RELEASE_TAG=<tag>)" >&2
     exit 1
     ;;
   -h|--help|help)
