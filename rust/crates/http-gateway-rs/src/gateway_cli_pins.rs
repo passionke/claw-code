@@ -7,13 +7,13 @@ use utoipa::ToSchema;
 use crate::gateway_global_settings::{get_gateway_global_settings, save_gateway_global_settings};
 use crate::session_db::GatewaySessionDb;
 
-/// One pinned CLI artifact. Author: kejiqing
+/// One pinned CLI tar.gz. Author: kejiqing
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CliPinEntry {
-    /// Full registry ref, e.g. `nora.example/passionke/claw-cli/claw:v1.8.20`.
+    /// `http(s)://…/claw-….tar.gz` (Nexus raw) or `file:///abs/path.tar.gz`.
     pub r#ref: String,
-    /// Content digest `sha256:…` (empty until resolve succeeds).
+    /// Content digest `sha256:…` of the tar.gz (optional).
     #[serde(default)]
     pub digest: String,
 }
@@ -57,66 +57,34 @@ fn normalize_entry(mut e: CliPinEntry) -> Result<CliPinEntry, String> {
     if e.r#ref.contains(' ') {
         return Err("cli pin ref must not contain spaces".into());
     }
+    let ok = e.r#ref.starts_with("http://")
+        || e.r#ref.starts_with("https://")
+        || e.r#ref.starts_with("file://");
+    if !ok {
+        return Err("cli pin ref must be http(s):// or file:// tar.gz".into());
+    }
     e.digest = e.digest.trim().to_string();
     Ok(e)
 }
 
-/// Resolve digest via registry manifest GET when missing. Author: kejiqing
+/// Fill digest from a local file:// tar.gz when the gateway can see it. Author: kejiqing
 async fn ensure_digest(entry: &mut CliPinEntry) -> Result<(), String> {
     if entry.digest.starts_with("sha256:") && entry.digest.len() > 20 {
         return Ok(());
     }
-    let digest = probe_image_digest(&entry.r#ref).await?;
-    if digest.is_empty() {
-        return Err(format!(
-            "registry probe failed for {} (image missing or unauthorized)",
-            entry.r#ref
-        ));
+    if let Some(path) = entry.r#ref.strip_prefix("file://") {
+        let path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{path}")
+        };
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            use sha2::{Digest, Sha256};
+            let h = Sha256::digest(&bytes);
+            entry.digest = format!("sha256:{h:x}");
+        }
     }
-    entry.digest = digest;
     Ok(())
-}
-
-async fn probe_image_digest(image_ref: &str) -> Result<String, String> {
-    // Prefer skopeo when present (same as pack path).
-    if let Ok(out) = tokio::process::Command::new("skopeo")
-        .args([
-            "inspect",
-            "--format",
-            "{{.Digest}}",
-            &format!("docker://{image_ref}"),
-        ])
-        .output()
-        .await
-    {
-        if out.status.success() {
-            let d = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if d.starts_with("sha256:") {
-                return Ok(d);
-            }
-        }
-    }
-    // Fallback: python registry_extract try_image_digest if repo is mounted.
-    let script = std::env::var("CLAW_REPO_ROOT").unwrap_or_else(|_| "/app".into());
-    let py = format!("{script}/deploy/e2b/registry_extract.py");
-    if tokio::fs::try_exists(&py).await.unwrap_or(false) {
-        let code = "from registry_extract import try_image_digest; import sys; d=try_image_digest(sys.argv[1]) or ''; print(d)";
-        let out = tokio::process::Command::new("python3")
-            .args(["-c", code, image_ref])
-            .current_dir(format!("{script}/deploy/e2b"))
-            .output()
-            .await
-            .map_err(|e| format!("python digest probe: {e}"))?;
-        if out.status.success() {
-            let d = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if d.starts_with("sha256:") {
-                return Ok(d);
-            }
-        }
-    }
-    Err(format!(
-        "cannot resolve digest for {image_ref}; ensure image exists and skopeo/registry auth works"
-    ))
 }
 
 pub async fn load_cli_pins(db: &GatewaySessionDb) -> Result<CliPins, sqlx::Error> {
@@ -174,6 +142,25 @@ mod tests {
     fn normalize_rejects_empty() {
         assert!(normalize_entry(CliPinEntry {
             r#ref: "  ".into(),
+            digest: String::new(),
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn normalize_accepts_http_and_file() {
+        assert!(normalize_entry(CliPinEntry {
+            r#ref: "http://nexus.example/repository/raw/claw-cli/claw-v1.tar.gz".into(),
+            digest: String::new(),
+        })
+        .is_ok());
+        assert!(normalize_entry(CliPinEntry {
+            r#ref: "file:///opt/claw/claw.tar.gz".into(),
+            digest: String::new(),
+        })
+        .is_ok());
+        assert!(normalize_entry(CliPinEntry {
+            r#ref: "repo.example/passionke/claw-cli/claw:v1".into(),
             digest: String::new(),
         })
         .is_err());

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ONE path. Author: kejiqing. Do not invent forks.
-# Push claw / neuro / ACP engine packages as OCI images under claw-cli/*.
+# Push claw / neuro / ACP as tar.gz to 制品库 raw (guest: curl | tar).
 # shellcheck shell=bash
 set -euo pipefail
 
@@ -10,44 +10,38 @@ source "$ROOT/deploy/pack/lib/prefix.sh"
 # shellcheck source=/dev/null
 source "$ROOT/deploy/stack/lib/claw-region.sh"
 
+_claw_pack_cli_tgz_url() {
+  local name="$1" # e.g. claw-cli/claw
+  local tag="${RELEASE_TAG:?RELEASE_TAG required}"
+  local base="${CLAW_CLI_TGZ_PREFIX:?set CLAW_CLI_TGZ_PREFIX to raw 制品库 base (e.g. https://nora.home.passionke.top/raw/passionke)}"
+  printf '%s/claw-cli/%s-%s.tar.gz' "${base%/}" "${name##*/}" "$tag"
+}
+
 _claw_pack_push_staged() {
   local name="$1" # e.g. claw-cli/claw
   local staging="$2"
   local tag="${RELEASE_TAG:?RELEASE_TAG required}"
-  local sha12 prefix platform reg debian_image
-  sha12="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
-  prefix="$(claw_pack_prefix)"
-  platform="${CLAW_LINUX_COMPILE_PLATFORM:-linux/amd64}"
-  claw_region_load
-  if claw_region_is_china; then
-    reg="${CONTAINER_BASE_REGISTRY:-docker.m.daocloud.io}"
-  else
-    reg="${CONTAINER_BASE_REGISTRY:-docker.io}"
+  local user pass url tgz digest
+  user="${CLAW_REGISTRY_USER:-${NEXUS_USER:-}}"
+  pass="${CLAW_REGISTRY_PASSWORD:-${NEXUS_PASSWORD:-}}"
+  if [[ -z "$user" || -z "$pass" ]]; then
+    echo "error: set CLAW_REGISTRY_USER/PASSWORD (or NEXUS_USER/PASSWORD)" >&2
+    return 1
   fi
-  debian_image="${reg%/}/library/debian:bookworm-slim"
-  local image="${prefix}/${name}"
-  # Build from staging as context (contains root/ + Containerfile copy)
-  cp "$ROOT/deploy/stack/Containerfile.cli-artifact" "${staging}/Containerfile"
-  docker build --platform "$platform" \
-    --build-arg "DEBIAN_BASE_IMAGE=${debian_image}" \
-    -f "${staging}/Containerfile" \
-    -t "${image}:${tag}" \
-    -t "${image}:sha-${sha12}" \
-    -t "${image}:latest" \
-    "${staging}"
-  claw_pack_skopeo_push "${image}:${tag}" "${image}:${tag}" "${image}:sha-${sha12}" "${image}:latest"
-  local digest
-  digest="$(skopeo inspect --format '{{.Digest}}' "docker://${image}:${tag}" 2>/dev/null || true)"
-  echo "published ${image}:${tag} digest=${digest:-unknown}"
-  printf '%s\n' "${digest:-}"
+  tgz="${staging}/cli.tar.gz"
+  tar -C "${staging}/root" -czf "$tgz" usr
+  url="$(_claw_pack_cli_tgz_url "$name")"
+  echo "==> PUT ${url}"
+  curl -fsSL -u "${user}:${pass}" -T "$tgz" "$url"
+  digest="sha256:$(sha256sum "$tgz" | awk '{print $1}')"
+  echo "published ${url} digest=${digest}"
+  printf '%s\n' "$digest"
 }
 
 claw_pack_artifact_cli() {
   local which="${1:-all}" # all|claw|neuro|acp
   local tag="${RELEASE_TAG:?RELEASE_TAG required}"
   local art="$ROOT/deploy/stack/.linux-artifacts/release"
-  claw_pack_registry_login
-
   if [[ "$which" == "all" || "$which" == "claw" ]]; then
     [[ -x "${art}/claw" ]] || { echo "error: missing ${art}/claw" >&2; return 1; }
     local st
@@ -132,10 +126,10 @@ claw_pack_artifact_cli() {
   fi
 }
 
-# Pull artifact image layers to a host directory (for inject / inspect). Author: kejiqing
+# Unpack a CLI tar.gz URL into dest (host inspect). Author: kejiqing
 claw_pack_artifact_pull() {
-  local image_ref="$1"
+  local url="$1"
   local dest="$2"
   mkdir -p "$dest"
-  python3 "$ROOT/deploy/e2b/registry_extract.py" --tree "$image_ref" /usr/local "$dest"
+  curl -fsSL "$url" | tar -xzf - -C "$dest"
 }

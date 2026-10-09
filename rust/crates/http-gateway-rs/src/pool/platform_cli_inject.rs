@@ -1,8 +1,8 @@
-//! Platform worker.init: install claw / neuro / ACP engines from registry pins.
-//! Runs before project preflight worker.init.*. Author: kejiqing
+//! Platform worker.init: run `deploy/e2b/guest-install-cli-pin.sh` in the sandbox.
+//! Pin ref is http(s) or file:// tar.gz. Author: kejiqing
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use claw_e2b_sandbox_client::{E2bSandboxClient, E2bSandboxHandle};
 use tracing::info;
@@ -68,7 +68,6 @@ pub async fn run_platform_cli_inject(
         }
     }
 
-    // Smoke: claw must exist after inject.
     let out = client
         .exec_shell_script_stdout_with(
             handle,
@@ -107,144 +106,77 @@ async fn inject_pin(
     pin: &CliPinEntry,
     expected_paths: &[&str],
 ) -> Result<(), String> {
-    let staging = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
-    extract_artifact_to(&pin.r#ref, staging.path()).await?;
-    for rel in expected_paths {
-        // --tree /usr/local → files land under staging/{bin,lib,...}
-        let under_local = staging.path().join(
-            rel.trim_start_matches("/usr/local/")
-                .trim_start_matches('/'),
-        );
-        let host_path = if under_local.exists() {
-            under_local
-        } else {
-            let abs = staging.path().join(rel.trim_start_matches('/'));
-            if abs.exists() {
-                abs
-            } else {
-                return Err(format!(
-                    "extracted {} missing expected path {rel} (under {})",
-                    pin.r#ref,
-                    staging.path().display()
-                ));
-            }
-        };
-        upload_path_to_guest(client, handle, &host_path, rel).await?;
+    let image = pin.r#ref.trim();
+    if image.is_empty() {
+        return Err("cli pin ref must be non-empty".into());
     }
+    let script = guest_run_sh()?;
+    let mut env = registry_auth_env();
+    env.insert("IMAGE_REF".into(), image.to_string());
+    env.insert("EXPECTED_PATHS".into(), expected_paths.join(" "));
+    client
+        .exec_shell_script_stdout_with(handle, &script, Some(&env), Some("root"), Some(900))
+        .await
+        .map_err(|e| format!("guest-install-cli-pin {image}: {e}"))?;
     Ok(())
 }
 
-async fn extract_artifact_to(image_ref: &str, dest: &Path) -> Result<(), String> {
+fn deploy_e2b_file(name: &str) -> Result<String, String> {
     let repo = std::env::var("CLAW_REPO_ROOT").unwrap_or_else(|_| {
-        if Path::new("/app/deploy/e2b/registry_extract.py").exists() {
+        if Path::new("/app/deploy/e2b").is_dir() {
             "/app".into()
         } else {
             ".".into()
         }
     });
-    let script = PathBuf::from(&repo).join("deploy/e2b/registry_extract.py");
-    if !script.is_file() {
-        return Err(format!(
-            "registry_extract.py not found at {} (set CLAW_REPO_ROOT)",
-            script.display()
-        ));
-    }
-    let out = tokio::process::Command::new("python3")
-        .arg(&script)
-        .arg("--tree")
-        .arg(image_ref)
-        .arg("/usr/local")
-        .arg(dest)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("registry extract spawn: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "registry extract failed for {image_ref}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-    Ok(())
+    let mounted = PathBuf::from(&repo).join("deploy/e2b").join(name);
+    let bundled = PathBuf::from("/app/deploy/e2b").join(name);
+    let path = if mounted.is_file() { mounted } else { bundled };
+    std::fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "{} not readable at {} (set CLAW_REPO_ROOT): {e}",
+            name,
+            path.display()
+        )
+    })
 }
 
-async fn upload_path_to_guest(
-    client: &E2bSandboxClient,
-    handle: &E2bSandboxHandle,
-    host_path: &Path,
-    guest_path: &str,
-) -> Result<(), String> {
-    if host_path.is_dir() {
-        // tar | base64 stream directory
-        let tar = tokio::process::Command::new("tar")
-            .args(["-C", host_path.to_str().unwrap_or("."), "-czf", "-", "."])
-            .stdout(Stdio::piped())
-            .output()
-            .await
-            .map_err(|e| format!("tar: {e}"))?;
-        if !tar.status.success() {
-            return Err("tar of cli artifact tree failed".into());
+/// Run guest-install-cli-pin.sh in the sandbox (worker.init). Author: kejiqing
+fn guest_run_sh() -> Result<String, String> {
+    let install_sh = deploy_e2b_file("guest-install-cli-pin.sh")?;
+    Ok(format!(
+        "set -euo pipefail\nbash <<'CLAW_GUEST_INSTALL_EOF'\n{install_sh}\nCLAW_GUEST_INSTALL_EOF\n"
+    ))
+}
+
+fn registry_auth_env() -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    for k in [
+        "ACR_USERNAME",
+        "ACR_USER",
+        "ACR_PASSWORD",
+        "ACR_PASSWORK",
+        "CLAW_REGISTRY_USER",
+        "CLAW_REGISTRY_PASSWORD",
+    ] {
+        if let Ok(v) = std::env::var(k) {
+            let t = v.trim();
+            if !t.is_empty() {
+                env.insert(k.into(), t.to_string());
+            }
         }
-        let b64 = base64_encode(&tar.stdout);
-        let parent = guest_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("/");
-        let script = format!(
-            r"set -euo pipefail
-mkdir -p {parent} {guest_path}
-echo '{b64}' | base64 -d | tar -xzf - -C {guest_path}
-"
-        );
-        client
-            .exec_shell_script_stdout_with(handle, &script, None, Some("root"), Some(600))
-            .await
-            .map_err(|e| format!("upload tree {guest_path}: {e}"))?;
-        return Ok(());
     }
-
-    let bytes = tokio::fs::read(host_path)
-        .await
-        .map_err(|e| format!("read {}: {e}", host_path.display()))?;
-    // Chunk large binaries (base64 ~1.3x).
-    const CHUNK: usize = 48_000;
-    let parent = guest_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("/");
-    client
-        .exec_shell_script_stdout_with(
-            handle,
-            &format!("mkdir -p {parent}; : > {guest_path}"),
-            None,
-            Some("root"),
-            Some(60),
-        )
-        .await
-        .map_err(|e| format!("prep {guest_path}: {e}"))?;
-    for chunk in bytes.chunks(CHUNK) {
-        let b64 = base64_encode(chunk);
-        let script = format!(
-            r"set -euo pipefail
-echo '{b64}' | base64 -d >> {guest_path}
-"
-        );
-        client
-            .exec_shell_script_stdout_with(handle, &script, None, Some("root"), Some(120))
-            .await
-            .map_err(|e| format!("upload chunk {guest_path}: {e}"))?;
+    if !env.contains_key("ACR_USERNAME") && !env.contains_key("ACR_USER") {
+        if let Some(u) = env.get("CLAW_REGISTRY_USER").cloned() {
+            env.insert("ACR_USERNAME".into(), u);
+        }
     }
-    client
-        .exec_shell_script_stdout_with(
-            handle,
-            &format!("chmod 0755 {guest_path}"),
-            None,
-            Some("root"),
-            Some(30),
-        )
-        .await
-        .map_err(|e| format!("chmod {guest_path}: {e}"))?;
-    Ok(())
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
+    if !env.contains_key("ACR_PASSWORD") && !env.contains_key("ACR_PASSWORK") {
+        if let Some(p) = env.get("CLAW_REGISTRY_PASSWORD").cloned() {
+            env.insert("ACR_PASSWORD".into(), p);
+        }
+    }
+    env
 }
 
 /// Exposed for tests / diagnostics. Author: kejiqing
@@ -262,4 +194,29 @@ pub fn pins_summary(pins: &CliPins) -> String {
             .map(|p| p.r#ref.as_str())
             .unwrap_or("-"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guest_run_sh_loads_repo_script_not_chunk_upload() {
+        let _g = crate::pool::config::test_env_lock();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = root.canonicalize().unwrap();
+        let prev = std::env::var_os("CLAW_REPO_ROOT");
+        std::env::set_var("CLAW_REPO_ROOT", &root);
+        let script = guest_run_sh().unwrap();
+        match prev {
+            Some(v) => std::env::set_var("CLAW_REPO_ROOT", v),
+            None => std::env::remove_var("CLAW_REPO_ROOT"),
+        }
+        assert!(script.contains("IMAGE_REF is required"));
+        assert!(script.contains("file://*"));
+        assert!(script.contains("tar -xzf"));
+        assert!(script.contains("curl -fsSL"));
+        assert!(!script.contains("registry_extract"));
+        assert!(!script.contains("48_000"));
+    }
 }
