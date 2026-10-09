@@ -67,12 +67,15 @@ case "$HTTP_CODE" in
       REMOTE="sha256:$(shasum -a 256 "$DL" | awk '{print $1}')"
     fi
     rm -f "$DL"
-    if [[ "$REMOTE" != "sha256:${SHA256}" ]]; then
-      echo "raw 409 but digest differs: local=sha256:${SHA256} remote=${REMOTE}" >&2
-      echo "bump ENGINE_VERSION to publish a new artifact" >&2
-      exit 1
+    if [[ "$REMOTE" == "sha256:${SHA256}" ]]; then
+      echo "raw already present with matching digest (409 idempotent)" >&2
+    else
+      # Same version label, new bytes (tar metadata / rebuild) → replace. Author: kejiqing
+      echo "raw 409 digest differs; DELETE + re-upload ${URL}" >&2
+      echo "  local=sha256:${SHA256} remote=${REMOTE}" >&2
+      curl -fsS --retry 3 --retry-connrefused -X DELETE "${AUTH[@]}" "$URL"
+      curl -fsS --retry 3 --retry-connrefused "${AUTH[@]}" -T "$TAR_PATH" "$URL"
     fi
-    echo "raw already present with matching digest (409 idempotent)" >&2
     ;;
   *)
     echo "raw upload failed HTTP ${HTTP_CODE}" >&2
