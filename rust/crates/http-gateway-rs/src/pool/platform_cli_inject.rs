@@ -1,8 +1,9 @@
-//! Platform worker.init: install claw / neuro / ACP engines from registry pins.
-//! Runs before project preflight worker.init.*. Author: kejiqing
+//! Platform worker.init: guest shell pulls CLI pins from registry (no host→envd binary push).
+//! Same style as project `worker.init.*`: one root `run_sh`, sandbox does the work.
+//! Author: kejiqing
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use claw_e2b_sandbox_client::{E2bSandboxClient, E2bSandboxHandle};
 use tracing::info;
@@ -68,7 +69,6 @@ pub async fn run_platform_cli_inject(
         }
     }
 
-    // Smoke: claw must exist after inject.
     let out = client
         .exec_shell_script_stdout_with(
             handle,
@@ -107,34 +107,131 @@ async fn inject_pin(
     pin: &CliPinEntry,
     expected_paths: &[&str],
 ) -> Result<(), String> {
-    let staging = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
-    extract_artifact_to(&pin.r#ref, staging.path()).await?;
-    for rel in expected_paths {
-        // --tree /usr/local → files land under staging/{bin,lib,...}
-        let under_local = staging.path().join(
-            rel.trim_start_matches("/usr/local/")
-                .trim_start_matches('/'),
-        );
-        let host_path = if under_local.exists() {
-            under_local
-        } else {
-            let abs = staging.path().join(rel.trim_start_matches('/'));
-            if abs.exists() {
-                abs
-            } else {
-                return Err(format!(
-                    "extracted {} missing expected path {rel} (under {})",
-                    pin.r#ref,
-                    staging.path().display()
-                ));
-            }
-        };
-        upload_path_to_guest(client, handle, &host_path, rel).await?;
+    let image = pin.r#ref.trim();
+    if image.is_empty() {
+        return Err("cli pin ref must be non-empty".into());
     }
+    let script = guest_registry_install_script(image, expected_paths)?;
+    let env = registry_pull_env(&image)?;
+    client
+        .exec_shell_script_stdout_with(
+            handle,
+            &script,
+            Some(&env),
+            Some("root"),
+            Some(900),
+        )
+        .await
+        .map_err(|e| format!("guest registry install {image}: {e}"))?;
     Ok(())
 }
 
-async fn extract_artifact_to(image_ref: &str, dest: &Path) -> Result<(), String> {
+fn image_name_without_tag(image_ref: &str) -> &str {
+    let file = image_ref.rsplit('/').next().unwrap_or(image_ref);
+    if let Some(i) = file.rfind(':') {
+        let abs = image_ref.len() - file.len() + i;
+        &image_ref[..abs]
+    } else {
+        image_ref
+    }
+}
+
+fn registry_host_of(image_ref: &str) -> Option<String> {
+    let name = image_ref.split('@').next().unwrap_or(image_ref);
+    let name = image_name_without_tag(name);
+    let host = name.split('/').next()?.trim();
+    if host.is_empty() || (!host.contains('.') && !host.contains(':') && host != "localhost") {
+        return None;
+    }
+    Some(host.to_string())
+}
+
+fn registry_pull_env(image_ref: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut env = BTreeMap::new();
+    if let Some(host) = registry_host_of(image_ref) {
+        // Nexus group/pull ports are plain HTTP (see registry_extract.registry_scheme).
+        let non_tls_port = host.rsplit_once(':').and_then(|(_, port)| {
+            if port.chars().all(|c| c.is_ascii_digit()) && port != "443" && port != "8443" {
+                Some(port)
+            } else {
+                None
+            }
+        });
+        if non_tls_port.is_some() {
+            env.insert("CLAW_REGISTRY_HTTP_HOSTS".into(), host);
+        }
+    }
+    if let Some(cfg) = read_docker_config_json() {
+        env.insert("CLAW_DOCKER_CONFIG_JSON".into(), cfg);
+    }
+    for (k, ek) in [
+        ("ACR_USERNAME", "ACR_USERNAME"),
+        ("ACR_USER", "ACR_USER"),
+        ("ACR_PASSWORD", "ACR_PASSWORD"),
+        ("ACR_PASSWORK", "ACR_PASSWORK"),
+        ("CLAW_REGISTRY_USER", "CLAW_REGISTRY_USER"),
+        ("CLAW_REGISTRY_PASSWORD", "CLAW_REGISTRY_PASSWORD"),
+    ] {
+        if let Ok(v) = std::env::var(k) {
+            let t = v.trim();
+            if !t.is_empty() {
+                env.insert(ek.into(), t.to_string());
+            }
+        }
+    }
+    // Map CLAW_REGISTRY_* → ACR_* for registry_extract. Author: kejiqing
+    if !env.contains_key("ACR_USERNAME") && !env.contains_key("ACR_USER") {
+        if let Some(u) = env.get("CLAW_REGISTRY_USER").cloned() {
+            env.insert("ACR_USERNAME".into(), u);
+        }
+    }
+    if !env.contains_key("ACR_PASSWORD") && !env.contains_key("ACR_PASSWORK") {
+        if let Some(p) = env.get("CLAW_REGISTRY_PASSWORD").cloned() {
+            env.insert("ACR_PASSWORD".into(), p);
+        }
+    }
+    Ok(env)
+}
+
+fn read_docker_config_json() -> Option<String> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for key in ["CLAW_DOCKER_CONFIG", "DOCKER_CONFIG"] {
+        if let Ok(raw) = std::env::var(key) {
+            let p = PathBuf::from(raw.trim());
+            if p.as_os_str().is_empty() {
+                continue;
+            }
+            paths.push(if p.file_name().and_then(|s| s.to_str()) == Some("config.json") {
+                p
+            } else {
+                p.join("config.json")
+            });
+        }
+    }
+    paths.extend([
+        PathBuf::from("/run/claw/docker-config.json"),
+        PathBuf::from("/run/claw/claw/docker-config.json"),
+        dirs_next_home_docker_config(),
+    ]);
+    for p in paths {
+        if let Ok(s) = std::fs::read_to_string(&p) {
+            let t = s.trim();
+            if t.starts_with('{') {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn dirs_next_home_docker_config() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/root"))
+        .join(".docker/config.json")
+}
+
+fn registry_extract_py_source() -> Result<String, String> {
     let repo = std::env::var("CLAW_REPO_ROOT").unwrap_or_else(|_| {
         if Path::new("/app/deploy/e2b/registry_extract.py").exists() {
             "/app".into()
@@ -143,108 +240,73 @@ async fn extract_artifact_to(image_ref: &str, dest: &Path) -> Result<(), String>
         }
     });
     let script = PathBuf::from(&repo).join("deploy/e2b/registry_extract.py");
-    if !script.is_file() {
-        return Err(format!(
-            "registry_extract.py not found at {} (set CLAW_REPO_ROOT)",
-            script.display()
-        ));
-    }
-    let out = tokio::process::Command::new("python3")
-        .arg(&script)
-        .arg("--tree")
-        .arg(image_ref)
-        .arg("/usr/local")
-        .arg(dest)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("registry extract spawn: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "registry extract failed for {image_ref}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-    Ok(())
+    // Prefer mounted repo; fall back to image copy under /app.
+    let path = if script.is_file() {
+        script
+    } else {
+        PathBuf::from("/app/deploy/e2b/registry_extract.py")
+    };
+    std::fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "registry_extract.py not readable at {} (set CLAW_REPO_ROOT): {e}",
+            path.display()
+        )
+    })
 }
 
-async fn upload_path_to_guest(
-    client: &E2bSandboxClient,
-    handle: &E2bSandboxHandle,
-    host_path: &Path,
-    guest_path: &str,
-) -> Result<(), String> {
-    if host_path.is_dir() {
-        // tar | base64 stream directory
-        let tar = tokio::process::Command::new("tar")
-            .args(["-C", host_path.to_str().unwrap_or("."), "-czf", "-", "."])
-            .stdout(Stdio::piped())
-            .output()
-            .await
-            .map_err(|e| format!("tar: {e}"))?;
-        if !tar.status.success() {
-            return Err("tar of cli artifact tree failed".into());
-        }
-        let b64 = base64_encode(&tar.stdout);
-        let parent = guest_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("/");
-        let script = format!(
-            r"set -euo pipefail
-mkdir -p {parent} {guest_path}
-echo '{b64}' | base64 -d | tar -xzf - -C {guest_path}
-"
-        );
-        client
-            .exec_shell_script_stdout_with(handle, &script, None, Some("root"), Some(600))
-            .await
-            .map_err(|e| format!("upload tree {guest_path}: {e}"))?;
-        return Ok(());
-    }
-
-    let bytes = tokio::fs::read(host_path)
-        .await
-        .map_err(|e| format!("read {}: {e}", host_path.display()))?;
-    // Chunk large binaries (base64 ~1.3x).
-    const CHUNK: usize = 48_000;
-    let parent = guest_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("/");
-    client
-        .exec_shell_script_stdout_with(
-            handle,
-            &format!("mkdir -p {parent}; : > {guest_path}"),
-            None,
-            Some("root"),
-            Some(60),
-        )
-        .await
-        .map_err(|e| format!("prep {guest_path}: {e}"))?;
-    for chunk in bytes.chunks(CHUNK) {
-        let b64 = base64_encode(chunk);
-        let script = format!(
-            r"set -euo pipefail
-echo '{b64}' | base64 -d >> {guest_path}
-"
-        );
-        client
-            .exec_shell_script_stdout_with(handle, &script, None, Some("root"), Some(120))
-            .await
-            .map_err(|e| format!("upload chunk {guest_path}: {e}"))?;
-    }
-    client
-        .exec_shell_script_stdout_with(
-            handle,
-            &format!("chmod 0755 {guest_path}"),
-            None,
-            Some("root"),
-            Some(30),
-        )
-        .await
-        .map_err(|e| format!("chmod {guest_path}: {e}"))?;
-    Ok(())
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn base64_encode(bytes: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
+/// worker.init-style guest script: ensure python3, pull OCI tree, install paths. Author: kejiqing
+fn guest_registry_install_script(image_ref: &str, expected_paths: &[&str]) -> Result<String, String> {
+    let extract_py = registry_extract_py_source()?;
+    let image_q = shell_single_quote(image_ref);
+    let mut checks = String::new();
+    for p in expected_paths {
+        let rel = p
+            .trim_start_matches("/usr/local/")
+            .trim_start_matches('/');
+        let rel_q = shell_single_quote(rel);
+        let dest_q = shell_single_quote(p);
+        checks.push_str(&format!(
+            r#"
+src="$STAGE"/{rel_q}
+dst={dest_q}
+test -e "$src" || {{ echo "missing $src after registry extract" >&2; exit 1; }}
+mkdir -p "$(dirname "$dst")"
+if [ -d "$src" ]; then
+  rm -rf "$dst"
+  cp -a "$src" "$dst"
+else
+  install -m 0755 "$src" "$dst"
+fi
+"#
+        ));
+    }
+    Ok(format!(
+        r#"set -euo pipefail
+# Platform CLI inject — guest pulls from registry (worker.init style). Author: kejiqing
+if ! command -v python3 >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y -qq python3 ca-certificates
+fi
+EXTRACT=/tmp/claw-registry-extract.py
+cat >"$EXTRACT" <<'CLAW_REGISTRY_EXTRACT_EOF'
+{extract_py}
+CLAW_REGISTRY_EXTRACT_EOF
+if [ -n "${{CLAW_DOCKER_CONFIG_JSON:-}}" ]; then
+  mkdir -p /tmp/claw-docker
+  printf '%s\n' "$CLAW_DOCKER_CONFIG_JSON" > /tmp/claw-docker/config.json
+  export CLAW_DOCKER_CONFIG=/tmp/claw-docker/config.json
+fi
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+python3 "$EXTRACT" --tree {image_q} /usr/local "$STAGE"
+{checks}
+"#
+    ))
 }
 
 /// Exposed for tests / diagnostics. Author: kejiqing
@@ -262,4 +324,40 @@ pub fn pins_summary(pins: &CliPins) -> String {
             .map(|p| p.r#ref.as_str())
             .unwrap_or("-"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_name_keeps_registry_port() {
+        assert_eq!(
+            image_name_without_tag("registry.example:5000/ns/claw-cli/claw:tag"),
+            "registry.example:5000/ns/claw-cli/claw"
+        );
+    }
+
+    #[test]
+    fn guest_script_is_worker_init_style_not_chunk_upload() {
+        let _g = crate::pool::config::test_env_lock();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = root.canonicalize().unwrap();
+        let prev = std::env::var_os("CLAW_REPO_ROOT");
+        std::env::set_var("CLAW_REPO_ROOT", &root);
+        let script = guest_registry_install_script(
+            "repo.example/ns/claw-cli/claw:v1",
+            &["/usr/local/bin/claw"],
+        )
+        .unwrap();
+        match prev {
+            Some(v) => std::env::set_var("CLAW_REPO_ROOT", v),
+            None => std::env::remove_var("CLAW_REPO_ROOT"),
+        }
+        assert!(script.contains("CLAW_REGISTRY_EXTRACT_EOF"));
+        assert!(script.contains("python3 \"$EXTRACT\" --tree"));
+        assert!(!script.contains("upload chunk"));
+        assert!(!script.contains("48_000"));
+        assert!(!script.contains("base64 -d >>"));
+    }
 }
