@@ -6,7 +6,7 @@ pipeline {
     disableConcurrentBuilds()
   }
   parameters {
-    string(name: 'GIT_TAG', defaultValue: 'release-v2.0.25', description: 'Tag to publish: vX.Y.Z or release-v*')
+    string(name: 'GIT_TAG', defaultValue: 'release-v2.0.35', description: 'Tag to publish: vX.Y.Z or release-v*')
   }
   environment {
     NEXUS_PUSH_REGISTRY = 'nora.home.passionke.top'

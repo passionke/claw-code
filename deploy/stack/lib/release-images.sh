@@ -50,16 +50,18 @@ claw_image_registry_prefix_from_env() {
 }
 
 # After sourcing .env: set only Gateway/Admin images to <prefix>/...:<tag>.
+# Nora / ship-release publish names: claw-code + claw-gateway-playground.
+# Author: kejiqing
 #   CLAW_RELEASE_PLAYGROUND_IMAGE  — pin playground (e.g. claw-gateway-playground:local)
 claw_apply_release_image_tag() {
   local tag="${1:?}"
   local prefix
   prefix="$(claw_image_registry_prefix_from_env)"
-  export GATEWAY_IMAGE="${prefix}/http-gateway-rs:${tag}"
+  export GATEWAY_IMAGE="${prefix}/claw-code:${tag}"
   if [[ -n "${CLAW_RELEASE_PLAYGROUND_IMAGE:-}" ]]; then
     export GATEWAY_PLAYGROUND_IMAGE="${CLAW_RELEASE_PLAYGROUND_IMAGE}"
   else
-    export GATEWAY_PLAYGROUND_IMAGE="${prefix}/http-gateway-playground:${tag}"
+    export GATEWAY_PLAYGROUND_IMAGE="${prefix}/claw-gateway-playground:${tag}"
   fi
 }
 

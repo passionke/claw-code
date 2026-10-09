@@ -2,6 +2,8 @@
 
 Author: kejiqing
 
+**Home 升级闭环（发 → 绑 → 用）：** [`docs/deploy-ops-runbook.md`](../docs/deploy-ops-runbook.md) §H。
+
 The release architecture has three independent layers. Publishing one layer must not invoke either
 of the other two.
 
