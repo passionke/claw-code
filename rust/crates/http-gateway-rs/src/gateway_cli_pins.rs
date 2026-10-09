@@ -80,7 +80,12 @@ async fn ensure_digest(entry: &mut CliPinEntry) -> Result<(), String> {
 async fn probe_image_digest(image_ref: &str) -> Result<String, String> {
     // Prefer skopeo when present (same as pack path).
     if let Ok(out) = tokio::process::Command::new("skopeo")
-        .args(["inspect", "--format", "{{.Digest}}", &format!("docker://{image_ref}")])
+        .args([
+            "inspect",
+            "--format",
+            "{{.Digest}}",
+            &format!("docker://{image_ref}"),
+        ])
         .output()
         .await
     {

@@ -17,11 +17,10 @@ use crate::routes::app::{
     put_gateway_active_llm_config_handler, put_gateway_claw_tap_handler,
     put_gateway_cli_pins_handler, put_gateway_e2b_observe_settings_handler,
     put_gateway_e2b_singleton_templates_handler, put_gateway_e2b_worker_settings_handler,
-    put_gateway_strict_landlock_default_handler,
-    reset_gateway_e2b_singleton_handler, reset_gateway_observe_tap_handler,
-    revoke_gateway_admin_mcp_token_handler, test_gateway_llm_model_handler,
-    upsert_gateway_git_pat_handler, upsert_gateway_llm_model_handler,
-    verify_gateway_llm_context_window_handler,
+    put_gateway_strict_landlock_default_handler, reset_gateway_e2b_singleton_handler,
+    reset_gateway_observe_tap_handler, revoke_gateway_admin_mcp_token_handler,
+    test_gateway_llm_model_handler, upsert_gateway_git_pat_handler,
+    upsert_gateway_llm_model_handler, verify_gateway_llm_context_window_handler,
 };
 use axum::routing::{delete, get, post, put};
 use axum::Router;

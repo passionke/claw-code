@@ -111,9 +111,10 @@ async fn inject_pin(
     extract_artifact_to(&pin.r#ref, staging.path()).await?;
     for rel in expected_paths {
         // --tree /usr/local → files land under staging/{bin,lib,...}
-        let under_local = staging
-            .path()
-            .join(rel.trim_start_matches("/usr/local/").trim_start_matches('/'));
+        let under_local = staging.path().join(
+            rel.trim_start_matches("/usr/local/")
+                .trim_start_matches('/'),
+        );
         let host_path = if under_local.exists() {
             under_local
         } else {
