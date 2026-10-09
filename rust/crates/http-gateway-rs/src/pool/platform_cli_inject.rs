@@ -189,10 +189,10 @@ async fn upload_path_to_guest(
         let b64 = base64_encode(&tar.stdout);
         let parent = guest_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("/");
         let script = format!(
-            r#"set -euo pipefail
+            r"set -euo pipefail
 mkdir -p {parent} {guest_path}
 echo '{b64}' | base64 -d | tar -xzf - -C {guest_path}
-"#
+"
         );
         client
             .exec_shell_script_stdout_with(handle, &script, None, Some("root"), Some(600))
@@ -220,9 +220,9 @@ echo '{b64}' | base64 -d | tar -xzf - -C {guest_path}
     for chunk in bytes.chunks(CHUNK) {
         let b64 = base64_encode(chunk);
         let script = format!(
-            r#"set -euo pipefail
+            r"set -euo pipefail
 echo '{b64}' | base64 -d >> {guest_path}
-"#
+"
         );
         client
             .exec_shell_script_stdout_with(handle, &script, None, Some("root"), Some(120))
