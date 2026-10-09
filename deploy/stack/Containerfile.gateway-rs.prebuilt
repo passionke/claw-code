@@ -25,6 +25,7 @@ WORKDIR /app
 COPY deploy/stack/.linux-artifacts/release/claw /usr/local/bin/claw
 COPY deploy/stack/.linux-artifacts/release/http-gateway-rs /usr/local/bin/http-gateway-rs
 COPY deploy/e2b/e2b_exec.py /app/deploy/e2b/
+COPY deploy/e2b/guest-install-cli-pin.sh /app/deploy/e2b/
 COPY deploy/e2b/requirements-e2b-sdk.txt /tmp/requirements-e2b-sdk.txt
 COPY scripts/mind-kb/ /app/scripts/mind-kb/
 COPY docs/gpos-assistant-prompt-content.md /app/docs/
