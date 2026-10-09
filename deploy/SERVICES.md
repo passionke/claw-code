@@ -9,16 +9,16 @@ of the other two.
 
 - Scope: HTTP Gateway, Admin SPA, configuration, scheduling.
 - Private Jenkins entry: `deploy/stack/lib/ci-publish-nora.sh`.
-- GitHub tag entry: `.github/workflows/claw-code-image.yaml`.
-- Output: `claw-code` and `claw-gateway-playground` only.
+- Jenkins Pipeline source: `deploy/jenkins/claw-code-nora.Jenkinsfile`.
+- Output: `claw-code` and `claw-gateway-playground` only → `nora.home.passionke.top/passionke`.
 
 ## 2. e2b Worker protocol
 
 - Scope: the stable Gateway-to-Agent protocol runtime.
 - Contains `claw`, `neuro-opencode`, and `neuro-appserver`.
-- Manual workflow: `.github/workflows/e2b-worker-protocol.yml`.
+- Private Jenkins entry: `deploy/e2b/ci-publish-nora.sh` (manual Job).
+- Jenkins Pipeline source: `deploy/jenkins/claw-e2b-protocol-nora.Jenkinsfile`.
 - Build and publish entry: `deploy/e2b/publish-worker-protocol.sh`.
-- Register an existing protocol image: `deploy/e2b/bootstrap-templates-from-ci-tag.sh`.
 - Output: `claw-worker-base`, `claw-worker-base-relaxed`, and their e2b template build records.
 
 There is no platform tar, platform pin, or runtime download of `claw`/`neuro-*`.
@@ -27,9 +27,15 @@ There is no platform tar, platform pin, or runtime download of `claw`/`neuro-*`.
 
 - Scope: independently versioned ACP implementations such as opencode and codex-acp.
 - Each engine owns its build script under `deploy/agent-engines/<engine>/`.
+- Private Jenkins entry: `deploy/agent-engines/ci-publish-nora.sh` (manual Job, one engine per run).
+- Jenkins Pipeline source: `deploy/jenkins/claw-agent-engine-nora.Jenkinsfile`.
 - `deploy/agent-engines/upload-raw.sh` only validates an existing tar, computes sha256, and uploads
-  it with `curl -T`.
+  it with `curl -T` to Nora raw.
+- Raw base URL (fixed): `https://nora.home.passionke.top/raw/claw-agent-engines`
+- Example artifact:
+  `https://nora.home.passionke.top/raw/claw-agent-engines/opencode-1.18.34-amd64.tar.gz`
 - A tar extracts at `/` and may only contain paths under `usr/local/`.
+- Credential: Jenkins `nora-deployer` as `RAW_USERNAME` / `RAW_PASSWORD`.
 
 Gateway settings store only the dynamic Agent engine map:
 
@@ -38,7 +44,7 @@ Gateway settings store only the dynamic Agent engine map:
   "agentEngines": {
     "engines": {
       "opencode": {
-        "ref": "https://raw.example/opencode-1.18.34-amd64.tar.gz",
+        "ref": "https://nora.home.passionke.top/raw/claw-agent-engines/opencode-1.18.34-amd64.tar.gz",
         "digest": "sha256:..."
       }
     }
