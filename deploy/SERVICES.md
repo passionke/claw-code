@@ -60,9 +60,9 @@ Gateway settings store only the dynamic Agent engine map:
 }
 ```
 
-Change it through Admin or `PUT /v1/gateway/global-settings/agent-engines`. A new Worker downloads
-only the engine selected by the project's `harnessEngine`; reset an existing Worker to apply a
-changed engine.
+Change ref/digest through Admin or `PUT /v1/gateway/global-settings/agent-engines` (engine IDs are
+fixed after migrate; add/remove is rejected). A new Worker downloads only the engine selected by
+the project's `harnessEngine`; reset an existing Worker to apply a changed engine.
 
 After both raw artifacts exist and before upgrading Gateway, run
 `deploy/agent-engines/migrate-existing-config.sh` with their URL/digest values. The transaction
