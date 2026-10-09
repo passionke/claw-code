@@ -999,11 +999,11 @@ impl E2bProjWorkerRegistry {
             .await
             .map_err(|e| format!("renew new project worker TTL: {e}"))?;
 
-        // Platform CLI inject (cliPins) before project worker.init.*. Author: kejiqing
+        // Install only the project's selected Agent engine before worker.init.*. Author: kejiqing
         let harness_engine = harness_engine::load_project_harness_engine(db.as_ref(), proj_id)
             .await
             .unwrap_or(harness_engine::HarnessEngine::Claw);
-        if let Err(e) = super::platform_cli_inject::run_platform_cli_inject(
+        if let Err(e) = super::agent_engine_inject::run_agent_engine_inject(
             db.as_ref(),
             &self.client,
             &handle,
@@ -1013,7 +1013,7 @@ impl E2bProjWorkerRegistry {
         {
             let _ = self.client.kill_sandbox(&handle.sandbox_id).await;
             return Err(format!(
-                "platform CLI inject failed for proj {proj_id} worker {worker_id}: {e}"
+                "Agent engine install failed for proj {proj_id} worker {worker_id}: {e}"
             ));
         }
 

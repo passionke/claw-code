@@ -43,21 +43,21 @@ pub(crate) async fn get_gateway_global_settings_handler(
 
 #[utoipa::path(
     put,
-    path = "/v1/gateway/global-settings/cli-pins",
+    path = "/v1/gateway/global-settings/agent-engines",
     tag = "Gateway Settings",
-    operation_id = "put_gateway_cli_pins_handler",
-    summary = "Update platform Worker CLI version pins (full ref + digest)",
-    request_body = crate::gateway_cli_pins::PutCliPinsInput,
+    operation_id = "put_gateway_agent_engines_handler",
+    summary = "Replace the dynamic Agent engine artifact map",
+    request_body = crate::gateway_agent_engines::AgentEngines,
     responses(
-        (status = 200, description = "Updated cli pins", body = crate::gateway_cli_pins::CliPins),
-        (status = 400, description = "Invalid ref or registry probe failed")
+        (status = 200, description = "Updated Agent engines", body = crate::gateway_agent_engines::AgentEngines),
+        (status = 400, description = "Invalid engine ID, ref, or digest")
     )
 )]
-pub(crate) async fn put_gateway_cli_pins_handler(
+pub(crate) async fn put_gateway_agent_engines_handler(
     State(state): State<AppState>,
-    Json(req): Json<crate::gateway_cli_pins::PutCliPinsInput>,
-) -> Result<Json<crate::gateway_cli_pins::CliPins>, ApiError> {
-    let body = crate::gateway_cli_pins::put_cli_pins(&state.session_db, req)
+    Json(req): Json<crate::gateway_agent_engines::AgentEngines>,
+) -> Result<Json<crate::gateway_agent_engines::AgentEngines>, ApiError> {
+    let body = crate::gateway_agent_engines::put_agent_engines(&state.session_db, req)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     Ok(Json(body))

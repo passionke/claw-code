@@ -25,23 +25,23 @@ e2b sandbox runtime is billed separately (MicroVM uptime; use sleep/wake to redu
 
 ## Template Build Guardrail
 
-Worker **空壳**注册走 e2b `from_image`（镜像 = `claw-worker-base`，**不含** claw CLI）：
+Worker 协议模板走 e2b `from_image`。`claw-worker-base` 固定包含 `claw` 与两个
+`neuro-*` 协议程序，不包含 Agent 引擎。
 
-- **唯一打包入口**：[`deploy/pack/publish.sh`](../pack/publish.sh)（Jenkins / GHA 同调）
-- **e2b 注册**：`publish.sh e2b-register` 或 Admin「制作模板」（内部同调）
-- **CLI**：`publish.sh cli-*` + Admin「Worker CLI 版本」→ create 时 platform worker.init 注入
-
-旧 `bootstrap-templates-from-ci-tag.sh`（抽二进制 + debian COPY）已 **REMOVED**（exit 2）。
+- **协议层发布**：[`publish-worker-protocol.sh`](publish-worker-protocol.sh)
+- **已有镜像注册**：[`bootstrap-templates-from-ci-tag.sh`](bootstrap-templates-from-ci-tag.sh)
+- **Agent 引擎**：`deploy/agent-engines/<engine>/build.sh` + `upload-raw.sh`
 
 严禁临时 HTTP artifact server / `RUN curl http://host` 进模板。Author: kejiqing
 
 ## Dev 模式：worker 模板（不走 CI）
 
-日常改 `rusty-claude-cli`（e2b 沙箱内 `claw`）：
+日常改协议运行时：
 
 ```bash
-RELEASE_TAG=release-vX.Y.Z ./deploy/pack/publish.sh e2b-register
-# CLI: ./deploy/pack/publish.sh cli-* then Admin → Worker CLI 版本
+RELEASE_TAG=protocol-vX.Y.Z \
+CLAW_IMAGE_PREFIX=registry.example/namespace \
+bash deploy/e2b/publish-worker-protocol.sh
 ```
 
 **唯一手册：** [`WORKER-BUILD.md`](./WORKER-BUILD.md)、[`../SERVICES.md`](../SERVICES.md)。
@@ -107,7 +107,7 @@ podman exec claw-gateway-rs sh -c 'echo ok > /var/lib/claw/workspace/.probe'
 
 #### 1. 一次性：把工具装到 NAS（legacy）
 
-`install-nas-fc-tools.sh` **已从仓库移除**。自托管路径：`deploy/pack/publish.sh e2b-register` + Admin CLI pins。
+`install-nas-fc-tools.sh` **已从仓库移除**。自托管路径见 [`WORKER-BUILD.md`](./WORKER-BUILD.md)。
 
 #### 2. `.env`（交互 e2b 模式，legacy Aliyun）
 

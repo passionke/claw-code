@@ -1,6 +1,0 @@
-# Single-file (or tree) CLI artifact as an OCI image for registry transport.
-# BUILD_CONTEXT is staged by artifact-cli.sh. Author: kejiqing
-ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
-FROM ${DEBIAN_BASE_IMAGE}
-COPY root/ /
-RUN chmod -R a+rX /usr/local || true

@@ -227,9 +227,12 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
   - 已知缺口：`rust-ci.yml` 的 `cargo test --workspace` 不覆盖这个 crate，目前只靠 pre-push 和 `claw-code-branch-worker` 的编译覆盖。
 - `deploy/stack/lib/linux-compile.sh`：产物统一由 `CLAW_LINUX_RELEASE_BINS` 列出，包括 `claw`、`http-gateway-rs`、`neuro-opencode`、`neuro-appserver`。
 - npm 源统一用 `claw_npm_registry`（`deploy/stack/lib/claw-region.sh`）：region 为 `china` 时用 `registry.npmmirror.com`，其他情况用 `registry.npmjs.org`。已实测：同一份 lockfile 用 `npm ci --registry=https://registry.npmmirror.com` 安装时，全部从 npmmirror 下载，integrity 校验通过（npm 默认 `replace-registry-host=npmjs`）。
-- `Containerfile.gateway-worker-opencode`：`FROM claw-gateway-worker:<tag>`。opencode 用 glibc 平台包 `opencode-linux-{x64,arm64}@1.18.34`。与计划的偏差：计划写的是 musl 包，但 worker 基础镜像是 Debian bookworm（glibc），没有 musl 的动态加载器。tgz 的 sha512 integrity 写死在 `ARG` 里，构建时用 node 计算后比对；npmjs 与 npmmirror 的值一致。
-- `Containerfile.gateway-worker-appserver`：`FROM claw-gateway-worker:<tag>`，`node` 取自 `node:22-bookworm-slim`。不用 bookworm 自带的 Node 18：codex-acp 依赖的 `open@11` 要求 Node ≥ 20。codex-acp 目录由 `npm ci --omit=dev --ignore-scripts` 按 `deploy/neuro-harness/codex-acp/package-lock.json` 安装（lockfile 中所有包都有 integrity；所有依赖都没有 install 脚本）。
-- `deploy/neuro-harness/build-worker-images.sh <strict-worker-image> <tag>`：构建两个镜像并做冒烟检查。检查项：`neuro-*` 不带参数时退出码为 2（证明二进制能加载），`opencode --version`，`node --version`，`codex --version`。CI 和本地都走这个脚本。
+- `deploy/agent-engines/opencode/` 独立生成 opencode raw tar；glibc 平台包
+  `opencode-linux-{x64,arm64}@1.18.34` 的 sha512 integrity 固定在该引擎的 Containerfile。
+- `deploy/agent-engines/codex-acp/` 独立生成 codex-acp raw tar，并包含 Node 22 与 lockfile
+  固定的 npm 依赖。
+- 两个制品都通过 `deploy/agent-engines/upload-raw.sh` 校验、计算 sha256 并 `curl -T`
+  上传，不再构建引擎 Worker 镜像。
 - 标准路径：手动触发 `claw-code-branch-worker`（分支选 `feat/neuro-harness`），一个 tag `branch-feat-neuro-harness` 产出 bootstrap 需要的全部镜像：`claw-code`、strict worker，以及在 job `build-and-push-derived-workers` 中 `FROM` 同 tag strict 构建的 `claw-gateway-worker-{relaxed,opencode,appserver}`（并推 `:dev-<sha12>`）。然后 Admin publish-templates 填这个 tag 一次完成，不需要 env 覆盖。
 - e2b：`build-claw-worker-{opencode,appserver}-selfhosted.py` 的实现都在 `e2b_engine_worker.py`。模板 = strict worker 模板（Dockerfile、start/ready 命令相同）+ 从引擎镜像经 registry HTTP 提取的 `/usr/local/bin` 和 `/usr/local/lib/neuro-engines`。构建完成后写入 PG 的 `e2bWorkerOpencode` / `e2bWorkerAppserver`；写入失败直接报错，不吞掉。`bootstrap-templates-from-ci-tag.sh` 在最后执行这两步：如果该 tag 没有引擎镜像，bootstrap 会在 claw 模板全部完成之后失败。
 

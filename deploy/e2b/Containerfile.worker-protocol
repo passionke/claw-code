@@ -1,0 +1,35 @@
+# e2b Worker protocol runtime. Agent engines are installed separately at worker.init.
+# Author: kejiqing
+ARG DEBIAN_BASE_IMAGE=docker.io/library/debian:bookworm-slim
+
+FROM ${DEBIAN_BASE_IMAGE}
+COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
+ARG CLAW_USE_CN_APT_MIRROR=0
+RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
+      cp /tmp/debian-cn.sources /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    nfs-common \
+    sudo \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 claw \
+    && useradd -m -u 1000 -g 1000 -s /bin/sh claw \
+    && echo 'claw ALL=(ALL) NOPASSWD: /bin/mount, /bin/umount, /usr/bin/mountpoint, /bin/mkdir, /bin/chown' > /etc/sudoers.d/claw-nfs \
+    && chmod 0440 /etc/sudoers.d/claw-nfs
+
+COPY deploy/stack/.linux-artifacts/release/claw /usr/local/bin/claw
+COPY deploy/stack/.linux-artifacts/release/neuro-opencode /usr/local/bin/neuro-opencode
+COPY deploy/stack/.linux-artifacts/release/neuro-appserver /usr/local/bin/neuro-appserver
+RUN chmod 0755 /usr/local/bin/claw /usr/local/bin/neuro-opencode /usr/local/bin/neuro-appserver \
+    && test ! -e /usr/local/lib/neuro-engines \
+    && printf '%s\n' '#!/bin/sh' 'set -eu' 'exec sleep infinity' > /usr/local/bin/claw-worker-start \
+    && printf '%s\n' '#!/bin/sh' \
+      'command -v claw >/dev/null 2>&1 && command -v neuro-opencode >/dev/null 2>&1 && command -v neuro-appserver >/dev/null 2>&1' \
+      > /usr/local/bin/claw-worker-ready \
+    && chmod 0755 /usr/local/bin/claw-worker-start /usr/local/bin/claw-worker-ready
+
+WORKDIR /app
+USER claw
+ENTRYPOINT ["sleep", "infinity"]

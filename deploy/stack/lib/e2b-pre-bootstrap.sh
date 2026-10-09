@@ -38,7 +38,7 @@ done
 
 if [[ "${skip_templates}" -eq 0 ]]; then
   echo "error: template publish is Admin-only (init / 重打模板)." >&2
-  echo "    script: RELEASE_TAG=<tag> ${REPO_ROOT}/deploy/pack/publish.sh e2b-register" >&2
+  echo "    script: ${REPO_ROOT}/deploy/e2b/bootstrap-templates-from-ci-tag.sh <protocol-tag>" >&2
   echo "    pass --skip-templates to bring up singletons only" >&2
   exit 1
 fi

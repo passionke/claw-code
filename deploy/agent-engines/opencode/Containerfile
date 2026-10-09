@@ -1,0 +1,21 @@
+ARG NODE_BASE_IMAGE=docker.io/library/node:22-bookworm-slim
+FROM ${NODE_BASE_IMAGE}
+
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG TARGETARCH=amd64
+ARG OPENCODE_VERSION=1.18.34
+ARG OPENCODE_INTEGRITY_AMD64=sha512-RTAMjCve4euxP2QKLuvRmdoW5J5DQK1DiZqt+7slfixyjAEi79QC2Df2oYKogibaAI4IEU8uzenoJeEl3k+UEw==
+ARG OPENCODE_INTEGRITY_ARM64=sha512-ZSjqcH0MEbAzLEmkRC9Aop1PbWZxe2NuKONAE/x8MRQdjKdOepX7M50UpjbsNoiLMkP584Z98Mg4a42fJhouvA==
+
+WORKDIR /engine
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) pkg=opencode-linux-x64; want="${OPENCODE_INTEGRITY_AMD64}" ;; \
+      arm64) pkg=opencode-linux-arm64; want="${OPENCODE_INTEGRITY_ARM64}" ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    npm pack "${pkg}@${OPENCODE_VERSION}" --registry "${NPM_REGISTRY}" --pack-destination /engine >/dev/null; \
+    tgz="/engine/${pkg}-${OPENCODE_VERSION}.tgz"; \
+    node -e 'const c=require("crypto"),f=require("fs");const got="sha512-"+c.createHash("sha512").update(f.readFileSync(process.argv[1])).digest("base64");if(got!==process.argv[2]){console.error("integrity mismatch: "+got);process.exit(1)}' "${tgz}" "${want}"; \
+    tar -xzf "${tgz}" -C /engine; \
+    test -x /engine/package/bin/opencode
