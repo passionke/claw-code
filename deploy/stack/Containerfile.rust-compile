@@ -6,6 +6,8 @@ COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
 # Default USTC apt (94 / 国内). GitHub Actions passes CLAW_USE_CN_APT_MIRROR=0.
 ARG CLAW_USE_CN_APT_MIRROR=1
 ARG SCCACHE_VERSION=v0.10.0
+# Override in CN (e.g. https://ghfast.top/https://github.com/mozilla/sccache/releases/download). Author: kejiqing
+ARG SCCACHE_BASE_URL=https://github.com/mozilla/sccache/releases/download
 
 RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
       cp /tmp/debian-cn.sources /etc/apt/sources.list.d/debian.sources; \
@@ -22,8 +24,13 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
          arm64) SCCACHE_ARCH=aarch64-unknown-linux-musl ;; \
          *) echo "unsupported arch: ${ARCH}" >&2; exit 1 ;; \
        esac \
-    && curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/sccache-${SCCACHE_VERSION}-${SCCACHE_ARCH}.tar.gz" \
-    | tar xz -C /usr/local/bin --strip-components=1 "sccache-${SCCACHE_VERSION}-${SCCACHE_ARCH}/sccache" \
+    && SCCACHE_URL="${SCCACHE_BASE_URL}/${SCCACHE_VERSION}/sccache-${SCCACHE_VERSION}-${SCCACHE_ARCH}.tar.gz" \
+    && echo "==> fetch sccache ${SCCACHE_URL}" \
+    && curl --http1.1 -fL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 2 \
+         -o /tmp/sccache.tgz "${SCCACHE_URL}" \
+    && tar xz -C /usr/local/bin --strip-components=1 \
+         -f /tmp/sccache.tgz "sccache-${SCCACHE_VERSION}-${SCCACHE_ARCH}/sccache" \
+    && rm -f /tmp/sccache.tgz \
     && chmod +x /usr/local/bin/sccache \
     && sccache --version \
     && mold --version
