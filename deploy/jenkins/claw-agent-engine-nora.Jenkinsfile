@@ -6,7 +6,7 @@ pipeline {
     disableConcurrentBuilds()
   }
   parameters {
-    string(name: 'GIT_TAG', defaultValue: 'release-v2.0.35', description: 'Tag that contains engine build scripts')
+    string(name: 'GIT_TAG', defaultValue: 'v2.0.28', description: 'gitea tag vX.Y.Z only (never release-v*)')
     string(name: 'ENGINE_ID', defaultValue: 'opencode', description: 'Directory under deploy/agent-engines/')
     string(name: 'ENGINE_VERSION', defaultValue: '1.18.34', description: 'Version label without arch, e.g. 1.18.34')
     string(name: 'OPENCODE_VERSION', defaultValue: '1.18.34', description: 'Passed to opencode/build.sh when ENGINE_ID=opencode')
@@ -16,8 +16,7 @@ pipeline {
     REGION = 'china'
     TARGETARCH = 'amd64'
     RAW_BASE = 'https://nora.home.passionke.top/raw/claw-agent-engines'
-    // GitHub is source of truth; gitea mirror is 8h and not on this path. Author: kejiqing
-    CLAW_REPO = 'https://github.com/passionke/claw-code.git'
+    CLAW_REPO = 'https://code.passionke.top/passionke/claw-code.git'
   }
   stages {
     stage('Checkout tag') {

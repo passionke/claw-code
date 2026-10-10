@@ -6,7 +6,7 @@ pipeline {
     disableConcurrentBuilds()
   }
   parameters {
-    string(name: 'GIT_TAG', defaultValue: 'release-v2.0.35', description: 'Tag to publish: vX.Y.Z or release-v*')
+    string(name: 'GIT_TAG', defaultValue: 'v2.0.28', description: 'gitea tag vX.Y.Z only (never release-v*)')
   }
   environment {
     NEXUS_PUSH_REGISTRY = 'nora.home.passionke.top'
@@ -15,8 +15,7 @@ pipeline {
     DOCKER_BUILDKIT = '0'
     CLAW_LINUX_COMPILE_PLATFORM = 'linux/amd64'
     TARGETARCH = 'amd64'
-    // GitHub is source of truth; gitea mirror is 8h and not on this path. Author: kejiqing
-    CLAW_REPO = 'https://github.com/passionke/claw-code.git'
+    CLAW_REPO = 'https://code.passionke.top/passionke/claw-code.git'
   }
   stages {
     stage('Checkout tag') {
