@@ -17,7 +17,8 @@ Author: kejiqing
 
 ## H. home 系列升级（Nora + e2b.home）— 默认运维路径
 
-**仓库：** `https://code.passionke.top/passionke/claw-code.git`  
+**仓库（发版源）：** `https://github.com/passionke/claw-code.git`  
+（`code.passionke.top` 为 8h 镜像，**不要**当作 Jenkins 发版拉取源。）  
 **制品：** `nora.home.passionke.top/passionke`  
 **e2b API：** `http://e2b.home.passionke.top:3000`（sandbox `:3002`）  
 **Jenkins：** `https://jenkins.home.passionke.top/`（agent `home29`）
