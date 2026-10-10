@@ -70,7 +70,12 @@ while true; do
 done
 
 cd "$ROOT"
-git fetch --tags --force origin 2>/dev/null || git fetch --tags --force gitea 2>/dev/null || git fetch --tags --force
+# Home tags live on gitea only; origin is GitHub (release-v*) — do not prefer origin.
+if git remote get-url gitea >/dev/null 2>&1; then
+  git fetch --tags --force gitea
+else
+  git fetch --tags --force origin
+fi
 git checkout -f "tags/${TAG}" 2>/dev/null || git checkout -f "${TAG}"
 git describe --tags --exact-match HEAD
 
