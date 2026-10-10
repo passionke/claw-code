@@ -189,8 +189,9 @@ export default function E2bCoreComponentsPage() {
       setTapTags(data.tags.map((t) => ({ value: t, label: t })));
       const current = selectedTapTag || status?.observe.tapImageTag || data.suggestedTag || data.tags[0];
       if (current && !selectedTapTag) setSelectedTapTag(current);
-    } catch (e) {
-      message.error(`加载 claw-tap 版本失败：${String(e)}`);
+    } catch {
+      // No toast: empty Select + hand-fill still works (Nora/ACR list may be empty). Author: kejiqing
+      setTapTags([]);
     } finally {
       setTapTagsLoading(false);
     }

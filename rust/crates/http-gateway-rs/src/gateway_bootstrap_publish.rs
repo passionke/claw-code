@@ -584,19 +584,42 @@ fn basic_auth_from_docker_config(registry_host: &str) -> Option<(String, String)
     None
 }
 
+/// Pull creds for registry tags/list: generic → ACR → docker config.
+/// Covers Nora/Nexus (Basic) and ACR (Bearer exchange). Author: kejiqing
 fn registry_basic_credentials(registry_host: &str) -> Option<(String, String)> {
     if let (Some(u), Some(p)) = (
-        env_nonempty("ACR_USERNAME").or_else(|| env_nonempty("ACR_USER")),
-        env_nonempty("ACR_PASSWORD").or_else(|| env_nonempty("ACR_PASSWORK")),
+        env_nonempty("REGISTRY_USERNAME")
+            .or_else(|| env_nonempty("ACR_USERNAME"))
+            .or_else(|| env_nonempty("ACR_USER")),
+        env_nonempty("REGISTRY_PASSWORD")
+            .or_else(|| env_nonempty("ACR_PASSWORD"))
+            .or_else(|| env_nonempty("ACR_PASSWORK")),
     ) {
         return Some((u, p));
     }
     basic_auth_from_docker_config(registry_host)
 }
 
-fn parse_bearer_challenge(www: &str) -> Result<(String, String, String), String> {
+/// Registry WWW-Authenticate challenge for tags/list. Author: kejiqing
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WwwAuthChallenge {
+    Basic,
+    Bearer {
+        realm: String,
+        service: String,
+        scope: String,
+    },
+}
+
+fn parse_www_authenticate(www: &str) -> Result<WwwAuthChallenge, String> {
+    let www = www.trim();
+    let lower = www.to_ascii_lowercase();
+    if lower == "basic" || lower.starts_with("basic ") {
+        return Ok(WwwAuthChallenge::Basic);
+    }
     let rest = www
         .strip_prefix("Bearer ")
+        .or_else(|| www.strip_prefix("bearer "))
         .ok_or_else(|| format!("unsupported WWW-Authenticate: {www}"))?;
     let mut realm = None;
     let mut service = None;
@@ -614,59 +637,65 @@ fn parse_bearer_challenge(www: &str) -> Result<(String, String, String), String>
             _ => {}
         }
     }
-    Ok((
-        realm.ok_or_else(|| "Bearer challenge missing realm".to_string())?,
-        service.unwrap_or_default(),
-        scope.unwrap_or_default(),
-    ))
+    Ok(WwwAuthChallenge::Bearer {
+        realm: realm.ok_or_else(|| "Bearer challenge missing realm".to_string())?,
+        service: service.unwrap_or_default(),
+        scope: scope.unwrap_or_default(),
+    })
 }
 
-/// Exchange registry Bearer for tags/list. Prefer Basic when creds exist; else anonymous.
+/// Authorization for OCI tags/list: anonymous, HTTP Basic (Nora/Nexus), or Bearer (ACR).
 /// Author: kejiqing
-async fn registry_bearer_token(
+#[derive(Debug, Clone)]
+enum RegistryListAuth {
+    None,
+    Basic { user: String, pass: String },
+    Bearer { token: String },
+}
+
+fn apply_registry_list_auth(
+    mut req: reqwest::RequestBuilder,
+    auth: &RegistryListAuth,
+) -> reqwest::RequestBuilder {
+    use base64::Engine;
+    match auth {
+        RegistryListAuth::None => req,
+        RegistryListAuth::Basic { user, pass } => {
+            let basic = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
+            req = req.header(reqwest::header::AUTHORIZATION, format!("Basic {basic}"));
+            req
+        }
+        RegistryListAuth::Bearer { token } => {
+            req.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        }
+    }
+}
+
+async fn exchange_bearer_token(
     client: &reqwest::Client,
     registry_host: &str,
     repository: &str,
+    realm: &str,
+    service: &str,
+    scope_from_hdr: &str,
+    creds: Option<&(String, String)>,
 ) -> Result<String, String> {
     use base64::Engine;
-    let creds = registry_basic_credentials(registry_host);
-    let probe = format!("https://{registry_host}/v2/{repository}/tags/list?n=1");
-    let resp = client
-        .get(&probe)
-        .send()
-        .await
-        .map_err(|e| format!("registry probe: {e}"))?;
-    if resp.status().is_success() {
-        return Ok(String::new());
-    }
-    if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
-        return Err(format!(
-            "registry probe HTTP {} for {probe}",
-            resp.status().as_u16()
-        ));
-    }
-    let www = resp
-        .headers()
-        .get(reqwest::header::WWW_AUTHENTICATE)
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| "registry 401 without WWW-Authenticate".to_string())?
-        .to_string();
-    let (realm, service, scope_from_hdr) = parse_bearer_challenge(&www)?;
     let scope = if scope_from_hdr.is_empty() {
         format!("repository:{repository}:pull")
     } else {
-        scope_from_hdr
+        scope_from_hdr.to_string()
     };
-    let mut url = reqwest::Url::parse(&realm).map_err(|e| format!("token realm url: {e}"))?;
+    let mut url = reqwest::Url::parse(realm).map_err(|e| format!("token realm url: {e}"))?;
     {
         let mut q = url.query_pairs_mut();
         if !service.is_empty() {
-            q.append_pair("service", &service);
+            q.append_pair("service", service);
         }
         q.append_pair("scope", &scope);
     }
     let mut tok_req = client.get(url);
-    let auth_mode = if let Some((user, pass)) = &creds {
+    let auth_mode = if let Some((user, pass)) = creds {
         let basic = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
         tok_req = tok_req.header(reqwest::header::AUTHORIZATION, format!("Basic {basic}"));
         "basic"
@@ -680,8 +709,8 @@ async fn registry_bearer_token(
     if !tok_resp.status().is_success() {
         return Err(format!(
             "registry token exchange failed ({auth_mode}) HTTP {} for {registry_host}/{repository}; \
-             tags/list needs pull access — set ACR_USERNAME/ACR_PASSWORD (or docker config) if the repo is private, \
-             or check registry/network",
+             tags/list needs pull access — set REGISTRY_USERNAME/REGISTRY_PASSWORD or \
+             ACR_USERNAME/ACR_PASSWORD (or docker config) if the repo is private",
             tok_resp.status().as_u16()
         ));
     }
@@ -695,6 +724,65 @@ async fn registry_bearer_token(
         .map(str::to_string)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "token response missing token".to_string())
+}
+
+/// Probe tags/list and pick auth scheme from WWW-Authenticate (Basic or Bearer).
+/// Author: kejiqing
+async fn resolve_registry_list_auth(
+    client: &reqwest::Client,
+    registry_host: &str,
+    repository: &str,
+) -> Result<RegistryListAuth, String> {
+    let creds = registry_basic_credentials(registry_host);
+    let probe = format!("https://{registry_host}/v2/{repository}/tags/list?n=1");
+    let resp = client
+        .get(&probe)
+        .send()
+        .await
+        .map_err(|e| format!("registry probe: {e}"))?;
+    if resp.status().is_success() {
+        return Ok(RegistryListAuth::None);
+    }
+    if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+        return Err(format!(
+            "registry probe HTTP {} for {probe}",
+            resp.status().as_u16()
+        ));
+    }
+    let www = resp
+        .headers()
+        .get(reqwest::header::WWW_AUTHENTICATE)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| "registry 401 without WWW-Authenticate".to_string())?
+        .to_string();
+    match parse_www_authenticate(&www)? {
+        WwwAuthChallenge::Basic => {
+            let Some((user, pass)) = creds else {
+                return Err(format!(
+                    "registry {registry_host} requires Basic auth for tags/list; \
+                     set REGISTRY_USERNAME/REGISTRY_PASSWORD or docker config auths[{registry_host}]"
+                ));
+            };
+            Ok(RegistryListAuth::Basic { user, pass })
+        }
+        WwwAuthChallenge::Bearer {
+            realm,
+            service,
+            scope,
+        } => {
+            let token = exchange_bearer_token(
+                client,
+                registry_host,
+                repository,
+                &realm,
+                &service,
+                &scope,
+                creds.as_ref(),
+            )
+            .await?;
+            Ok(RegistryListAuth::Bearer { token })
+        }
+    }
 }
 
 fn sort_ci_tags(mut tags: Vec<String>) -> Vec<String> {
@@ -742,7 +830,7 @@ pub async fn list_ci_image_tags_for(
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
-    let token = registry_bearer_token(&client, &registry_host, &repository).await?;
+    let auth = resolve_registry_list_auth(&client, &registry_host, &repository).await?;
 
     let mut tags: Vec<String> = Vec::new();
     let mut last: Option<String> = None;
@@ -758,10 +846,7 @@ pub async fn list_ci_image_tags_for(
                 q.append_pair("last", l);
             }
         }
-        let mut req = client.get(url);
-        if !token.is_empty() {
-            req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
-        }
+        let req = apply_registry_list_auth(client.get(url), &auth);
         let resp = req.send().await.map_err(|e| format!("tags list: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!(
@@ -874,13 +959,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_bearer_challenge_ok() {
-        let (realm, service, scope) = parse_bearer_challenge(
+    fn parse_www_authenticate_bearer_ok() {
+        let challenge = parse_www_authenticate(
             "Bearer realm=\"https://dockerauth.example/auth\",service=\"registry\",scope=\"repository:ns/img:pull\"",
         )
         .expect("parse");
-        assert!(realm.contains("dockerauth"));
-        assert_eq!(service, "registry");
-        assert!(scope.contains("pull"));
+        match challenge {
+            WwwAuthChallenge::Bearer {
+                realm,
+                service,
+                scope,
+            } => {
+                assert!(realm.contains("dockerauth"));
+                assert_eq!(service, "registry");
+                assert!(scope.contains("pull"));
+            }
+            WwwAuthChallenge::Basic => panic!("expected Bearer"),
+        }
+    }
+
+    #[test]
+    fn parse_www_authenticate_basic_nora() {
+        let challenge = parse_www_authenticate("Basic realm=\"https://nora.home.passionke.top\"")
+            .expect("parse");
+        assert_eq!(challenge, WwwAuthChallenge::Basic);
     }
 }
