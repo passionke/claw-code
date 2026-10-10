@@ -16,7 +16,8 @@ pipeline {
     REGION = 'china'
     TARGETARCH = 'amd64'
     RAW_BASE = 'https://nora.home.passionke.top/raw/claw-agent-engines'
-    CLAW_REPO = 'https://code.passionke.top/passionke/claw-code.git'
+    // GitHub is source of truth; gitea mirror is 8h and not on this path. Author: kejiqing
+    CLAW_REPO = 'https://github.com/passionke/claw-code.git'
   }
   stages {
     stage('Checkout tag') {

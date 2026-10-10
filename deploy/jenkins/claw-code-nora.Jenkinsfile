@@ -15,7 +15,8 @@ pipeline {
     DOCKER_BUILDKIT = '0'
     CLAW_LINUX_COMPILE_PLATFORM = 'linux/amd64'
     TARGETARCH = 'amd64'
-    CLAW_REPO = 'https://code.passionke.top/passionke/claw-code.git'
+    // GitHub is source of truth; gitea mirror is 8h and not on this path. Author: kejiqing
+    CLAW_REPO = 'https://github.com/passionke/claw-code.git'
   }
   stages {
     stage('Checkout tag') {

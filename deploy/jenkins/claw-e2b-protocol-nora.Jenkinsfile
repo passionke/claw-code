@@ -16,7 +16,8 @@ pipeline {
     CLAW_IMAGE_PREFIX = 'nora.home.passionke.top/passionke'
     CLAW_E2B_API_URL = 'http://e2b.home.passionke.top:3000'
     CLAW_E2B_SANDBOX_URL = 'http://e2b.home.passionke.top:3002'
-    CLAW_REPO = 'https://code.passionke.top/passionke/claw-code.git'
+    // GitHub is source of truth; gitea mirror is 8h and not on this path. Author: kejiqing
+    CLAW_REPO = 'https://github.com/passionke/claw-code.git'
   }
   stages {
     stage('Checkout tag') {
