@@ -4,93 +4,155 @@ Author: kejiqing
 
 **唯一入口命令：** `./deploy/stack/gateway.sh`（实现脚本在 `deploy/stack/lib/`）。
 
-**Env 模板：** 复制 [`deploy/stack/env.selfhosted-e2b.example`](../deploy/stack/env.selfhosted-e2b.example) → 仓库根 `.env`。
+**三层边界（勿混）：** 见 [`deploy/SERVICES.md`](../deploy/SERVICES.md)。
 
-**IP 真值（勿混用）：**
-
-| 地址 | 角色 |
-|------|------|
-| `10.8.0.1` | PostgreSQL `:5433` + e2bserver API `:3000` / envd `:3002` |
-| `10.8.0.11` | NAS NFS export |
-| `supone.top` | e2b sandbox traffic 域名（`CLAW_E2B_DOMAIN`） |
-
-**Backend 真值：** `CLAW_INTERACTIVE_BACKEND=e2b`、`CLAW_SOLVE_ISOLATION=e2b`（历史文档中的 `fc` 指同一 e2b 路径）。
+| 层 | Jenkins Job | 产物 | 写 PG？ |
+|----|-------------|------|---------|
+| Gateway/Admin | `claw-code-nora` | Nora `claw-code` + `claw-gateway-playground` | 否 |
+| e2b 协议 | `claw-e2b-protocol-nora` | Nora `claw-worker-base*` + e2b `Template.build` | **否** |
+| Agent 引擎 | `claw-agent-engine-nora` | Nora raw tar | 否 |
+| 运行时绑定 | Admin / Gateway API | `e2bWorker.templateId` / `agentEngines` | **是** |
 
 ---
 
-## 0. 首次部署顺序（推荐）
+## H. home 系列升级（Nora + e2b.home）— 默认运维路径
+
+**仓库：** `https://code.passionke.top/passionke/claw-code.git`  
+**制品：** `nora.home.passionke.top/passionke`  
+**e2b API：** `http://e2b.home.passionke.top:3000`（sandbox `:3002`）  
+**Jenkins：** `https://jenkins.home.passionke.top/`（agent `home29`）
+
+### H.1 发版（三层各自打同一 `release-vX.Y.Z`）
+
+```text
+1) git tag release-vX.Y.Z && push gitea
+2) Jenkins claw-code-nora          GIT_TAG=release-vX.Y.Z
+3) Jenkins claw-e2b-protocol-nora  GIT_TAG=release-vX.Y.Z
+4) Jenkins claw-agent-engine-nora  GIT_TAG=… ENGINE_ID=opencode|codex-acp + VERSION
+```
+
+协议 Job 成功日志应有：
+
+- `OK: template 'claw-worker' (tpl_…) ready on http://e2b.home.passionke.top:3000`
+- `OK: relaxed worker template 'claw-worker-relaxed' (tpl_…) from_image`
+- **不会**写 Gateway PG（正确）。
+
+### H.2 起 / 升级 Gateway
+
+根 `.env` 至少：
+
+```bash
+CLAW_IMAGE_PREFIX=nora.home.passionke.top/passionke
+CLAW_E2B_API_URL=http://e2b.home.passionke.top:3000
+CLAW_E2B_SANDBOX_URL=http://e2b.home.passionke.top:3002
+# + CLAW_GATEWAY_DATABASE_URL / CLAW_CLUSTER_ID / e2b key 等
+```
+
+```bash
+docker login nora.home.passionke.top   # nora-deployer
+CLAW_IMAGE_PREFIX=nora.home.passionke.top/passionke \
+  ./deploy/stack/gateway.sh up --release release-vX.Y.Z
+./deploy/stack/gateway.sh verify
+./deploy/stack/gateway.sh e2b-singletons-up
+```
+
+`up --release` 拉的镜像名是 **`claw-code`** / **`claw-gateway-playground`**（与 Nora Job 一致）。
+
+### H.3 绑定运行时（Admin，写 PG）
+
+1. Playground Admin → **E2b 核心组件**
+2. 从 e2b 模板列表选 `claw-worker` / `claw-worker-relaxed`（或对应 `tpl_…`）→ 保存  
+   → `PUT …/e2b-worker` 写 `e2bWorker.templateId`
+3. **Agent 引擎 map**：填 Nora raw URL + digest → 保存  
+   例：`https://nora.home.passionke.top/raw/claw-agent-engines/opencode-1.18.34-amd64.tar.gz`
+4. 已有 worker：Admin reset / 重建后才吃新 template / 新 engine。
+
+### H.4 验收
+
+```bash
+./deploy/stack/gateway.sh check
+./deploy/stack/gateway.sh solve-e2e   # 或 Admin 上跑一题
+```
+
+边界文档：[`deploy/SERVICES.md`](../deploy/SERVICES.md)。协议细节：[`deploy/e2b/WORKER-BUILD.md`](../deploy/e2b/WORKER-BUILD.md)。
+
+---
+
+**Env 模板（本机 / 非 home）：** 复制 [`deploy/stack/env.selfhosted-e2b.example`](../deploy/stack/env.selfhosted-e2b.example) → 仓库根 `.env`。
+
+**IP 真值（勿混用；旧 lab 地址，home 以 H 节为准）：**
+
+| 地址 | 角色 |
+|------|------|
+| `10.8.0.1` | 旧 lab PostgreSQL `:5433`（home 用自己的 PG） |
+| `e2b.home.passionke.top` | home e2b API `:3000` / sandbox `:3002` |
+| `10.8.0.11` | NAS NFS export（若启用） |
+
+**Backend 真值：** `CLAW_INTERACTIVE_BACKEND=e2b`、`CLAW_SOLVE_ISOLATION=e2b`。
+
+---
+
+## 0. 首次部署顺序（本机 / 非 home Jenkins）
 
 ```bash
 # 1. 配置
 cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID、PG URL、e2b keys
 
-# 2. e2b 模板 → Admin 初始化 / 重打模板（唯一通道）
+# 2. 协议镜像已在 registry 后，注册 e2b 模板（不写 Gateway PG）
 ./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
 
 # 3. 起 gateway + playground
 ./deploy/stack/gateway.sh quick
 
-# 4. 确保 e2b 单例（nas-api / ovs / observe）— gateway 启动也会自动 ensure
+# 4. Admin 绑定 worker templateId + agentEngines（写 PG）
+
+# 5. 确保 e2b 单例（nas-api / observe）— gateway 启动也会自动 ensure
 ./deploy/stack/gateway.sh e2b-singletons-up
 
-# 5. 验收
+# 6. 验收
 ./deploy/stack/gateway.sh verify
 ./deploy/stack/gateway.sh check
 ```
 
-预发 252：`cp deploy/stack/env.pre-252.e2b.example .env` 后 `./deploy/stack/gateway.sh up --release <tag>`（与生产同命令；pool/tap 已内化到 e2b，见 [`deploy/docs/pre-252-e2b-pipeline.md`](../deploy/docs/pre-252-e2b-pipeline.md)）。
+预发 252：`cp deploy/stack/env.pre-252.e2b.example .env` 后 `./deploy/stack/gateway.sh up --release <tag>`（见 [`deploy/docs/pre-252-e2b-pipeline.md`](../deploy/docs/pre-252-e2b-pipeline.md)）。
 
 ---
 
-## 1. e2b 组件注册与 tplId 写入 PG
+## 1. e2b 模板与 PG 绑定（运行时）
 
 ### 1.1 组件与 PG 契约
 
-所有配置在 PostgreSQL 表 `gateway_global_settings`（按 `CLAW_CLUSTER_ID` 分行）的 `settings_json` JSONB：
+所有**运行时**配置在 PostgreSQL 表 `gateway_global_settings`（按 `CLAW_CLUSTER_ID`）的 `settings_json`：
 
-| 组件 | 构建脚本 | PG 键 | 默认 alias | 生效优先级 |
-|------|----------|-------|------------|------------|
-| Worker (strict) | `deploy/e2b/build-claw-worker-selfhosted.py` | `e2bWorker.templateId` + `buildId` | `claw-worker` | PG → `CLAW_E2B_TEMPLATE` → alias |
-| Worker (relaxed) | `deploy/e2b/build-claw-worker-relaxed-selfhosted.py` | `e2bWorkerRelaxed.templateId` + `buildId` | `claw-worker-relaxed` | e2b alias；exec mode 由 gateway `worker_profile_json` 选 |
-| NAS API | `deploy/e2b/build-claw-nas-api-selfhosted.py` | `e2bNasApi.templateId` + `buildId` | `claw-nas-api` | PG → env → alias |
-| OVS | `deploy/e2b/build-claw-ovs-selfhosted.py` | `e2bOvs.templateId` + `buildId` | `claw-ovs` | 同上 |
-| Observe | `deploy/e2b/build-claw-observe-selfhosted.py` | `e2bObserve.templateId` + `buildId` | `claw-observe` | 同上 |
+| 组件 | 谁产出模板 | PG 谁写 | PG 键 | 默认 alias |
+|------|------------|---------|-------|------------|
+| Worker (strict) | 协议 Job / `publish-worker-protocol.sh` | **Admin / Gateway API** | `e2bWorker.templateId` | `claw-worker` |
+| Worker (relaxed) | 同上 | **Admin / Gateway API** | `e2bWorkerRelaxed.templateId` | `claw-worker-relaxed` |
+| NAS API | `build-claw-nas-api-selfhosted.py` 等 | Gateway ensure / Admin | `e2bNasApi.templateId` | `claw-nas-api` |
+| Observe | `build-claw-observe-selfhosted.py` | Gateway ensure / Admin | `e2bObserve.templateId` | `claw-observe` |
 
-单例运行时（非 templateId）：`e2bOvs.baseUrl` / `e2bObserve.baseUrl` / `e2bNasApi.baseUrl` + `clawTap`（observe 代理 URL）；create 后写 `appliedBuildId`。
+**协议发布 Job 不写 PG。** 绑定入口：Admin → E2b 核心组件。
 
-**rebuild 原则：** 内容哈希没变就不打新 `buildId`。运行中健康沙箱不因新 pin 被杀。gateway 启动只切换不一致的，切完才就绪。
-
-PG 写入 helper：[`deploy/e2b/e2b_pg_settings.py`](../deploy/e2b/e2b_pg_settings.py) 的 `merge_settings_json_key()`。需 `CLAW_GATEWAY_DATABASE_URL`。
-
-### 1.2 一键构建命令
+### 1.2 协议模板注册（制品侧）
 
 ```bash
-# 唯一发布通道（Admin 界面调的就是这一支）
-./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
-
-# 单例（模板已发布之后）
-./deploy/stack/gateway.sh e2b-pre-bootstrap --skip-templates [--reset]
+# home：Jenkins claw-e2b-protocol-nora
+# 或已有 Nora 镜像时本地注册：
+CLAW_IMAGE_PREFIX=nora.home.passionke.top/passionke \
+CLAW_E2B_API_URL=http://e2b.home.passionke.top:3000 \
+  bash deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
 ```
 
-构建成功日志应含 `persisted e2bWorker.templateId`（strict）或 `skip PG e2bWorker`（relaxed）。
+手册：[`deploy/e2b/WORKER-BUILD.md`](../deploy/e2b/WORKER-BUILD.md)。
 
-### 1.3 日常改 worker 二进制（dev）
-
-```bash
-./deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
-```
-
-唯一手册：[`deploy/e2b/WORKER-BUILD.md`](../deploy/e2b/WORKER-BUILD.md)。
-
-### 1.4 构建 env（摘要）
+### 1.3 构建 env（摘要）
 
 | 变量 | 用途 |
 |------|------|
-| `CLAW_GATEWAY_DATABASE_URL` | 构建脚本写 PG |
-| `CLAW_E2B_API_URL` / `CLAW_E2B_API_KEY` | e2bserver |
-| `CLAW_E2B_CN=1` | 国内 debian 镜像 |
-| `CLAW_E2B_TEMPLATE_SKIP_CACHE=1` | 强制重建 |
-| `CLAW_E2B_WORKER_ARCH=amd64` | 自托管 worker 节点（必须 amd64） |
+| `CLAW_E2B_API_URL` / `CLAW_E2B_API_KEY` | e2bserver（注册） |
+| `CLAW_IMAGE_PREFIX` | Nora / registry 前缀 |
+| `CLAW_E2B_TEMPLATE_SKIP_CACHE=1` | 强制重建模板 |
+| `CLAW_GATEWAY_DATABASE_URL` | **仅** Gateway/Admin 运行时与单例脚本；协议 Job 不用 |
 
 ---
 

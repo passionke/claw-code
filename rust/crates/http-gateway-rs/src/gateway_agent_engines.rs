@@ -51,6 +51,28 @@ fn normalize_entry(mut entry: AgentEngineEntry) -> Result<AgentEngineEntry, Stri
     Ok(entry)
 }
 
+/// Engine IDs are seeded by migrate/SQL; Admin PUT may only change ref/digest. Author: kejiqing
+fn assert_fixed_engine_ids(
+    existing: &BTreeMap<String, AgentEngineEntry>,
+    next: &BTreeMap<String, AgentEngineEntry>,
+) -> Result<(), String> {
+    if existing.is_empty() {
+        return Err(
+            "Agent engine IDs are not seeded; run migrate-existing-config.sh before Admin edits"
+                .into(),
+        );
+    }
+    let existing_ids: Vec<&str> = existing.keys().map(String::as_str).collect();
+    let next_ids: Vec<&str> = next.keys().map(String::as_str).collect();
+    if existing_ids != next_ids {
+        return Err(format!(
+            "Agent engine IDs are fixed ({}); only ref and digest may change",
+            existing_ids.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 pub async fn load_agent_engines(db: &GatewaySessionDb) -> Result<AgentEngines, sqlx::Error> {
     let (settings, _, _) = get_gateway_global_settings(db).await?;
     Ok(settings.agent_engines)
@@ -74,6 +96,7 @@ pub async fn put_agent_engines(
     let (mut settings, tokens, _) = get_gateway_global_settings(db)
         .await
         .map_err(|e| e.to_string())?;
+    assert_fixed_engine_ids(&settings.agent_engines.engines, &engines)?;
     settings.agent_engines = AgentEngines { engines };
     let now = chrono::Utc::now().timestamp_millis();
     save_gateway_global_settings(db, &settings, &tokens, now)
@@ -104,12 +127,30 @@ mod tests {
     }
 
     #[test]
-    fn accepts_dynamic_engine_id() {
-        assert_eq!(
-            normalize_engine_id(" Future.Engine_2 ").unwrap(),
-            "future.engine_2"
-        );
+    fn normalizes_engine_id_and_entry() {
+        assert_eq!(normalize_engine_id(" OpenCode ").unwrap(), "opencode");
         assert!(normalize_entry(entry()).is_ok());
+    }
+
+    #[test]
+    fn fixed_id_set_rejects_add_or_remove() {
+        let mut existing = BTreeMap::new();
+        existing.insert("appserver".into(), entry());
+        existing.insert("opencode".into(), entry());
+        let mut same = existing.clone();
+        same.get_mut("opencode").unwrap().r#ref =
+            "https://raw.example/engines/opencode-new.tar.gz".into();
+        assert!(assert_fixed_engine_ids(&existing, &same).is_ok());
+
+        let mut added = existing.clone();
+        added.insert("extra".into(), entry());
+        assert!(assert_fixed_engine_ids(&existing, &added).is_err());
+
+        let mut removed = existing.clone();
+        removed.remove("appserver");
+        assert!(assert_fixed_engine_ids(&existing, &removed).is_err());
+
+        assert!(assert_fixed_engine_ids(&BTreeMap::new(), &existing).is_err());
     }
 
     #[test]

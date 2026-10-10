@@ -1,0 +1,32 @@
+# e2b runtime layer on top of the worker-series protocol image.
+# Source: CLAW_E2B_WORKER_IMAGE=…/claw-worker-base:<tag>
+# Output tag: …/debian-bookworm-claw-worker:<tag> (what Template.build from_image uses).
+# Author: kejiqing
+ARG WORKER_BASE_IMAGE=claw-worker-base:local
+ARG DEBIAN_APT_MIRROR=
+FROM ${WORKER_BASE_IMAGE}
+ARG DEBIAN_APT_MIRROR
+USER root
+RUN if [ -n "${DEBIAN_APT_MIRROR}" ]; then \
+      sed -i "s|mirrors.tuna.tsinghua.edu.cn|${DEBIAN_APT_MIRROR}|g; s|deb.debian.org|${DEBIAN_APT_MIRROR}|g; s|security.debian.org|${DEBIAN_APT_MIRROR}|g" \
+        /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+      sed -i "s|mirrors.tuna.tsinghua.edu.cn|${DEBIAN_APT_MIRROR}|g; s|deb.debian.org|${DEBIAN_APT_MIRROR}|g; s|security.debian.org|${DEBIAN_APT_MIRROR}|g" \
+        /etc/apt/sources.list 2>/dev/null || true; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    nfs-common \
+    ca-certificates \
+    sudo \
+    && echo 'user ALL=(ALL) NOPASSWD: /bin/mount, /bin/umount, /usr/bin/mountpoint, /bin/mkdir, /bin/chown' > /etc/sudoers.d/claw-nfs \
+    && chmod 440 /etc/sudoers.d/claw-nfs \
+    && rm -rf /var/lib/apt/lists/*
+RUN printf '%s\n' \
+        '#!/bin/sh' \
+        'set -eu' \
+        'exec sleep infinity' \
+        > /usr/local/bin/claw-worker-start \
+    && printf '%s\n' \
+        '#!/bin/sh' \
+        'command -v claw >/dev/null 2>&1 && command -v neuro-opencode >/dev/null 2>&1 && command -v neuro-appserver >/dev/null 2>&1' \
+        > /usr/local/bin/claw-worker-ready \
+    && chmod +x /usr/local/bin/claw-worker-start /usr/local/bin/claw-worker-ready

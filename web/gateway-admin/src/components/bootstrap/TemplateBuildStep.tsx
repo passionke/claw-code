@@ -109,7 +109,7 @@ export default function TemplateBuildStep({
         (form.getFieldValue("imageTag") as string | undefined)?.trim() ||
         snap.suggestedCiImageTag;
       if (fallback) form.setFieldsValue({ imageTag: fallback });
-      message.warning(`${msg}（仍可手填 tag 发布）`);
+      // Inline Alert already shows failure; do not toast. Author: kejiqing
     } finally {
       setTagsLoading(false);
     }
@@ -132,8 +132,9 @@ export default function TemplateBuildStep({
       const current = tapTagForm.getFieldValue("tapImageTag") as string | undefined;
       const pick = (current && current.trim()) || data.suggestedTag || data.tags[0];
       if (pick) tapTagForm.setFieldsValue({ tapImageTag: pick });
-    } catch (e) {
-      message.warning(`拉取 claw-tap tag 清单失败（仍可手填）：${e instanceof Error ? e.message : String(e)}`);
+    } catch {
+      // Keep silent; observe step still allows hand-filled tags. Author: kejiqing
+      setTapTagOptions([]);
     } finally {
       setTapTagsLoading(false);
     }

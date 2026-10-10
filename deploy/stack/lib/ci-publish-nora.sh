@@ -11,6 +11,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+bash "$ROOT/deploy/verify-release-boundaries.sh"
 # shellcheck source=/dev/null
 source "$ROOT/deploy/stack/lib/compose-include.sh"
 # shellcheck source=/dev/null
