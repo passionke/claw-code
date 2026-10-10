@@ -17,19 +17,32 @@ Author: kejiqing
 
 ## H. home 系列升级（Nora + e2b.home）— 默认运维路径
 
-**仓库（发版源）：** `https://github.com/passionke/claw-code.git`  
-（`code.passionke.top` 为 8h 镜像，**不要**当作 Jenkins 发版拉取源。）  
+**Home 仓库：** `https://code.passionke.top/passionke/claw-code.git`  
+**Home git tag：** **`vX.Y.Z`**（禁止在 gitea 打 `release-v*`；`release-v*` 只给 GitHub Actions）  
 **制品：** `nora.home.passionke.top/passionke`  
 **e2b API：** `http://e2b.home.passionke.top:3000`（sandbox `:3002`）  
-**Jenkins：** `https://jenkins.home.passionke.top/`（agent `home29`）
+**Jenkins：** `https://jenkins.home.passionke.top/`（agent `home29`；tag hook 自动跑 Gateway Job）  
+**neurogate：** `https://neurogate.home.passionke.top`（`10.8.0.21`）
 
-### H.1 发版（三层各自打同一 `release-vX.Y.Z`）
+### H.1 Gateway/Admin 发版（用户只推 tag）
 
 ```text
-1) git tag release-vX.Y.Z && push gitea
-2) Jenkins claw-code-nora          GIT_TAG=release-vX.Y.Z
-3) Jenkins claw-e2b-protocol-nora  GIT_TAG=release-vX.Y.Z
-4) Jenkins claw-agent-engine-nora  GIT_TAG=… ENGINE_ID=opencode|codex-acp + VERSION
+1) 代码已在 gitea main
+2) git tag vX.Y.Z && git push gitea vX.Y.Z
+   → Jenkins hook：claw-code-nora → Nora（claw-code / claw-gateway-playground）
+   → Gitea Actions home-neurogate-deploy：等 Nora 镜像 → gateway.sh up --release
+```
+
+用户**不**手点 Jenkins、**不**手搓 `up --release`（紧急除外）。  
+Actions 实现：[`.gitea/workflows/home-neurogate-deploy.yml`](../.gitea/workflows/home-neurogate-deploy.yml)；  
+脚本：[`deploy/stack/lib/home-neurogate-deploy-from-tag.sh`](../deploy/stack/lib/home-neurogate-deploy-from-tag.sh)；  
+runner：[`deploy/docs/gitea-act-runner-neurogate.md`](../deploy/docs/gitea-act-runner-neurogate.md)（label `neurogate`）。
+
+### H.1b 协议 / Agent 引擎（仍各自 Job）
+
+```text
+Jenkins claw-e2b-protocol-nora  GIT_TAG=vX.Y.Z
+Jenkins claw-agent-engine-nora  GIT_TAG=vX.Y.Z ENGINE_ID=… VERSION=…
 ```
 
 协议 Job 成功日志应有：
@@ -38,7 +51,7 @@ Author: kejiqing
 - `OK: relaxed worker template 'claw-worker-relaxed' (tpl_…) from_image`
 - **不会**写 Gateway PG（正确）。
 
-### H.2 起 / 升级 Gateway
+### H.2 紧急手工起 / 升级 Gateway
 
 根 `.env` 至少：
 
@@ -50,11 +63,12 @@ CLAW_E2B_SANDBOX_URL=http://e2b.home.passionke.top:3002
 ```
 
 ```bash
-docker login nora.home.passionke.top   # nora-deployer
+# 同 tag 镜像已在 Nora 时：
+bash deploy/stack/lib/home-neurogate-deploy-from-tag.sh vX.Y.Z
+# 或等价：
 CLAW_IMAGE_PREFIX=nora.home.passionke.top/passionke \
-  ./deploy/stack/gateway.sh up --release release-vX.Y.Z
+  ./deploy/stack/gateway.sh up --release vX.Y.Z
 ./deploy/stack/gateway.sh verify
-./deploy/stack/gateway.sh e2b-singletons-up
 ```
 
 `up --release` 拉的镜像名是 **`claw-code`** / **`claw-gateway-playground`**（与 Nora Job 一致）。

@@ -1,0 +1,39 @@
+# Author: kejiqing
+# User only: git push gitea tag vX.Y.Z
+# Jenkins hook → Nora; this workflow waits for images then up --release on neurogate.
+# Do NOT trigger Jenkins from here.
+name: home-neurogate-deploy
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  deploy:
+    # Register act_runner on neurogate host (10.8.0.21) with label neurogate.
+    runs-on: neurogate
+    steps:
+      - name: Validate tag and deploy
+        shell: bash
+        env:
+          CLAW_DEPLOY_ROOT: /home/passionke/work/claw-code
+          CLAW_IMAGE_PREFIX: nora.home.passionke.top/passionke
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "skip: not a strict vX.Y.Z tag (${TAG})"
+            exit 0
+          fi
+          ROOT="${CLAW_DEPLOY_ROOT}"
+          test -d "${ROOT}/.git"
+          cd "${ROOT}"
+          git fetch --tags --force origin 2>/dev/null \
+            || git fetch --tags --force gitea 2>/dev/null \
+            || git fetch --tags --force
+          git checkout -f "tags/${TAG}" 2>/dev/null || git checkout -f "${TAG}"
+          test -f deploy/stack/lib/home-neurogate-deploy-from-tag.sh
+          chmod +x deploy/stack/lib/home-neurogate-deploy-from-tag.sh
+          # Wait Nora (Jenkins hook) then up --release. Author: kejiqing
+          bash deploy/stack/lib/home-neurogate-deploy-from-tag.sh "${TAG}"

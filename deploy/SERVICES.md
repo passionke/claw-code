@@ -2,7 +2,9 @@
 
 Author: kejiqing
 
-**Home 升级闭环（发 → 绑 → 用）：** [`docs/deploy-ops-runbook.md`](../docs/deploy-ops-runbook.md) §H。
+**Home 升级闭环（发 → 绑 → 用）：** [`docs/deploy-ops-runbook.md`](../docs/deploy-ops-runbook.md) §H。  
+**Home git tag：** `code.passionke.top` 只用 **`vX.Y.Z`**；GitHub 用 `release-v*`——禁止混打。  
+**Gateway 自动线：** 推 `v*` → Jenkins hook 推 Nora → Gitea Actions 部署 neurogate（见 `.gitea/workflows/home-neurogate-deploy.yml`）。
 
 The release architecture has three independent layers. Publishing one layer must not invoke either
 of the other two.
