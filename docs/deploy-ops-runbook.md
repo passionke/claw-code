@@ -24,19 +24,29 @@ Author: kejiqing
 **Jenkins：** `https://jenkins.home.passionke.top/`（agent `home29`；tag hook 自动跑 Gateway Job）  
 **neurogate：** `https://neurogate.home.passionke.top`（`10.8.0.21`）
 
-### H.1 Gateway/Admin 发版（用户只推 tag）
+### H.1 Gateway/Admin 发版（职责拆分）
+
+| 角色 | 机器 / Job | 做什么 | 不做什么 |
+|------|------------|--------|----------|
+| **重活** | Jenkins `claw-code-nora`（home29） | clone、编译、打镜像、skopeo 推 Nora | 不改 neurogate 运行态 |
+| **轻活** | `10.8.0.21` Gitea Actions（label `neurogate`） | 等/拉 Nora 镜像 → `gateway.sh up --release` | **不**编译、**不**推镜像、**不**触发 Jenkins |
 
 ```text
-1) 代码已在 gitea main
+正式线（一条默认路径）:
+1) 代码在 gitea main
 2) git tag vX.Y.Z && git push gitea vX.Y.Z
-   → Jenkins hook：claw-code-nora → Nora（claw-code / claw-gateway-playground）
-   → Gitea Actions home-neurogate-deploy：等 Nora 镜像 → gateway.sh up --release
+   → Jenkins claw-code-nora → Nora（claw-code / claw-gateway-playground）
+   → Actions home-neurogate-deploy（21）：等 Nora → up --release
 ```
 
-用户**不**手点 Jenkins、**不**手搓 `up --release`（紧急除外）。  
-Actions 实现：[`.gitea/workflows/home-neurogate-deploy.yml`](../.gitea/workflows/home-neurogate-deploy.yml)；  
-脚本：[`deploy/stack/lib/home-neurogate-deploy-from-tag.sh`](../deploy/stack/lib/home-neurogate-deploy-from-tag.sh)；  
-runner：[`deploy/docs/gitea-act-runner-neurogate.md`](../deploy/docs/gitea-act-runner-neurogate.md)（label `neurogate`）。
+**快部署（镜像已在 Nora，不必再打新 tag）：**  
+Gitea Actions → **`home-neurogate-up`** → `workflow_dispatch`，填已有 `vX.Y.Z`（可选 `wait_secs`，镜像已齐可 `0`）。21 只启动，Jenkins 不参与。
+
+用户日常**不**手点 Jenkins、**不**手搓 `up --release`（紧急除外）。  
+- 正式：[`home-neurogate-deploy.yml`](../.gitea/workflows/home-neurogate-deploy.yml)  
+- 快启：[`home-neurogate-up.yml`](../.gitea/workflows/home-neurogate-up.yml)  
+- 脚本：[`home-neurogate-deploy-from-tag.sh`](../deploy/stack/lib/home-neurogate-deploy-from-tag.sh)  
+- runner：[`gitea-act-runner-neurogate.md`](../deploy/docs/gitea-act-runner-neurogate.md)（label `neurogate`）。
 
 ### H.1b 协议 / Agent 引擎（仍各自 Job）
 
