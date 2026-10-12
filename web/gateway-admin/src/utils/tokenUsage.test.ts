@@ -8,6 +8,7 @@ import {
   parseTurnUsageAggregate,
   sumSessionUsage,
   turnUsageFromCompletedResponse,
+  usageMetricParts,
 } from "./tokenUsage";
 
 describe("parseTurnUsageAggregate", () => {
@@ -18,6 +19,7 @@ describe("parseTurnUsageAggregate", () => {
         prompt_tokens: 15,
         completion_tokens: 5,
         total_tokens: 20,
+        prompt_tokens_details: { cached_tokens: 4 },
       },
       usageByModel: [
         {
@@ -36,6 +38,7 @@ describe("parseTurnUsageAggregate", () => {
     });
     expect(agg?.requestCount).toBe(2);
     expect(agg?.usage?.total_tokens).toBe(20);
+    expect(agg?.usage?.prompt_tokens_details?.cached_tokens).toBe(4);
     expect(agg?.usageByModel).toHaveLength(2);
   });
 
@@ -51,11 +54,16 @@ describe("parseTurnUsageAggregate", () => {
 });
 
 describe("sumSessionUsage", () => {
-  it("sums only turns with samples", () => {
+  it("sums only turns with samples and cache when known", () => {
     const sum = sumSessionUsage([
       {
         requestCount: 1,
-        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 2,
+          total_tokens: 12,
+          prompt_tokens_details: { cached_tokens: 3 },
+        },
       },
       null,
       {
@@ -67,6 +75,7 @@ describe("sumSessionUsage", () => {
       prompt_tokens: 15,
       completion_tokens: 3,
       total_tokens: 18,
+      cached_tokens: 3,
       turnCountWithUsage: 2,
     });
   });
@@ -77,15 +86,23 @@ describe("sumSessionUsage", () => {
 });
 
 describe("format helpers", () => {
-  it("formats usage and by-model tooltip", () => {
+  it("formats labeled usage with cache", () => {
     expect(
       formatTokenUsage({
-        prompt_tokens: 1,
-        completion_tokens: 2,
-        total_tokens: 3,
+        prompt_tokens: 6001,
+        completion_tokens: 53,
+        total_tokens: 6054,
+        prompt_tokens_details: { cached_tokens: 1200 },
       })
-    ).toBe("1 / 2 / 3");
+    ).toBe("in 6,001 · out 53 · cache 1,200 · total 6,054");
     expect(formatTokenUsage(null)).toBeNull();
+    expect(
+      usageMetricParts({
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+      })?.map((p) => p.key)
+    ).toEqual(["in", "out", "total"]);
     expect(
       formatUsageByModelTooltip([
         {
@@ -93,9 +110,10 @@ describe("format helpers", () => {
           prompt_tokens: 1,
           completion_tokens: 2,
           total_tokens: 3,
+          prompt_tokens_details: { cached_tokens: 1 },
         },
       ])
-    ).toBe("a: in 1 / out 2 / total 3");
+    ).toBe("a: in 1 · out 2 · cache 1 · total 3");
   });
 });
 
@@ -106,6 +124,7 @@ describe("turnUsageFromCompletedResponse", () => {
         prompt_tokens: 8,
         completion_tokens: 2,
         total_tokens: 10,
+        prompt_tokens_details: { cached_tokens: 1 },
       },
       nerogate: {
         usageByModel: [
@@ -119,6 +138,7 @@ describe("turnUsageFromCompletedResponse", () => {
       },
     });
     expect(agg?.usage?.total_tokens).toBe(10);
+    expect(agg?.usage?.prompt_tokens_details?.cached_tokens).toBe(1);
     expect(agg?.requestCount).toBe(1);
   });
 });

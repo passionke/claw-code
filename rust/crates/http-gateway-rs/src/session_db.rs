@@ -4015,6 +4015,30 @@ impl GatewaySessionDb {
             .collect())
     }
 
+    /// Wait briefly for observe tap INSERT before turn completion usage is read.
+    ///
+    /// Tap writes after upstream returns; a single read at solve-done often races empty.
+    /// Empty after the budget still returns `Ok([])` (never invent tokens). Author: kejiqing
+    pub async fn list_model_usage_for_turn_waiting(
+        &self,
+        turn_id: &str,
+        attempts: u32,
+        interval: std::time::Duration,
+    ) -> Result<Vec<TurnModelUsageRow>, SqlxError> {
+        let attempts = attempts.max(1);
+        let mut last = Vec::new();
+        for i in 0..attempts {
+            last = self.list_model_usage_for_turn(turn_id).await?;
+            if !last.is_empty() {
+                return Ok(last);
+            }
+            if i + 1 < attempts && !interval.is_zero() {
+                tokio::time::sleep(interval).await;
+            }
+        }
+        Ok(last)
+    }
+
     /// Aggregated LLM usage for every turn in a session (grouped per turn/model/base_url/provider).
     ///
     /// One row per (turn_id, model, base_url, provider) with `SUM(input/output/cache_*)` and

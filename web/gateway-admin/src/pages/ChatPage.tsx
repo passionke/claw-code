@@ -58,8 +58,10 @@ import {
   type ResponsesDisplayMap,
 } from "../utils/responsesDisplay";
 import { formatMsZh } from "../utils/versionDisplay";
+import { fetchTurnUsageUntilReady } from "../utils/fetchTurnUsage";
 import {
   formatTokenUsage,
+  openAiUsageFromSessionSum,
   parseTurnUsageAggregate,
   sumSessionUsage,
 } from "../utils/tokenUsage";
@@ -476,7 +478,7 @@ export default function ChatPage() {
         }));
       }
       setHistoryRefreshKey((k) => k + 1);
-      await consumeResponsesSse(
+      const finalState = await consumeResponsesSse(
         resp,
         (state) => {
           if (state.sessionId) {
@@ -510,6 +512,20 @@ export default function ChatPage() {
         },
         emptyResponsesStreamState()
       );
+      // Tap may INSERT after response.completed; soft-poll usage if still empty. Author: kejiqing
+      const sid = finalState.sessionId || sessionIdRef.current;
+      const tid = finalState.turnId;
+      if (sid && tid && !finalState.usage?.usage) {
+        void fetchTurnUsageUntilReady({
+          gatewayBase,
+          sessionId: sid,
+          turnId: tid,
+          projId,
+        }).then((agg) => {
+          if (!agg?.usage) return;
+          patchCard((item) => ({ ...item, usage: agg }));
+        });
+      }
       setHistoryRefreshKey((k) => k + 1);
     } catch (e) {
       const text = String((e as Error).message || e);
@@ -551,11 +567,7 @@ export default function ChatPage() {
   }, [thread]);
 
   const sessionUsageLabel = sessionUsageSum
-    ? formatTokenUsage({
-        prompt_tokens: sessionUsageSum.prompt_tokens,
-        completion_tokens: sessionUsageSum.completion_tokens,
-        total_tokens: sessionUsageSum.total_tokens,
-      })
+    ? formatTokenUsage(openAiUsageFromSessionSum(sessionUsageSum))
     : null;
 
   return (
@@ -583,12 +595,13 @@ export default function ChatPage() {
             <Tooltip
               title={
                 sessionUsageSum
-                  ? `会话合计（${sessionUsageSum.turnCountWithUsage} 轮有记账）prompt / completion / total`
-                  : "尚无 tap 记账（usage 为空时不编造 0）"
+                  ? `会话合计 · ${sessionUsageSum.turnCountWithUsage} 轮有记账（tap）`
+                  : "尚无 tap 记账（不编造 0）"
               }
             >
               <span className={styles.sessionUsageBar}>
-                tokens {sessionUsageLabel ?? "—"}
+                session
+                <strong>{sessionUsageLabel ?? "—"}</strong>
               </span>
             </Tooltip>
           ) : null}

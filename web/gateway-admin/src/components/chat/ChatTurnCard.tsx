@@ -13,10 +13,7 @@ import type {
   TurnFeedbackValue,
   TurnUsageAggregate,
 } from "../../types/chat";
-import {
-  formatTokenUsage,
-  formatUsageByModelTooltip,
-} from "../../utils/tokenUsage";
+import TurnUsageFooter from "./TurnUsageFooter";
 import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
 import { extractSolveReportMessage } from "../../utils/solveReportBody";
 import { isAdminOrigin } from "../../utils/clientOrigin";
@@ -226,10 +223,6 @@ export default function ChatTurnCard({
     createdAtMs: effectiveCreatedAtMs,
     finishedAtMs: effectiveFinishedAtMs,
   });
-  const usageLabel = formatTokenUsage(usage?.usage ?? null);
-  const usageTooltip =
-    formatUsageByModelTooltip(usage?.usageByModel) ??
-    (usageLabel ? "prompt / completion / total（tap 记账）" : "尚无 tap 记账");
   const [visibleProgressCount, setVisibleProgressCount] = useState(0);
   const [errorText, setErrorText] = useState(prefilledFailure);
   const [fallbackOutput, setFallbackOutput] = useState("");
@@ -707,11 +700,6 @@ export default function ChatTurnCard({
                 {formatDurationMs(wallMs)}
               </Typography.Text>
             ) : null}
-            <Tooltip title={<span style={{ whiteSpace: "pre-wrap" }}>{usageTooltip}</span>}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                tokens {usageLabel ?? "—"}
-              </Typography.Text>
-            </Tooltip>
             <TurnExtraSessionDrawer extraSession={extraSession} />
             <TurnTimelineDrawer
               sessionId={sessionId}
@@ -899,6 +887,8 @@ export default function ChatTurnCard({
           </div>
         )}
       </div>
+
+      <TurnUsageFooter usage={usage} />
     </div>
   );
 }
