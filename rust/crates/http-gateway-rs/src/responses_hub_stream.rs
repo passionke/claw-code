@@ -492,11 +492,7 @@ pub fn responses_hub_sse_response(
         }
         // Tap INSERT can lag solve-done by tens–hundreds of ms; brief wait avoids empty usage. Author: kejiqing
         let usage_rows: Vec<TurnModelUsageRow> = session_db
-            .list_model_usage_for_turn_waiting(
-                &turn_id,
-                8,
-                std::time::Duration::from_millis(250),
-            )
+            .list_model_usage_for_turn_waiting(&turn_id, 8, std::time::Duration::from_millis(250))
             .await
             .unwrap_or_default();
         let completed = responses_api_response(

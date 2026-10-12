@@ -336,11 +336,7 @@ pub(crate) async fn chat_completions(
     // Brief wait: observe tap may INSERT after agent completion returns. Author: kejiqing
     let usage_rows = state
         .session_db
-        .list_model_usage_for_turn_waiting(
-            &turn_id,
-            8,
-            std::time::Duration::from_millis(250),
-        )
+        .list_model_usage_for_turn_waiting(&turn_id, 8, std::time::Duration::from_millis(250))
         .await
         .unwrap_or_default();
     if stream {
@@ -482,11 +478,7 @@ pub(crate) async fn responses(
     };
     let usage_rows = state
         .session_db
-        .list_model_usage_for_turn_waiting(
-            &turn_id,
-            8,
-            std::time::Duration::from_millis(250),
-        )
+        .list_model_usage_for_turn_waiting(&turn_id, 8, std::time::Duration::from_millis(250))
         .await
         .unwrap_or_default();
     let body = responses_api_response(
