@@ -1,7 +1,7 @@
 # Author: kejiqing
 # Full auto on v* tag: Jenkins does heavy Nora publish; this job on 10.8.0.21 only
 # waits for images then gateway.sh up --release (never compiles / never pushes).
-# Fast re-up without a new tag: Actions → home-neurogate-up (workflow_dispatch).
+# Branch fast path (no tag): push main → home-neurogate-up (sha-*).
 # Do NOT trigger Jenkins from here.
 name: home-neurogate-deploy
 
