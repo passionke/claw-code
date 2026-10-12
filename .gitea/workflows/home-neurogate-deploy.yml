@@ -1,6 +1,7 @@
 # Author: kejiqing
-# User only: git push gitea tag vX.Y.Z
-# Jenkins hook → Nora; this workflow waits for images then up --release on neurogate.
+# Full auto on v* tag: Jenkins does heavy Nora publish; this job on 10.8.0.21 only
+# waits for images then gateway.sh up --release (never compiles / never pushes).
+# Fast re-up without a new tag: Actions → home-neurogate-up (workflow_dispatch).
 # Do NOT trigger Jenkins from here.
 name: home-neurogate-deploy
 

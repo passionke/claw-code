@@ -2,9 +2,14 @@
 
 Author: kejiqing
 
-Workflow [`.gitea/workflows/home-neurogate-deploy.yml`](../../.gitea/workflows/home-neurogate-deploy.yml)
-requires a Gitea Actions runner with label **`neurogate`** on the Gateway host
-(`neurogate.home.passionke.top` / `10.8.0.21`).
+Workflows on this runner (label **`neurogate`**, host `10.8.0.21`):
+
+| Workflow | Trigger | Role |
+|----------|---------|------|
+| [`home-neurogate-deploy.yml`](../../.gitea/workflows/home-neurogate-deploy.yml) | push `v*` | wait Nora (Jenkins publish) → `up --release` |
+| [`home-neurogate-up.yml`](../../.gitea/workflows/home-neurogate-up.yml) | `workflow_dispatch` | **start only** — tag already in Nora; no Jenkins |
+
+Both paths **never** compile or push images on 21.
 
 ## One-time register
 
