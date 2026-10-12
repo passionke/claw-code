@@ -11,7 +11,9 @@ import type {
   SolveTask,
   TurnCancelResponse,
   TurnFeedbackValue,
+  TurnUsageAggregate,
 } from "../../types/chat";
+import TurnUsageFooter from "./TurnUsageFooter";
 import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
 import { extractSolveReportMessage } from "../../utils/solveReportBody";
 import { isAdminOrigin } from "../../utils/clientOrigin";
@@ -82,6 +84,8 @@ export interface ChatTurnCardProps {
     live: boolean;
     error?: string;
   };
+  /** Tap-backed LLM usage for this turn. Author: kejiqing */
+  usage?: TurnUsageAggregate | null;
 }
 
 function todoStatusMark(status: string): string {
@@ -187,6 +191,7 @@ export default function ChatTurnCard({
   initialWorkerExecUser,
   onPlanConfirmed,
   responsesStream,
+  usage,
 }: ChatTurnCardProps) {
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
   const prefilledFailure = initialFailureDetail?.trim() ?? "";
@@ -882,6 +887,8 @@ export default function ChatTurnCard({
           </div>
         )}
       </div>
+
+      <TurnUsageFooter usage={usage} />
     </div>
   );
 }

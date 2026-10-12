@@ -152,4 +152,64 @@ describe("applyResponsesSseEvent", () => {
       display: "expanded",
     });
   });
+
+  it("parses usage from response.completed", () => {
+    let state = emptyResponsesStreamState();
+    state = applyResponsesSseEvent(state, "response.completed", {
+      response: {
+        id: "T_usage",
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          total_tokens: 120,
+          prompt_tokens_details: { cached_tokens: 10 },
+        },
+        nerogate: {
+          sessionId: "sess_1",
+          turnId: "T_usage",
+          usageByModel: [
+            {
+              model: "deepseek-v4-pro",
+              prompt_tokens: 100,
+              completion_tokens: 20,
+              total_tokens: 120,
+            },
+          ],
+        },
+      },
+    });
+    expect(state.completed).toBe(true);
+    expect(state.turnId).toBe("T_usage");
+    expect(state.sessionId).toBe("sess_1");
+    expect(state.usage).toEqual({
+      requestCount: 1,
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        total_tokens: 120,
+        prompt_tokens_details: { cached_tokens: 10 },
+      },
+      usageByModel: [
+        {
+          model: "deepseek-v4-pro",
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          total_tokens: 120,
+        },
+      ],
+    });
+  });
+
+  it("sets usage null when response.completed has no usage sample", () => {
+    let state = emptyResponsesStreamState();
+    state = applyResponsesSseEvent(state, "response.completed", {
+      response: {
+        id: "T_empty",
+        usage: null,
+        nerogate: { sessionId: "sess_2" },
+      },
+    });
+    expect(state.completed).toBe(true);
+    expect(state.usage).toBeNull();
+  });
 });

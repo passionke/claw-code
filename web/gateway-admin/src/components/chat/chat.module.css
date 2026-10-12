@@ -696,6 +696,118 @@
   box-sizing: border-box;
 }
 
+/* Session Σ in toolbar — compact echo of turn footer. Author: kejiqing */
+.sessionUsageBar {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: min(100%, 420px);
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(45, 58, 77, 0.95);
+  background: linear-gradient(180deg, rgba(26, 35, 50, 0.95), rgba(15, 20, 25, 0.9));
+  font-size: 11px;
+  line-height: 1.3;
+  color: #8b9cb3;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sessionUsageBar strong {
+  font-weight: 600;
+  color: #c8d4e4;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+}
+
+/* Agent-style meta under the reply body. Author: kejiqing */
+.turnUsageFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin: 0;
+  padding: 8px 12px 9px;
+  border-top: 1px solid rgba(45, 58, 77, 0.85);
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.12) 0%,
+    rgba(15, 20, 25, 0.35) 100%
+  );
+  cursor: default;
+}
+
+.turnUsageBrand {
+  margin-right: auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6b7c93;
+}
+
+.turnUsageMetrics {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 0;
+  margin: 0;
+}
+
+.turnUsageMetric {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  padding: 0 10px;
+  border-left: 1px solid rgba(45, 58, 77, 0.9);
+}
+
+.turnUsageMetric:first-child {
+  border-left: none;
+  padding-left: 0;
+}
+
+.turnUsageMetric dt {
+  margin: 0;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6b7c93;
+  line-height: 1.2;
+}
+
+.turnUsageMetric dd {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, Menlo, monospace;
+  color: #c8d4e4;
+  line-height: 1.25;
+}
+
+.turnUsageMetricTotal dd {
+  color: #e6edf3;
+}
+
+.turnUsageMetricMuted dd {
+  color: #6b7c93;
+  font-weight: 500;
+}
+
+.turnUsageEmpty {
+  font-size: 12px;
+  color: #6b7c93;
+  font-family: ui-monospace, Menlo, monospace;
+}
+
 .turnThread {
   display: flex;
   flex-direction: column;

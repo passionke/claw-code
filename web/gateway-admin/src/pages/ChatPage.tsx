@@ -15,6 +15,7 @@ import type {
   ListSessionTurnsResponse,
   SolveAsyncResponse,
   SolveAttachmentMeta,
+  TurnUsageAggregate,
 } from "../types/chat";
 import { buildExtraSession } from "../utils/extraSession";
 import {
@@ -57,6 +58,13 @@ import {
   type ResponsesDisplayMap,
 } from "../utils/responsesDisplay";
 import { formatMsZh } from "../utils/versionDisplay";
+import { fetchTurnUsageUntilReady } from "../utils/fetchTurnUsage";
+import {
+  formatTokenUsage,
+  openAiUsageFromSessionSum,
+  parseTurnUsageAggregate,
+  sumSessionUsage,
+} from "../utils/tokenUsage";
 interface TurnEntry {
   id: string;
   userText: string;
@@ -84,6 +92,8 @@ interface TurnEntry {
   streamBlocks?: ResponsesStreamBlock[];
   streamLive?: boolean;
   streamError?: string;
+  /** Tap-backed turn usage; null when no gateway_model_usage rows. Author: kejiqing */
+  usage?: TurnUsageAggregate | null;
 }
 
 interface SysEntry {
@@ -238,6 +248,7 @@ export default function ChatPage() {
             workerName: t.workerName ?? undefined,
             workerProfile: t.workerProfile ?? undefined,
             workerExecUser: t.workerExecUser ?? undefined,
+            usage: parseTurnUsageAggregate(t.usage),
           }))
         );
         const lastTurn = turns[turns.length - 1];
@@ -467,7 +478,7 @@ export default function ChatPage() {
         }));
       }
       setHistoryRefreshKey((k) => k + 1);
-      await consumeResponsesSse(
+      const finalState = await consumeResponsesSse(
         resp,
         (state) => {
           if (state.sessionId) {
@@ -492,11 +503,29 @@ export default function ChatPage() {
               item.finishedAtMs,
               nowMs
             ),
+            usage:
+              state.usage !== undefined
+                ? state.usage
+                : item.usage,
           }));
           scrollLog(false);
         },
         emptyResponsesStreamState()
       );
+      // Tap may INSERT after response.completed; soft-poll usage if still empty. Author: kejiqing
+      const sid = finalState.sessionId || sessionIdRef.current;
+      const tid = finalState.turnId;
+      if (sid && tid && !finalState.usage?.usage) {
+        void fetchTurnUsageUntilReady({
+          gatewayBase,
+          sessionId: sid,
+          turnId: tid,
+          projId,
+        }).then((agg) => {
+          if (!agg?.usage) return;
+          patchCard((item) => ({ ...item, usage: agg }));
+        });
+      }
       setHistoryRefreshKey((k) => k + 1);
     } catch (e) {
       const text = String((e as Error).message || e);
@@ -530,6 +559,17 @@ export default function ChatPage() {
 
   const canTranslate = Boolean(activeSessionId);
 
+  const sessionUsageSum = useMemo(() => {
+    const aggregates = thread
+      .filter((item): item is TurnEntry => !isSys(item))
+      .map((t) => t.usage);
+    return sumSessionUsage(aggregates);
+  }, [thread]);
+
+  const sessionUsageLabel = sessionUsageSum
+    ? formatTokenUsage(openAiUsageFromSessionSum(sessionUsageSum))
+    : null;
+
   return (
     <div className={styles.chatPage}>
       <ChatHistorySidebar
@@ -551,6 +591,20 @@ export default function ChatPage() {
             onTranslateConversation={() => setTranslateOpen(true)}
             translateDisabled={!canTranslate || loadingHistory}
           />
+          {activeSessionId ? (
+            <Tooltip
+              title={
+                sessionUsageSum
+                  ? `会话合计 · ${sessionUsageSum.turnCountWithUsage} 轮有记账（tap）`
+                  : "尚无 tap 记账（不编造 0）"
+              }
+            >
+              <span className={styles.sessionUsageBar}>
+                session
+                <strong>{sessionUsageLabel ?? "—"}</strong>
+              </span>
+            </Tooltip>
+          ) : null}
         </div>
         {CHAT_AUDIT_ONLY ? (
           <Alert
@@ -697,6 +751,7 @@ export default function ChatPage() {
                   initialWorkerName={item.workerName}
                   initialWorkerProfile={item.workerProfile}
                   initialWorkerExecUser={item.workerExecUser}
+                  usage={item.usage}
                   turnFeedback={feedbackByTurn[item.turnId] ?? item.feedback}
                   feedbackSubmitting={submittingTurnId === item.turnId}
                   onTurnFeedback={(fb) => {
