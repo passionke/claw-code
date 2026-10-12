@@ -11,7 +11,12 @@ import type {
   SolveTask,
   TurnCancelResponse,
   TurnFeedbackValue,
+  TurnUsageAggregate,
 } from "../../types/chat";
+import {
+  formatTokenUsage,
+  formatUsageByModelTooltip,
+} from "../../utils/tokenUsage";
 import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
 import { extractSolveReportMessage } from "../../utils/solveReportBody";
 import { isAdminOrigin } from "../../utils/clientOrigin";
@@ -82,6 +87,8 @@ export interface ChatTurnCardProps {
     live: boolean;
     error?: string;
   };
+  /** Tap-backed LLM usage for this turn. Author: kejiqing */
+  usage?: TurnUsageAggregate | null;
 }
 
 function todoStatusMark(status: string): string {
@@ -187,6 +194,7 @@ export default function ChatTurnCard({
   initialWorkerExecUser,
   onPlanConfirmed,
   responsesStream,
+  usage,
 }: ChatTurnCardProps) {
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
   const prefilledFailure = initialFailureDetail?.trim() ?? "";
@@ -218,6 +226,10 @@ export default function ChatTurnCard({
     createdAtMs: effectiveCreatedAtMs,
     finishedAtMs: effectiveFinishedAtMs,
   });
+  const usageLabel = formatTokenUsage(usage?.usage ?? null);
+  const usageTooltip =
+    formatUsageByModelTooltip(usage?.usageByModel) ??
+    (usageLabel ? "prompt / completion / total（tap 记账）" : "尚无 tap 记账");
   const [visibleProgressCount, setVisibleProgressCount] = useState(0);
   const [errorText, setErrorText] = useState(prefilledFailure);
   const [fallbackOutput, setFallbackOutput] = useState("");
@@ -695,6 +707,11 @@ export default function ChatTurnCard({
                 {formatDurationMs(wallMs)}
               </Typography.Text>
             ) : null}
+            <Tooltip title={<span style={{ whiteSpace: "pre-wrap" }}>{usageTooltip}</span>}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                tokens {usageLabel ?? "—"}
+              </Typography.Text>
+            </Tooltip>
             <TurnExtraSessionDrawer extraSession={extraSession} />
             <TurnTimelineDrawer
               sessionId={sessionId}

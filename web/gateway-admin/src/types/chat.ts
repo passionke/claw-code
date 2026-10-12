@@ -138,6 +138,30 @@ export interface ListProjectSessionsResponse {
   hasMore?: boolean;
 }
 
+/** OpenAI-style usage object from turn aggregate / response.completed. Author: kejiqing */
+export interface OpenAiStyleUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+}
+
+/** Per-model breakdown inside TurnUsageAggregate / nerogate.usageByModel. Author: kejiqing */
+export interface UsageByModelRow {
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+}
+
+/** Turn-level usage from GET .../turns (camelCase wrapper). Author: kejiqing */
+export interface TurnUsageAggregate {
+  requestCount: number;
+  usage: OpenAiStyleUsage | null;
+  usageByModel?: UsageByModelRow[] | null;
+}
+
 export interface GatewayTurnSummary {
   turnId: string;
   userPrompt?: string | null;
@@ -165,6 +189,8 @@ export interface GatewayTurnSummary {
   /** Ingress gateway that enqueued this turn. Author: kejiqing */
   gatewayId?: string | null;
   gatewayBase?: string | null;
+  /** Tap-backed LLM usage for this turn; null/absent when no rows. Author: kejiqing */
+  usage?: TurnUsageAggregate | null;
 }
 
 export interface ListSessionTurnsResponse {

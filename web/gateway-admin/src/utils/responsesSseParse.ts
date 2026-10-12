@@ -1,5 +1,8 @@
 /** Parse POST /v1/responses stream=true into one interleaved block list. Author: kejiqing */
 
+import type { TurnUsageAggregate } from "../types/chat";
+import { turnUsageFromCompletedResponse } from "./tokenUsage";
+
 export type ResponsesDisplayMode = "collapsed" | "expanded";
 
 export type ResponsesTagStatus = "running" | "done" | "failed";
@@ -40,6 +43,8 @@ export type ResponsesStreamState = {
   sessionId: string;
   completed: boolean;
   error: string;
+  /** Tap-backed usage from response.completed; absent when no rows. Author: kejiqing */
+  usage?: TurnUsageAggregate | null;
 };
 
 export function emptyResponsesStreamState(): ResponsesStreamState {
@@ -49,6 +54,7 @@ export function emptyResponsesStreamState(): ResponsesStreamState {
     sessionId: "",
     completed: false,
     error: "",
+    usage: undefined,
   };
 }
 
@@ -362,11 +368,13 @@ export function applyResponsesSseEvent(
       (response && typeof response.id === "string" && response.id) || state.turnId;
     const sessionId =
       (response && asRecord(response.nerogate)?.sessionId) || state.sessionId;
+    const usage = turnUsageFromCompletedResponse(response);
     return {
       ...state,
       turnId: typeof turnId === "string" ? turnId : state.turnId,
       sessionId: typeof sessionId === "string" ? sessionId : state.sessionId,
       completed: true,
+      usage: usage ?? null,
     };
   }
 

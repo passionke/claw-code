@@ -696,6 +696,17 @@
   box-sizing: border-box;
 }
 
+/* Session-level token sum next to ChatToolbar. Author: kejiqing */
+.sessionUsageBar {
+  margin-left: auto;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #8b9cb3;
+  padding: 4px 2px;
+  user-select: none;
+  white-space: nowrap;
+}
+
 .turnThread {
   display: flex;
   flex-direction: column;
