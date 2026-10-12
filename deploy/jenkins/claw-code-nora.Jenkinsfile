@@ -1,6 +1,7 @@
 // Author: kejiqing
 // Gateway/Admin only → Nora. Source of truth for job claw-code-nora.
 // Formal: GIT_TAG=vX.Y.Z. Fast (main): GIT_REF=<branch|sha> → publish sha-<12>.
+// Gitea webhook → GenericTrigger (same token as repo hook). Manual builds use params.
 pipeline {
   agent { label 'home29' }
   options {
@@ -9,6 +10,22 @@ pipeline {
   parameters {
     string(name: 'GIT_TAG', defaultValue: '', description: 'Formal gitea tag vX.Y.Z (never release-v*). Empty when using GIT_REF.')
     string(name: 'GIT_REF', defaultValue: '', description: 'Fast path: branch or commit SHA on gitea (publishes sha-<12>). Empty when using GIT_TAG.')
+  }
+  triggers {
+    // Token must match Gitea hook …/generic-webhook-trigger/invoke?token=… Author: kejiqing
+    GenericTrigger(
+      genericVariables: [
+        [key: 'ref', value: '$.ref'],
+        [key: 'after', value: '$.after'],
+        [key: 'hook_sha', value: '$.sha']
+      ],
+      causeString: 'Gitea webhook $ref',
+      token: 'cab0cf265cdb70d5bc725a9cd69ac7c1ebadaaed',
+      printContributedVariables: true,
+      printPostContent: false,
+      regexpFilterText: '$ref',
+      regexpFilterExpression: 'refs/heads/main|refs/tags/v[0-9]+[.][0-9]+[.][0-9]+|^v[0-9]+[.][0-9]+[.][0-9]+$'
+    )
   }
   environment {
     NEXUS_PUSH_REGISTRY = 'nora.home.passionke.top'
@@ -35,6 +52,24 @@ git fetch --force origin '+refs/heads/*:refs/remotes/origin/*' || true
 TAG_TRIM="$(printf '%s' "${GIT_TAG:-}" | tr -d '[:space:]')"
 REF_TRIM="$(printf '%s' "${GIT_REF:-}" | tr -d '[:space:]')"
 
+# Gitea GenericTrigger contributes ref / after / hook_sha when params empty. Author: kejiqing
+if [[ -z "$TAG_TRIM" && -z "$REF_TRIM" ]]; then
+  WREF="$(printf '%s' "${ref:-}" | tr -d '[:space:]')"
+  WAFTER="$(printf '%s' "${after:-}" | tr -d '[:space:]')"
+  WSHA="$(printf '%s' "${hook_sha:-}" | tr -d '[:space:]')"
+  if [[ "$WREF" =~ ^refs/tags/(v[0-9]+[.][0-9]+[.][0-9]+)$ ]]; then
+    TAG_TRIM="${BASH_REMATCH[1]}"
+  elif [[ "$WREF" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+    TAG_TRIM="$WREF"
+  elif [[ "$WREF" == "refs/heads/main" ]]; then
+    if [[ -n "$WAFTER" && "$WAFTER" != "0000000000000000000000000000000000000000" ]]; then
+      REF_TRIM="$WAFTER"
+    elif [[ -n "$WSHA" ]]; then
+      REF_TRIM="$WSHA"
+    fi
+  fi
+fi
+
 if [[ -n "$TAG_TRIM" ]]; then
   echo "==> formal checkout tag ${TAG_TRIM}"
   git checkout -f "tags/${TAG_TRIM}" 2>/dev/null || git checkout -f "${TAG_TRIM}"
@@ -46,7 +81,7 @@ elif [[ -n "$REF_TRIM" ]]; then
   SHA12="$(git rev-parse --short=12 HEAD)"
   export RELEASE_TAG="sha-${SHA12}"
 else
-  echo "error: set GIT_TAG=vX.Y.Z or GIT_REF=<branch|sha>" >&2
+  echo "error: set GIT_TAG=vX.Y.Z or GIT_REF=<branch|sha> (or Gitea webhook ref)" >&2
   exit 2
 fi
 
