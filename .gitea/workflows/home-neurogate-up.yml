@@ -1,58 +1,43 @@
 # Author: kejiqing
-# Fast path: 21 only pulls Nora images + gateway.sh up --release.
-# Heavy build/publish stays on Jenkins (claw-code-nora). Do NOT build here.
+# Fast path: push/merge to main → 21 only waits for Nora sha-* then up --release.
+# Heavy pack stays on Jenkins (claw-code-nora with GIT_REF=<commit>).
+# Formal releases stay on v* + home-neurogate-deploy. Do NOT build/push images here.
 name: home-neurogate-up
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Nora image tag already published by Jenkins (vX.Y.Z)"
-        required: true
-        type: string
-      wait_secs:
-        description: "Max seconds to wait for Nora images (0 = must already exist)"
-        required: false
-        default: "120"
-        type: string
+  push:
+    branches:
+      - main
 
 jobs:
   up:
-    # Same host as home-neurogate-deploy — start only, never compile/push. Author: kejiqing
     runs-on: neurogate
     steps:
-      - name: Up release from Nora
+      - name: Wait Nora sha image and up --release
         shell: bash
         env:
           CLAW_DEPLOY_ROOT: /home/passionke/work/claw-code
           CLAW_IMAGE_PREFIX: nora.home.passionke.top/passionke
-          INPUT_TAG: ${{ github.event.inputs.tag }}
-          INPUT_WAIT: ${{ github.event.inputs.wait_secs }}
+          FULL_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          TAG="${INPUT_TAG:-}"
-          TAG="${TAG#refs/tags/}"
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "error: tag must be vX.Y.Z, got: ${TAG}" >&2
-            exit 2
-          fi
-          WAIT_SECS="${INPUT_WAIT:-120}"
-          if [[ ! "$WAIT_SECS" =~ ^[0-9]+$ ]]; then
-            echo "error: wait_secs must be integer, got: ${WAIT_SECS}" >&2
-            exit 2
-          fi
+          FULL_SHA="${FULL_SHA:?}"
+          SHA12="$(printf '%s' "$FULL_SHA" | cut -c1-12)"
+          TAG="sha-${SHA12}"
           ROOT="${CLAW_DEPLOY_ROOT}"
           test -d "${ROOT}/.git"
           cd "${ROOT}"
           if git remote get-url gitea >/dev/null 2>&1; then
-            git fetch --tags --force gitea
+            git fetch --force gitea
           else
-            git fetch --tags --force origin
+            git fetch --force origin
           fi
-          git checkout -f "tags/${TAG}" 2>/dev/null || git checkout -f "${TAG}"
+          git checkout -f "${FULL_SHA}"
+          git log -1 --oneline
           test -f deploy/stack/lib/home-neurogate-deploy-from-tag.sh
           chmod +x deploy/stack/lib/home-neurogate-deploy-from-tag.sh
-          export CLAW_NORA_IMAGE_WAIT_SECS="${WAIT_SECS}"
-          export CLAW_NORA_IMAGE_POLL_SECS=15
-          # No Jenkins / no compile — only wait (optional) + up --release. Author: kejiqing
+          # Jenkins (hook / claw-code-nora GIT_REF) must publish :sha-XXXXXXXXXXXX first. Author: kejiqing
+          export CLAW_NORA_IMAGE_WAIT_SECS="${CLAW_NORA_IMAGE_WAIT_SECS:-3600}"
+          export CLAW_NORA_IMAGE_POLL_SECS="${CLAW_NORA_IMAGE_POLL_SECS:-30}"
+          echo "==> branch fast-up commit=${FULL_SHA} image_tag=${TAG}"
           bash deploy/stack/lib/home-neurogate-deploy-from-tag.sh "${TAG}"

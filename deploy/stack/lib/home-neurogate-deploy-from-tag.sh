@@ -4,8 +4,9 @@
 set -euo pipefail
 
 TAG="${1:-}"
-if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "usage: $0 vX.Y.Z" >&2
+# Formal vX.Y.Z or fast-path sha-<hex> (main branch publish). Author: kejiqing
+if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && ! "$TAG" =~ ^sha-[0-9a-f]{7,40}$ ]]; then
+  echo "usage: $0 vX.Y.Z|sha-<hex>" >&2
   exit 2
 fi
 
@@ -73,11 +74,20 @@ cd "$ROOT"
 # Home tags live on gitea only; origin is GitHub (release-v*) — do not prefer origin.
 if git remote get-url gitea >/dev/null 2>&1; then
   git fetch --tags --force gitea
+  git fetch --force gitea || true
 else
   git fetch --tags --force origin
+  git fetch --force origin || true
 fi
-git checkout -f "tags/${TAG}" 2>/dev/null || git checkout -f "${TAG}"
-git describe --tags --exact-match HEAD
+if [[ "$TAG" =~ ^sha-([0-9a-f]{7,40})$ ]]; then
+  # Fast path: image tag is sha-*; checkout matching commit (already checked out by Actions often). Author: kejiqing
+  HEX="${BASH_REMATCH[1]}"
+  git checkout -f "${HEX}" 2>/dev/null || git checkout -f "$TAG" || true
+  git log -1 --oneline
+else
+  git checkout -f "tags/${TAG}" 2>/dev/null || git checkout -f "${TAG}"
+  git describe --tags --exact-match HEAD
+fi
 
 export CLAW_IMAGE_PREFIX="$PREFIX"
 

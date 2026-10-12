@@ -46,8 +46,11 @@ RELEASE_TAG="${RELEASE_TAG:-${GIT_TAG:-}}"
 if [[ -z "$RELEASE_TAG" ]]; then
   RELEASE_TAG="$(git -C "$ROOT" describe --tags --exact-match HEAD 2>/dev/null || true)"
 fi
-if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && ! "$RELEASE_TAG" =~ ^release-v[0-9] ]]; then
-  echo "RELEASE_TAG must match vX.Y.Z or release-v*, got: ${RELEASE_TAG:-<empty>}" >&2
+# Formal v* / release-v*; fast path sha-<12+> from main GIT_REF builds. Author: kejiqing
+if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ \
+  && ! "$RELEASE_TAG" =~ ^release-v[0-9] \
+  && ! "$RELEASE_TAG" =~ ^sha-[0-9a-f]{7,40}$ ]]; then
+  echo "RELEASE_TAG must match vX.Y.Z, release-v*, or sha-<hex>, got: ${RELEASE_TAG:-<empty>}" >&2
   exit 1
 fi
 

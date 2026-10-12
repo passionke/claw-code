@@ -29,24 +29,28 @@ Author: kejiqing
 | 角色 | 机器 / Job | 做什么 | 不做什么 |
 |------|------------|--------|----------|
 | **重活** | Jenkins `claw-code-nora`（home29） | clone、编译、打镜像、skopeo 推 Nora | 不改 neurogate 运行态 |
-| **轻活** | `10.8.0.21` Gitea Actions（label `neurogate`） | 等/拉 Nora 镜像 → `gateway.sh up --release` | **不**编译、**不**推镜像、**不**触发 Jenkins |
+| **轻活** | `10.8.0.21` Gitea Actions（label `neurogate`） | 等/拉 Nora 镜像 → `gateway.sh up --release` | **不**编译、**不**推镜像 |
 
 ```text
-正式线（一条默认路径）:
-1) 代码在 gitea main
-2) git tag vX.Y.Z && git push gitea vX.Y.Z
-   → Jenkins claw-code-nora → Nora（claw-code / claw-gateway-playground）
-   → Actions home-neurogate-deploy（21）：等 Nora → up --release
+正式线（v* tag）:
+  git tag vX.Y.Z && git push gitea vX.Y.Z
+  → Jenkins GIT_TAG=vX.Y.Z → Nora :vX.Y.Z (+ :sha-…)
+  → Actions home-neurogate-deploy → up --release vX.Y.Z
+
+快线（main 分支推送，不打 tag）:
+  git push gitea main   # 或 PR merge 进 main
+  → Jenkins GIT_REF=<commit> → Nora :sha-<12>
+  → Actions home-neurogate-up → up --release sha-<12>
 ```
 
-**快部署（镜像已在 Nora，不必再打新 tag）：**  
-Gitea Actions → **`home-neurogate-up`** → `workflow_dispatch`，填已有 `vX.Y.Z`（可选 `wait_secs`，镜像已齐可 `0`）。21 只启动，Jenkins 不参与。
+Jenkins 入参：`GIT_TAG`（正式）与 `GIT_REF`（快线）二选一。  
+Gitea hook / GenericTrigger 须在 **main push** 时把 commit 传给 `GIT_REF`（与 v* 的 `GIT_TAG` 分开）。
 
-用户日常**不**手点 Jenkins、**不**手搓 `up --release`（紧急除外）。  
+用户日常**不**手搓 `up --release`（紧急除外）。  
 - 正式：[`home-neurogate-deploy.yml`](../.gitea/workflows/home-neurogate-deploy.yml)  
-- 快启：[`home-neurogate-up.yml`](../.gitea/workflows/home-neurogate-up.yml)  
-- 脚本：[`home-neurogate-deploy-from-tag.sh`](../deploy/stack/lib/home-neurogate-deploy-from-tag.sh)  
-- runner：[`gitea-act-runner-neurogate.md`](../deploy/docs/gitea-act-runner-neurogate.md)（label `neurogate`）。
+- 快线：[`home-neurogate-up.yml`](../.gitea/workflows/home-neurogate-up.yml)（`push: branches: [main]`）  
+- 脚本：[`home-neurogate-deploy-from-tag.sh`](../deploy/stack/lib/home-neurogate-deploy-from-tag.sh)（接受 `v*` 或 `sha-*`）  
+- runner：[`gitea-act-runner-neurogate.md`](../deploy/docs/gitea-act-runner-neurogate.md)
 
 ### H.1b 协议 / Agent 引擎（仍各自 Job）
 
