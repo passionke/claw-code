@@ -1,6 +1,7 @@
 // Author: kejiqing
 // Gateway/Admin only → Nora. Source of truth for job claw-code-nora.
-// Formal: GIT_TAG=vX.Y.Z. Fast (main): GIT_REF=<branch|sha> → publish sha-<12>.
+// Formal: GIT_TAG=vX.Y.Z. Fast: any branch push → GIT_REF=<sha> → publish sha-<12>.
+// Pack does not require merge to main. neurogate up stays main-only (Actions).
 // Gitea webhook → GenericTrigger (same token as repo hook). Manual builds use params.
 pipeline {
   agent { label 'home29' }
@@ -24,7 +25,7 @@ pipeline {
       printContributedVariables: true,
       printPostContent: false,
       regexpFilterText: '$ref',
-      regexpFilterExpression: 'refs/heads/main|refs/tags/v[0-9]+[.][0-9]+[.][0-9]+|^v[0-9]+[.][0-9]+[.][0-9]+$'
+      regexpFilterExpression: 'refs/heads/.+|refs/tags/v[0-9]+[.][0-9]+[.][0-9]+|^v[0-9]+[.][0-9]+[.][0-9]+$'
     )
   }
   environment {
@@ -61,7 +62,8 @@ if [[ -z "$TAG_TRIM" && -z "$REF_TRIM" ]]; then
     TAG_TRIM="${BASH_REMATCH[1]}"
   elif [[ "$WREF" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
     TAG_TRIM="$WREF"
-  elif [[ "$WREF" == "refs/heads/main" ]]; then
+  elif [[ "$WREF" =~ ^refs/heads/.+ ]]; then
+    # Any branch push → pack that commit (no need to merge main first). Author: kejiqing
     if [[ -n "$WAFTER" && "$WAFTER" != "0000000000000000000000000000000000000000" ]]; then
       REF_TRIM="$WAFTER"
     elif [[ -n "$WSHA" ]]; then

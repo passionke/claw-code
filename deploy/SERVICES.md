@@ -6,7 +6,8 @@ Author: kejiqing
 **Home git tag：** `code.passionke.top` 只用 **`vX.Y.Z`**；GitHub 用 `release-v*`——禁止混打。  
 **Gateway 自动线：**  
 - **正式**推 `v*` → Jenkins `GIT_TAG` → Nora → Actions `home-neurogate-deploy` 在 21 `up --release`  
-- **快线**推 `main` → Jenkins `GIT_REF` → Nora `:sha-<12>` → Actions `home-neurogate-up` 在 21 只启动（不打包）
+- **快线打包**推任意分支 → Jenkins `GIT_REF` → Nora `:sha-<12>`（不必合 main）  
+- **快线启动**推/合入 `main` → Actions `home-neurogate-up` 在 21 只启动（不打包）
 
 The release architecture has three independent layers. Publishing one layer must not invoke either
 of the other two.
