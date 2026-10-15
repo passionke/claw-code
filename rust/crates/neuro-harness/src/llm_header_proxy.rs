@@ -105,10 +105,24 @@ async fn proxy_one(mut client: TcpStream, upstream: &Upstream) -> Result<(), Str
     let extra = gateway_solve_turn::gateway_llm_session_extra_headers();
     let injected = inject_trace_headers(&buf[..header_end], &upstream.host_header, &extra)?;
     // Evidence for e2b billing misses (stderr may be empty on docker exec). Author: kejiqing
-    if let Ok(line) = std::str::from_utf8(&buf[..header_end.min(buf.len())]) {
-        let req = line.lines().next().unwrap_or("");
+    if let Ok(raw) = std::str::from_utf8(&buf[..header_end]) {
+        let req = raw.lines().next().unwrap_or("");
         let turn = extra.get("claw-turn-id").map_or("-", String::as_str);
         eprintln!("[llm-header-proxy] {req} claw-turn-id={turn}");
+        let mut header_names = Vec::new();
+        for line in raw.lines().skip(1) {
+            if line.is_empty() {
+                break;
+            }
+            let name = line.split_once(':').map_or(line, |(n, _)| n.trim());
+            header_names.push(name.to_ascii_lowercase());
+        }
+        let injected_preview = std::str::from_utf8(&injected)
+            .unwrap_or("")
+            .lines()
+            .take(20)
+            .collect::<Vec<_>>()
+            .join("\\n");
         let log_path = std::path::Path::new(".neuro-harness").join("llm-proxy.ndjson");
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -118,10 +132,14 @@ async fn proxy_one(mut client: TcpStream, upstream: &Upstream) -> Result<(), Str
             use std::io::Write;
             let _ = writeln!(
                 f,
-                r#"{{"req":{},"clawTurnId":{},"extraKeys":{}}}"#,
-                serde_json::to_string(req).unwrap_or_else(|_| "\"\"".into()),
-                serde_json::to_string(turn).unwrap_or_else(|_| "\"\"".into()),
-                extra.len()
+                "{}",
+                serde_json::json!({
+                    "req": req,
+                    "clawTurnId": turn,
+                    "extraKeys": extra.len(),
+                    "clientHeaderNames": header_names,
+                    "injectedHead": injected_preview,
+                })
             );
         }
     }
@@ -166,7 +184,11 @@ async fn read_http_headers(stream: &mut TcpStream, buf: &mut Vec<u8>) -> Result<
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+    if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+        return Some(p + 4);
+    }
+    // Bun may use LF-only. Author: kejiqing
+    buf.windows(2).position(|w| w == b"\n\n").map(|p| p + 2)
 }
 
 fn inject_trace_headers(
@@ -175,51 +197,73 @@ fn inject_trace_headers(
     extra: &std::collections::BTreeMap<String, String>,
 ) -> Result<Vec<u8>, String> {
     let text = std::str::from_utf8(head).map_err(|e| format!("headers utf8: {e}"))?;
-    let mut lines: Vec<&str> = text.split("\r\n").collect();
-    if lines.is_empty() {
-        return Err("empty request".into());
-    }
-    // Drop trailing empty from final \r\n\r\n split.
-    while lines.last().is_some_and(|l| l.is_empty()) {
-        lines.pop();
-    }
-    let request_line = lines.first().copied().unwrap_or("");
-    let mut out = Vec::with_capacity(head.len() + 256);
-    out.extend_from_slice(request_line.as_bytes());
-    out.extend_from_slice(b"\r\n");
+    // Prefer CRLF (HTTP); fall back to LF-only (some Bun builds). Author: kejiqing
+    let (sep, end) = if text.contains("\r\n\r\n") {
+        ("\r\n", "\r\n\r\n")
+    } else if text.contains("\n\n") {
+        ("\n", "\n\n")
+    } else {
+        return Err("no header terminator".into());
+    };
+    let end_at = text
+        .find(end)
+        .ok_or_else(|| "header terminator missing after detect".to_string())?;
+    let header_block = &text[..end_at];
+    let mut out = String::with_capacity(head.len() + 256);
     let mut saw_host = false;
-    for line in lines.iter().skip(1) {
+    for (i, line) in header_block.split(sep).enumerate() {
+        if i == 0 {
+            // Normalize openai-compatible path so tap billing matches claw. Author: kejiqing
+            let req = if let Some(rest) = line.strip_prefix("POST /chat/completions") {
+                format!("POST /v1/chat/completions{rest}")
+            } else if let Some(rest) = line.strip_prefix("POST /responses") {
+                format!("POST /v1/responses{rest}")
+            } else {
+                line.to_string()
+            };
+            out.push_str(&req);
+            out.push_str(sep);
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
         let lower = line.to_ascii_lowercase();
         if lower.starts_with("host:") {
-            out.extend_from_slice(b"Host: ");
-            out.extend_from_slice(upstream_host.as_bytes());
-            out.extend_from_slice(b"\r\n");
+            out.push_str("Host: ");
+            out.push_str(upstream_host);
+            out.push_str(sep);
             saw_host = true;
             continue;
         }
-        // Drop any client-supplied claw headers; we re-inject from env. Author: kejiqing
+        // Drop keep-alive / claw headers; force close so one request = one upstream. Author: kejiqing
         if lower.starts_with("claw-turn-id:")
             || lower.starts_with("claw-session-id:")
             || lower.starts_with("clawcode-session-id:")
+            || lower.starts_with("connection:")
+            || lower.starts_with("keep-alive:")
+            || lower.starts_with("expect:")
         {
             continue;
         }
-        out.extend_from_slice(line.as_bytes());
-        out.extend_from_slice(b"\r\n");
+        out.push_str(line);
+        out.push_str(sep);
     }
     if !saw_host {
-        out.extend_from_slice(b"Host: ");
-        out.extend_from_slice(upstream_host.as_bytes());
-        out.extend_from_slice(b"\r\n");
+        out.push_str("Host: ");
+        out.push_str(upstream_host);
+        out.push_str(sep);
     }
+    out.push_str("Connection: close");
+    out.push_str(sep);
     for (k, v) in extra {
-        out.extend_from_slice(k.as_bytes());
-        out.extend_from_slice(b": ");
-        out.extend_from_slice(v.as_bytes());
-        out.extend_from_slice(b"\r\n");
+        out.push_str(k);
+        out.push_str(": ");
+        out.push_str(v);
+        out.push_str(sep);
     }
-    out.extend_from_slice(b"\r\n");
-    Ok(out)
+    out.push_str(sep);
+    Ok(out.into_bytes())
 }
 
 #[cfg(test)]
@@ -246,5 +290,20 @@ mod tests {
         assert!(s.contains("claw-turn-id: T_proxy"));
         assert!(s.contains("claw-session-id: sess-proxy"));
         assert!(!s.contains("Host: 127.0.0.1:9"));
+    }
+
+    #[test]
+    fn inject_accepts_lf_only_headers() {
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("claw-turn-id".into(), "T_lf".into());
+        let head = b"POST /chat/completions HTTP/1.1\nHost: 127.0.0.1:9\nContent-Length: 0\n\n";
+        assert_eq!(find_header_end(head), Some(head.len()));
+        let out = inject_trace_headers(head, "tap.example:8080", &extra).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("claw-turn-id: T_lf"));
+        assert!(s.contains("Host: tap.example:8080"));
+        assert!(s.starts_with("POST /v1/chat/completions HTTP/1.1\n"));
+        assert!(s.contains("Connection: close\n"));
+        assert!(s.ends_with("\n\n"));
     }
 }
