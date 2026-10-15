@@ -18,7 +18,7 @@ use serde_json::{json, Map, Value};
 
 use crate::acp_client::{run_turn, TurnOutcome, TurnSpec};
 use crate::mapper::{OutEvent, TurnMapper};
-use crate::profile::{EngineProfile, PrepareContext};
+use crate::profile::{AgentLaunch, EngineProfile, PrepareContext};
 use crate::projection::{instructions_path, render_instructions, write_file};
 use crate::state::read_state;
 use crate::task::{load_task, reject_unsupported, resolve_model};
@@ -147,27 +147,7 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
     let session_root =
         std::env::current_dir().map_err(|e| HarnessError::internal(format!("current dir: {e}")))?;
     let turn_ctx = TurnContext::from_task(&task);
-    // Same per-turn files as claw `gateway-solve-once`: the gateway reads them back for the
-    // timeline / tools / progress views.
-    let _ = truncate_solve_timing_events(&session_root);
-    let _ = append_solve_timing_point(
-        &session_root,
-        "bootstrap_worker_entered",
-        Some(&turn_ctx.turn_id),
-    );
-    reset_task_progress(&session_root, &turn_ctx.session_id)
-        .map_err(|e| HarnessError::internal(format!("reset task progress: {e}")))?;
-    let _ = truncate_progress_history(&session_root);
-    let harness_dir = session_root.join(HARNESS_DIR);
-    let tmp_dir = session_root.join("tmp");
-    for dir in [&harness_dir, &tmp_dir] {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| HarnessError::internal(format!("mkdir {}: {e}", dir.display())))?;
-    }
-    if std::env::var("TMPDIR").map_or(true, |v| v.trim().is_empty()) {
-        // Still single-threaded: no runtime or child exists yet.
-        std::env::set_var("TMPDIR", &tmp_dir);
-    }
+    let harness_dir = bootstrap_session_dirs(&session_root, &turn_ctx)?;
     // Landlock binds the calling thread and its future children: install it before the tokio
     // runtime spawns worker threads.
     apply_landlock(&task, &session_root)?;
@@ -198,7 +178,7 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
     let (header_proxy, openai_base_url) =
         maybe_start_llm_header_proxy(&rt, profile.engine(), &upstream_openai_base)?;
 
-    let launch = profile.prepare(&PrepareContext {
+    let mut launch = profile.prepare(&PrepareContext {
         session_root: &session_root,
         project_config_root: &project_config_root,
         model: &model,
@@ -206,6 +186,7 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
         instructions_path: &instructions,
         skills_dir: &skills_dir,
     })?;
+    force_proxy_openai_base_url(&mut launch, header_proxy.as_ref());
     let (mcp_servers, mcp_names) = mcp_proxy_servers(&session_root)?;
 
     let attachments = task.attachments.clone().unwrap_or_default();
@@ -259,6 +240,33 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
     Ok(output_json(&task, &model, profile.engine(), &outcome))
 }
 
+/// Same per-turn files as claw `gateway-solve-once`: gateway reads them for timeline / tools.
+fn bootstrap_session_dirs(
+    session_root: &Path,
+    turn_ctx: &TurnContext,
+) -> Result<PathBuf, HarnessError> {
+    let _ = truncate_solve_timing_events(session_root);
+    let _ = append_solve_timing_point(
+        session_root,
+        "bootstrap_worker_entered",
+        Some(&turn_ctx.turn_id),
+    );
+    reset_task_progress(session_root, &turn_ctx.session_id)
+        .map_err(|e| HarnessError::internal(format!("reset task progress: {e}")))?;
+    let _ = truncate_progress_history(session_root);
+    let harness_dir = session_root.join(HARNESS_DIR);
+    let tmp_dir = session_root.join("tmp");
+    for dir in [&harness_dir, &tmp_dir] {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| HarnessError::internal(format!("mkdir {}: {e}", dir.display())))?;
+    }
+    if std::env::var("TMPDIR").map_or(true, |v| v.trim().is_empty()) {
+        // Still single-threaded: no runtime or child exists yet.
+        std::env::set_var("TMPDIR", &tmp_dir);
+    }
+    Ok(harness_dir)
+}
+
 fn maybe_start_llm_header_proxy(
     rt: &tokio::runtime::Runtime,
     engine: &str,
@@ -270,6 +278,19 @@ fn maybe_start_llm_header_proxy(
     let proxy = rt.block_on(crate::llm_header_proxy::LlmHeaderProxy::start(upstream))?;
     let local = proxy.local_base_url.clone();
     Ok((Some(proxy), local))
+}
+
+/// Opencode may prefer inherited `OPENAI_BASE_URL` over config `baseURL`; force the
+/// header-inject proxy so tap sees claw-turn-id. Author: kejiqing
+fn force_proxy_openai_base_url(
+    launch: &mut AgentLaunch,
+    proxy: Option<&crate::llm_header_proxy::LlmHeaderProxy>,
+) {
+    if let Some(proxy) = proxy {
+        launch
+            .env
+            .insert("OPENAI_BASE_URL".into(), proxy.local_base_url.clone());
+    }
 }
 
 fn output_json(
