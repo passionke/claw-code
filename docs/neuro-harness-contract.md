@@ -159,7 +159,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 
 - 启动：`/usr/local/lib/neuro-engines/opencode/bin/opencode acp`。
 - `OPENCODE_CONFIG={session_root}/.neuro-harness/opencode.json`：
-  - `provider.neurogate`：`@ai-sdk/openai-compatible`，`baseURL` 指向本进程 localhost header 代理（上游仍是 `OPENAI_BASE_URL` / tap），`apiKey` 写 `{env:OPENAI_API_KEY}`；config 里仍写入 `headers` / `options.headers`（`claw-session-id` / `claw-turn-id`），但 **出站记账以代理注入为准**——实测 opencode 不会把 config headers 打到 HTTP，缺头则 tap 不 INSERT。
+  - `provider.neurogate`：`@ai-sdk/openai-compatible`，`baseURL` 指向本进程 localhost header 代理（上游仍是 gateway 注入的 tap URL），`apiKey` 写 `{env:OPENAI_API_KEY}`；子进程 `OPENAI_BASE_URL` 也改成该代理（否则 opencode 可能仍直连 tap）。config 里仍写 `headers`，但 **出站记账以代理注入 `claw-turn-id` 为准**。
   - `model` 和 `small_model` 都是 `neurogate/<model>`。
   - `instructions` 指向 `.neuro-harness/instructions.md`。
   - `permission` 全部 allow，`autoupdate=false`，`share="disabled"`，`plugin=[]`。
