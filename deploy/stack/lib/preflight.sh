@@ -41,9 +41,12 @@ claw_deploy_preflight() {
 
   if claw_compose_uses_local_postgres; then
     local pg="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
-    if ! "${rt}" image exists "${pg}" >/dev/null 2>&1; then
+    # docker has no `image exists` (podman does); inspect is portable. Author: kejiqing
+    if ! "${rt}" image inspect "${pg}" >/dev/null 2>&1; then
       echo "    pull ${pg} …" >&2
       "${rt}" pull "${pg}"
+    else
+      echo "    postgres image present: ${pg}" >&2
     fi
   else
     echo "    postgres: external ($(claw_redact_database_url "${CLAW_GATEWAY_DATABASE_URL}")); skip local image pull" >&2

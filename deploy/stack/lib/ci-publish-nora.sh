@@ -4,10 +4,10 @@
 # Nora Gateway/Admin publish — Jenkins / private cluster.
 # Contract (do not invent forks):
 #   1) Job: checkout tag → run THIS script only. Never mutate host Docker / Nora.
-#   2) This script: preflight → compile once → build → skopeo v2s2 push only.
+#   2) This script: preflight → compile once → build → skopeo v2s2 push to Nora + ACR.
 #   3) Explicit --platform + TARGETARCH (classic builder does not inject them).
 #   4) Fail at the stage that breaks; no silent continue.
-# Tags: vX.Y.Z or release-v* → ${NEXUS_PUSH_REGISTRY}/${NEXUS_NS}
+# Tags: vX.Y.Z / sha-* → Nora and ACR (same tag strings).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -21,13 +21,25 @@ source "$ROOT/deploy/stack/lib/rust-compile-image.sh"
 # shellcheck source=/dev/null
 source "$ROOT/deploy/stack/lib/linux-compile.sh"
 # shellcheck source=/dev/null
+source "$ROOT/deploy/stack/lib/release-images.sh"
+# shellcheck source=/dev/null
 source "$ROOT/deploy/stack/rust-version.env"
 
 NEXUS_PUSH_REGISTRY="${NEXUS_PUSH_REGISTRY:-nora.home.passionke.top}"
 NEXUS_NS="${NEXUS_NS:-passionke}"
+# Same default personal ACR prefix as gateway.sh / home-ubt. Author: kejiqing
+ACR_REGISTRY="${ACR_REGISTRY:-${CLAW_ACR_IMAGE_PREFIX:-$(claw_default_acr_image_prefix)}}"
+ACR_REGISTRY="${ACR_REGISTRY%/}"
 REGION="${REGION:-china}"
 : "${NEXUS_USER:?NEXUS_USER is required}"
 : "${NEXUS_PASSWORD:?NEXUS_PASSWORD is required}"
+: "${ACR_USERNAME:?ACR_USERNAME is required (dual-write Nora+ACR)}"
+: "${ACR_PASSWORD:?ACR_PASSWORD is required (dual-write Nora+ACR)}"
+ACR_LOGIN_HOST="${ACR_REGISTRY%%/*}"
+if [[ -z "$ACR_LOGIN_HOST" || "$ACR_LOGIN_HOST" == "$ACR_REGISTRY" ]]; then
+  echo "ACR_REGISTRY must be host/namespace (e.g. crpi-….aliyuncs.com/passionke), got: ${ACR_REGISTRY}" >&2
+  exit 1
+fi
 
 # Single platform for this publish path (Nora amd64 agents). Author: kejiqing
 export CLAW_LINUX_COMPILE_PLATFORM="${CLAW_LINUX_COMPILE_PLATFORM:-linux/amd64}"
@@ -46,8 +58,11 @@ RELEASE_TAG="${RELEASE_TAG:-${GIT_TAG:-}}"
 if [[ -z "$RELEASE_TAG" ]]; then
   RELEASE_TAG="$(git -C "$ROOT" describe --tags --exact-match HEAD 2>/dev/null || true)"
 fi
-if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && ! "$RELEASE_TAG" =~ ^release-v[0-9] ]]; then
-  echo "RELEASE_TAG must match vX.Y.Z or release-v*, got: ${RELEASE_TAG:-<empty>}" >&2
+# Formal v* / release-v*; fast path sha-<12+> from main GIT_REF builds. Author: kejiqing
+if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ \
+  && ! "$RELEASE_TAG" =~ ^release-v[0-9] \
+  && ! "$RELEASE_TAG" =~ ^sha-[0-9a-f]{7,40}$ ]]; then
+  echo "RELEASE_TAG must match vX.Y.Z, release-v*, or sha-<hex>, got: ${RELEASE_TAG:-<empty>}" >&2
   exit 1
 fi
 
@@ -76,17 +91,23 @@ stage() {
 
 skopeo_push_tags() {
   local local_ref="$1"
-  local image="$2"
+  local nora_image="$2"
+  local acr_image="$3"
   chmod +x "$ROOT/deploy/stack/lib/ci-push-acr-skopeo.sh"
   "$ROOT/deploy/stack/lib/ci-push-acr-skopeo.sh" \
     "${local_ref}" \
-    "${image}:${RELEASE_TAG}" \
-    "${image}:sha-${SHA12}" \
-    "${image}:latest"
+    "${nora_image}:${RELEASE_TAG}" \
+    "${nora_image}:sha-${SHA12}" \
+    "${nora_image}:latest"
+  "$ROOT/deploy/stack/lib/ci-push-acr-skopeo.sh" \
+    "${local_ref}" \
+    "${acr_image}:${RELEASE_TAG}" \
+    "${acr_image}:sha-${SHA12}" \
+    "${acr_image}:latest"
 }
 
-# --- [1] preflight: tools + registry auth challenge (fail before compile) ---
-stage "1/5" "preflight publish ${RELEASE_TAG} (sha-${SHA12}) → ${NEXUS_PUSH_REGISTRY}/${NEXUS_NS} REGION=${REGION} platform=${PLATFORM} arch=${TARGETARCH}"
+# --- [1] preflight: tools + Nora + ACR auth (fail before compile) ---
+stage "1/5" "preflight publish ${RELEASE_TAG} (sha-${SHA12}) → Nora ${NEXUS_PUSH_REGISTRY}/${NEXUS_NS} + ACR ${ACR_REGISTRY} REGION=${REGION} platform=${PLATFORM} arch=${TARGETARCH}"
 
 if ! command -v skopeo >/dev/null 2>&1; then
   echo "preflight: skopeo required (only skopeo v2s2 push; no docker push)" >&2
@@ -117,7 +138,9 @@ if [[ "$UP_CODE" != "202" ]]; then
   echo "preflight: blob upload initiate returned HTTP ${UP_CODE}, want 202 (bad creds or Nora write auth)" >&2
   exit 1
 fi
-echo "preflight: ok (v2=401, upload-init=202, login+skopeo present)"
+
+echo "$ACR_PASSWORD" | docker login "$ACR_LOGIN_HOST" -u "$ACR_USERNAME" --password-stdin
+echo "preflight: ok (Nora v2=401 upload-init=202; ACR login ${ACR_LOGIN_HOST}; skopeo present)"
 
 # --- [2] compile image ---
 stage "2/5" "ensure rust compile image"
@@ -138,8 +161,9 @@ push_package() {
   local package="$1"
   local dockerfile="$2"
   local -a build_args=()
-  local image
-  image="${NEXUS_PUSH_REGISTRY}/${NEXUS_NS}/${package}"
+  local nora_image acr_image
+  nora_image="${NEXUS_PUSH_REGISTRY}/${NEXUS_NS}/${package}"
+  acr_image="${ACR_REGISTRY}/${package}"
   case "$package" in
     claw-gateway-playground)
       build_args=(
@@ -155,18 +179,18 @@ push_package() {
       )
       ;;
   esac
-  echo "==> build ${image}:${RELEASE_TAG}"
+  echo "==> build ${nora_image}:${RELEASE_TAG} (also → ${acr_image})"
   "$ROOT/deploy/stack/lib/container-build.sh" docker "${dockerfile}" \
     --platform "${PLATFORM}" \
     "${build_args[@]}" \
-    -t "${image}:${RELEASE_TAG}" \
-    -t "${image}:sha-${SHA12}" \
-    -t "${image}:latest"
-  skopeo_push_tags "${image}:${RELEASE_TAG}" "${image}"
+    -t "${nora_image}:${RELEASE_TAG}" \
+    -t "${nora_image}:sha-${SHA12}" \
+    -t "${nora_image}:latest"
+  skopeo_push_tags "${nora_image}:${RELEASE_TAG}" "${nora_image}" "${acr_image}"
 }
 
 # --- [4] Gateway/Admin images ---
-stage "4/5" "build+push Gateway/Admin images (skopeo only)"
+stage "4/5" "build+push Gateway/Admin images (skopeo → Nora + ACR)"
 push_package claw-code deploy/stack/Containerfile.gateway-rs.prebuilt
 push_package claw-gateway-playground deploy/stack/Containerfile.gateway-playground
 
@@ -175,4 +199,6 @@ stage "5/5" "verify Gateway/Admin images"
 docker run --rm "${NEXUS_PUSH_REGISTRY}/${NEXUS_NS}/claw-gateway-playground:${RELEASE_TAG}" \
   sh -c 'test -f /app/admin-dist/index.html && test -n "$(ls /app/admin-dist/assets/*.js 2>/dev/null)"'
 
-echo "published ${NEXUS_NS}/{claw-code,claw-gateway-playground}:${RELEASE_TAG}"
+echo "published Nora+ACR {claw-code,claw-gateway-playground}:${RELEASE_TAG}"
+echo "  nora: ${NEXUS_PUSH_REGISTRY}/${NEXUS_NS}/…"
+echo "  acr:  ${ACR_REGISTRY}/…"
