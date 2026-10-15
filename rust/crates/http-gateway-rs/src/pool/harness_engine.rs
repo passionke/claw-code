@@ -466,7 +466,9 @@ mod tests {
         gateway_solve_turn::validate_landlock_dsl(task.landlock_dsl.as_ref().unwrap()).unwrap();
 
         let mut as_task: GatewaySolveTaskFile = serde_json::from_value(task_json.clone()).unwrap();
-        HarnessEngine::Appserver.strategy().prepare_task(&mut as_task);
+        HarnessEngine::Appserver
+            .strategy()
+            .prepare_task(&mut as_task);
         let as_ro = &as_task.landlock_dsl.as_ref().unwrap().ro;
         assert_eq!(as_ro.iter().filter(|x| *x == "/dev").count(), 1);
         assert!(!as_ro.iter().any(|x| x == "/proc"));
