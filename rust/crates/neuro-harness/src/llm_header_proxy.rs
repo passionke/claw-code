@@ -196,6 +196,9 @@ fn inject_trace_headers(
     upstream_host: &str,
     extra: &std::collections::BTreeMap<String, String>,
 ) -> Result<Vec<u8>, String> {
+    // Always emit CRLF upstream — Bun often speaks LF-only; tap needs CRLF to parse
+    // claw-turn-id (otherwise billing is skipped while the body still proxies). Author: kejiqing
+    const OUT_SEP: &str = "\r\n";
     let text = std::str::from_utf8(head).map_err(|e| format!("headers utf8: {e}"))?;
     // Prefer CRLF (HTTP); fall back to LF-only (some Bun builds). Author: kejiqing
     let (in_sep, end) = if text.contains("\r\n\r\n") {
@@ -205,9 +208,6 @@ fn inject_trace_headers(
     } else {
         return Err("no header terminator".into());
     };
-    // Always emit CRLF upstream — Bun often speaks LF-only; tap needs CRLF to parse
-    // claw-turn-id (otherwise billing is skipped while the body still proxies). Author: kejiqing
-    const OUT_SEP: &str = "\r\n";
     let end_at = text
         .find(end)
         .ok_or_else(|| "header terminator missing after detect".to_string())?;
