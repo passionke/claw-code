@@ -280,16 +280,18 @@ fn maybe_start_llm_header_proxy(
     Ok((Some(proxy), local))
 }
 
-/// Opencode may prefer inherited `OPENAI_BASE_URL` over config `baseURL`; force the
-/// header-inject proxy so tap sees claw-turn-id. Author: kejiqing
+/// Opencode prefers process `OPENAI_BASE_URL` over config `baseURL`. Overlay child
+/// launch.env **and** this process env (ACP spawn inherits parent; overlay alone was
+/// not enough on e2b — TCP hit the proxy for probes but LLM still used tap). Author: kejiqing
 fn force_proxy_openai_base_url(
     launch: &mut AgentLaunch,
     proxy: Option<&crate::llm_header_proxy::LlmHeaderProxy>,
 ) {
     if let Some(proxy) = proxy {
-        launch
-            .env
-            .insert("OPENAI_BASE_URL".into(), proxy.local_base_url.clone());
+        let url = proxy.local_base_url.clone();
+        launch.env.insert("OPENAI_BASE_URL".into(), url.clone());
+        // Single-threaded until run_turn; safe. Proxy already holds upstream addr.
+        std::env::set_var("OPENAI_BASE_URL", url);
     }
 }
 
