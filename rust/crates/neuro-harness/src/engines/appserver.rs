@@ -109,6 +109,7 @@ fn toml_str(s: &str) -> String {
 }
 
 fn config_toml(model: &str, base_url: &str, catalog_path: &Path) -> String {
+    // Codex reads env at request time; tap needs claw-turn-id on every LLM call. Author: kejiqing
     format!(
         "model = {model}\n\
          model_provider = \"{PROVIDER}\"\n\
@@ -124,7 +125,8 @@ fn config_toml(model: &str, base_url: &str, catalog_path: &Path) -> String {
          name = \"{PROVIDER}\"\n\
          base_url = {base_url}\n\
          env_key = \"OPENAI_API_KEY\"\n\
-         wire_api = \"responses\"\n",
+         wire_api = \"responses\"\n\
+         env_http_headers = {{ \"claw-session-id\" = \"CLAW_SESSION_ID\", \"clawcode-session-id\" = \"CLAW_SESSION_ID\", \"claw-turn-id\" = \"CLAW_TURN_ID\" }}\n",
         model = toml_str(model),
         catalog = toml_str(&catalog_path.to_string_lossy()),
         base_url = toml_str(base_url),
@@ -249,6 +251,19 @@ mod tests {
         assert!(toml.contains("model = \"gpt-x\""), "{toml}");
         assert!(toml.contains("base_url = \"http://tap:8080\""), "{toml}");
         assert!(toml.contains("wire_api = \"responses\""), "{toml}");
+        assert!(toml.contains("env_http_headers"), "{toml}");
+        assert!(
+            toml.contains("\"claw-session-id\" = \"CLAW_SESSION_ID\""),
+            "{toml}"
+        );
+        assert!(
+            toml.contains("\"clawcode-session-id\" = \"CLAW_SESSION_ID\""),
+            "{toml}"
+        );
+        assert!(
+            toml.contains("\"claw-turn-id\" = \"CLAW_TURN_ID\""),
+            "{toml}"
+        );
         assert_eq!(
             std::fs::read_to_string(root.join(".codex/AGENTS.md")).unwrap(),
             "be terse"

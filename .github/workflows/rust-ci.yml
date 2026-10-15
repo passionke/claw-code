@@ -98,3 +98,25 @@ jobs:
           workspaces: rust -> target
       - name: Run workspace clippy
         run: cargo clippy --workspace
+
+  # Standalone workspace (excluded from rust/Cargo.toml): must not unify ACP
+  # serde_json features into claw/gateway. Same isolation as .githooks/pre-push
+  # and linux-compile.sh. Author: kejiqing
+  neuro-harness:
+    name: neuro-harness (standalone)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust -> target
+            rust/crates/neuro-harness -> target
+      - name: fmt / clippy / test (--manifest-path)
+        run: |
+          cargo fmt --manifest-path crates/neuro-harness/Cargo.toml -- --check
+          cargo clippy --manifest-path crates/neuro-harness/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path crates/neuro-harness/Cargo.toml
