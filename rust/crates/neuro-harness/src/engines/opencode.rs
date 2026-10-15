@@ -58,6 +58,7 @@ fn opencode_config(ctx: &PrepareContext<'_>) -> Value {
             .map(|(k, v)| (k, Value::String(v)))
             .collect(),
     );
+    // Provider-root `headers` (opencode v2) + `options.headers` (v1/Helicone). Author: kejiqing
     json!({
         "$schema": "https://opencode.ai/config.json",
         "autoupdate": false,
@@ -69,6 +70,7 @@ fn opencode_config(ctx: &PrepareContext<'_>) -> Value {
             PROVIDER: {
                 "npm": "@ai-sdk/openai-compatible",
                 "name": PROVIDER,
+                "headers": headers_json.clone(),
                 "options": {
                     "baseURL": ctx.openai_base_url,
                     "apiKey": "{env:OPENAI_API_KEY}",
@@ -189,6 +191,10 @@ mod tests {
         assert_eq!(headers["claw-session-id"], "sess-ut");
         assert_eq!(headers["clawcode-session-id"], "sess-ut");
         assert_eq!(headers["claw-turn-id"], "T_ut");
+        assert_eq!(
+            cfg["provider"]["neurogate"]["headers"]["claw-turn-id"],
+            "T_ut"
+        );
         assert_eq!(
             cfg["instructions"][0],
             instructions.to_string_lossy().as_ref()

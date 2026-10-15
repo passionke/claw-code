@@ -5,6 +5,7 @@
 pub mod acp_client;
 pub mod cli;
 pub mod engines;
+pub mod llm_header_proxy;
 pub mod mapper;
 pub mod mcp_proxy;
 pub mod profile;

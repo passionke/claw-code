@@ -173,7 +173,7 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
     apply_landlock(&task, &session_root)?;
 
     let model = resolve_model(&task)?;
-    let openai_base_url = std::env::var("OPENAI_BASE_URL")
+    let upstream_openai_base = std::env::var("OPENAI_BASE_URL")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -188,6 +188,16 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
     )?;
     let state = read_state(&session_root, profile.engine())?;
     let skills_dir = project_config_root.join(".claw").join("skills");
+
+    // Runtime before prepare: opencode needs a localhost header-inject proxy because its
+    // config `options.headers` do not reach the wire (tap then skips billing). Author: kejiqing
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| HarnessError::internal(format!("tokio runtime: {e}")))?;
+    let (header_proxy, openai_base_url) =
+        maybe_start_llm_header_proxy(&rt, profile.engine(), &upstream_openai_base)?;
+
     let launch = profile.prepare(&PrepareContext {
         session_root: &session_root,
         project_config_root: &project_config_root,
@@ -219,10 +229,6 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
         trace_path: harness_dir.join("acp-trace.ndjson"),
     };
     let timeout_seconds = task.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS);
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| HarnessError::internal(format!("tokio runtime: {e}")))?;
     let timing = SolveTimingRecorder::new(&session_root);
     timing.emit("turn_started", turn_attrs(&turn_ctx.turn_id));
     let tool_timing = timing.clone();
@@ -238,17 +244,32 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
             sig = wait_for_signal() => Err(HarnessError::internal(format!("received {sig}"))),
         }
     })?;
+    if let Some(proxy) = header_proxy {
+        rt.block_on(proxy.stop());
+    }
     // Child process group is gone once run_turn returned/was dropped; shut the runtime down
     // without waiting on stray blocking tasks.
     rt.shutdown_timeout(Duration::from_secs(1));
     timing.emit("turn_completed", turn_attrs(&turn_ctx.turn_id));
-
     for message in &outcome.transcript.messages {
         session
             .push_message(message.clone())
             .map_err(|e| HarnessError::internal(format!("append transcript: {e}")))?;
     }
     Ok(output_json(&task, &model, profile.engine(), &outcome))
+}
+
+fn maybe_start_llm_header_proxy(
+    rt: &tokio::runtime::Runtime,
+    engine: &str,
+    upstream: &str,
+) -> Result<(Option<crate::llm_header_proxy::LlmHeaderProxy>, String), HarnessError> {
+    if engine != "opencode" {
+        return Ok((None, upstream.to_string()));
+    }
+    let proxy = rt.block_on(crate::llm_header_proxy::LlmHeaderProxy::start(upstream))?;
+    let local = proxy.local_base_url.clone();
+    Ok((Some(proxy), local))
 }
 
 fn output_json(
