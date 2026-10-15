@@ -104,6 +104,27 @@ async fn proxy_one(mut client: TcpStream, upstream: &Upstream) -> Result<(), Str
     let header_end = read_http_headers(&mut client, &mut buf).await?;
     let extra = gateway_solve_turn::gateway_llm_session_extra_headers();
     let injected = inject_trace_headers(&buf[..header_end], &upstream.host_header, &extra)?;
+    // Evidence for e2b billing misses (stderr may be empty on docker exec). Author: kejiqing
+    if let Ok(line) = std::str::from_utf8(&buf[..header_end.min(buf.len())]) {
+        let req = line.lines().next().unwrap_or("");
+        let turn = extra.get("claw-turn-id").map_or("-", String::as_str);
+        eprintln!("[llm-header-proxy] {req} claw-turn-id={turn}");
+        let log_path = std::path::Path::new(".neuro-harness").join("llm-proxy.ndjson");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            use std::io::Write;
+            let _ = writeln!(
+                f,
+                r#"{{"req":{},"clawTurnId":{},"extraKeys":{}}}"#,
+                serde_json::to_string(req).unwrap_or_else(|_| "\"\"".into()),
+                serde_json::to_string(turn).unwrap_or_else(|_| "\"\"".into()),
+                extra.len()
+            );
+        }
+    }
     let mut server = TcpStream::connect(&upstream.addr)
         .await
         .map_err(|e| format!("connect {}: {e}", upstream.addr))?;
