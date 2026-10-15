@@ -3,7 +3,7 @@
 Author: kejiqing
 
 路径：`POST /v1/responses`  
-鉴权：`Authorization: Bearer ngmk_…`
+鉴权：优先 `Authorization: Bearer ngmk_…`；网关背后可用 `neurogate-token: ngmk_…`
 
 OpenAI Responses 形状的入口，与 Chat Completions 共用同一 Agent solve kernel。适合已经按 Responses 协议集成的客户端；多数集成方用 Chat Completions 即可。
 
