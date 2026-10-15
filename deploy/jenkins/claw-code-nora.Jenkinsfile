@@ -1,5 +1,5 @@
 // Author: kejiqing
-// Gateway/Admin only → Nora. Source of truth for job claw-code-nora.
+// Gateway/Admin → Nora + ACR (same tags). Source of truth for job claw-code-nora.
 // Formal: GIT_TAG=vX.Y.Z. Fast: any branch push → GIT_REF=<sha> → publish sha-<12>.
 // Pack does not require merge to main. neurogate up stays main-only (Actions).
 // Gitea webhook → GenericTrigger (same token as repo hook). Manual builds use params.
@@ -31,6 +31,8 @@ pipeline {
   environment {
     NEXUS_PUSH_REGISTRY = 'nora.home.passionke.top'
     NEXUS_NS = 'passionke'
+    // Dual-write same tags to personal ACR (home-ubt / gateway default prefix). Author: kejiqing
+    ACR_REGISTRY = 'crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke'
     REGION = 'china'
     DOCKER_BUILDKIT = '0'
     CLAW_LINUX_COMPILE_PLATFORM = 'linux/amd64'
@@ -96,9 +98,12 @@ printf '%s\n' "${RELEASE_TAG}" > .claw-release-tag
 '''
       }
     }
-    stage('Publish Gateway/Admin to Nora') {
+    stage('Publish Gateway/Admin to Nora+ACR') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'nora-deployer', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASSWORD')]) {
+        withCredentials([
+          usernamePassword(credentialsId: 'nora-deployer', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASSWORD'),
+          usernamePassword(credentialsId: 'acr-deployer', usernameVariable: 'ACR_USERNAME', passwordVariable: 'ACR_PASSWORD')
+        ]) {
           sh '''#!/bin/bash
 set -euo pipefail
 RELEASE_TAG="$(cat .claw-release-tag)"

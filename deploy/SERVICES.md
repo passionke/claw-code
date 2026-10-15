@@ -17,7 +17,7 @@ of the other two.
 - Scope: HTTP Gateway, Admin SPA, configuration, scheduling.
 - Private Jenkins entry: `deploy/stack/lib/ci-publish-nora.sh`.
 - Jenkins Pipeline source: `deploy/jenkins/claw-code-nora.Jenkinsfile`.
-- Output: `claw-code` and `claw-gateway-playground` only → `nora.home.passionke.top/passionke`.
+- Output: `claw-code` and `claw-gateway-playground` only → **Nora** `nora.home.passionke.top/passionke` **and ACR** `crpi-….personal.cr.aliyuncs.com/passionke`（同 tag 双写；凭证 `nora-deployer` + `acr-deployer`）。
 
 ## 2. e2b Worker protocol
 
