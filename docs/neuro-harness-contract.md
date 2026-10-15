@@ -159,7 +159,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 
 - 启动：`/usr/local/lib/neuro-engines/opencode/bin/opencode acp`。
 - `OPENCODE_CONFIG={session_root}/.neuro-harness/opencode.json`：
-  - `provider.neurogate`：`@ai-sdk/openai-compatible`，`baseURL` 取 `OPENAI_BASE_URL`，`apiKey` 写 `{env:OPENAI_API_KEY}`。
+  - `provider.neurogate`：`@ai-sdk/openai-compatible`，`baseURL` 取 `OPENAI_BASE_URL`，`apiKey` 写 `{env:OPENAI_API_KEY}`；`options.headers` 写入 prepare 时的 `claw-session-id` / `clawcode-session-id` / `claw-turn-id`（来自 `CLAW_SESSION_ID` / `CLAW_TURN_ID`，与 claw 同契约），供 observe tap 记账。
   - `model` 和 `small_model` 都是 `neurogate/<model>`。
   - `instructions` 指向 `.neuro-harness/instructions.md`。
   - `permission` 全部 allow，`autoupdate=false`，`share="disabled"`，`plugin=[]`。
@@ -170,7 +170,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 
 - 启动：`/usr/local/lib/neuro-engines/codex-acp/node_modules/.bin/codex-acp`。目录由 `npm ci` 按提交的 lockfile 安装，codex 用 codex-acp 自带解析（不设 `CODEX_PATH`），版本由 lockfile 锁定为 0.159.3。
 - `CODEX_HOME={session_root}/.codex`。
-- `config.toml`：`model`、`model_provider="neurogate"`、`[model_providers.neurogate]`（`base_url` 取 `OPENAI_BASE_URL`，`env_key="OPENAI_API_KEY"`，`wire_api="responses"`）、`approval_policy="never"`、`sandbox_mode="danger-full-access"`、`check_for_update_on_startup=false`、`[analytics] enabled=false`、`model_catalog_json`。
+- `config.toml`：`model`、`model_provider="neurogate"`、`[model_providers.neurogate]`（`base_url` 取 `OPENAI_BASE_URL`，`env_key="OPENAI_API_KEY"`，`wire_api="responses"`，`env_http_headers` 把 `claw-session-id` / `clawcode-session-id` / `claw-turn-id` 映射到 `CLAW_SESSION_ID` / `CLAW_TURN_ID`，供 observe tap 记账）、`approval_policy="never"`、`sandbox_mode="danger-full-access"`、`check_for_update_on_startup=false`、`[analytics] enabled=false`、`model_catalog_json`。
 - `model_catalog_json`：只含当前模型的一条目录，内容与 Codex 内置的 fallback 元数据等价（`model_info_from_slug`，`rust-v0.159.3`），`model_messages.instructions_template` 取同版本的 `prompt.md`（`rust/crates/neuro-harness/assets/codex/rust-v0.159.3/prompt.md`，编译期嵌入）。两处与 fallback 不同：`visibility="list"`（否则 `model/list` 为空，codex-acp 的 `session/new` 报 "Codex did not return any models"）；`context_window` 在 `CLAW_CONTEXT_WINDOW_TOKENS` 存在时取该值。不配这一项时，Codex 会把 "Model metadata for `<model>` not found" 警告作为正文 chunk 输出。
 - 环境变量：`INITIAL_AGENT_MODE=agent-full-access`（隔离交给 landlock）。
 - 指令：`$CODEX_HOME/AGENTS.md` 写入 `.neuro-harness/instructions.md` 的内容（Codex 的全局指令文件）。
@@ -200,7 +200,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 1. opencode 的 sqlite（WAL）和 Codex 的多个 sqlite 放在 NAS 上能否正常加锁。
 2. **Landlock + bash/spawn（唯一验收面，不加单测）**：neuro 双引擎已通过 `prepare_task` 统一追加 `/dev`（PathBeneath 覆盖 `/dev/null` 等）；opencode 另追加 `/proc`。发版后须在 e2b strict session 确认 bash（如 `echo ok`）与 webfetch 均可用；appserver 有条件同验。内核 Landlock + 运行时 spawn 行为无法在本机 unit 可靠复现。
 3. codex 经 tap 访问真实上游 `/responses`（含 SSE 和 namespace 工具）。
-4. usage 的口径。
+4. usage 的口径（ACP `PromptResponse.usage` 是否整轮累计，待 e2b 真实上游确认）。**缺 `claw-turn-id` 导致 `gateway_model_usage` 表空**已闭合：双引擎 prepare 注入出站头，账单仍以 tap 为准。
 
 ## 10. gateway 接入（`http-gateway-rs/src/pool/harness_engine.rs`）
 
@@ -224,7 +224,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
   - `linux-compile.sh` 对它单独调用一次 `cargo build --manifest-path crates/neuro-harness/Cargo.toml`，使用同一个 `CARGO_TARGET_DIR`。
   - `.githooks/pre-push` 发现自带 `Cargo.lock` 的 crate 时，用 `--manifest-path` 单独执行 fmt、clippy（`--all-targets -D warnings`）和 test，不会因此触发 workspace 全量检查。
   - 本地产物位于 `rust/crates/neuro-harness/target/`。
-  - 已知缺口：`rust-ci.yml` 的 `cargo test --workspace` 不覆盖这个 crate，目前只靠 pre-push 和 `claw-code-branch-worker` 的编译覆盖。
+  - `rust-ci.yml` 另有 job `neuro-harness (standalone)`：对 `crates/neuro-harness/Cargo.toml` 单独跑 fmt / clippy（`--all-targets -D warnings`）/ test，与 pre-push 同隔离。
 - `deploy/stack/lib/linux-compile.sh`：产物统一由 `CLAW_LINUX_RELEASE_BINS` 列出，包括 `claw`、`http-gateway-rs`、`neuro-opencode`、`neuro-appserver`。
 - npm 源统一用 `claw_npm_registry`（`deploy/stack/lib/claw-region.sh`）：region 为 `china` 时用 `registry.npmmirror.com`，其他情况用 `registry.npmjs.org`。已实测：同一份 lockfile 用 `npm ci --registry=https://registry.npmmirror.com` 安装时，全部从 npmmirror 下载，integrity 校验通过（npm 默认 `replace-registry-host=npmjs`）。
 - `deploy/agent-engines/opencode/` 独立生成 opencode raw tar；glibc 平台包
