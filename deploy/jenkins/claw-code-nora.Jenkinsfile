@@ -1,6 +1,7 @@
 // Author: kejiqing
-// Gateway/Admin only → Nora. Source of truth for job claw-code-nora.
-// Formal: GIT_TAG=vX.Y.Z. Fast (main): GIT_REF=<branch|sha> → publish sha-<12>.
+// Gateway/Admin → Nora + ACR (same tags). Source of truth for job claw-code-nora.
+// Formal: GIT_TAG=vX.Y.Z. Fast: any branch push → GIT_REF=<sha> → publish sha-<12>.
+// Pack does not require merge to main. neurogate up stays main-only (Actions).
 // Gitea webhook → GenericTrigger (same token as repo hook). Manual builds use params.
 pipeline {
   agent { label 'home29' }
@@ -24,12 +25,14 @@ pipeline {
       printContributedVariables: true,
       printPostContent: false,
       regexpFilterText: '$ref',
-      regexpFilterExpression: 'refs/heads/main|refs/tags/v[0-9]+[.][0-9]+[.][0-9]+|^v[0-9]+[.][0-9]+[.][0-9]+$'
+      regexpFilterExpression: 'refs/heads/.+|refs/tags/v[0-9]+[.][0-9]+[.][0-9]+|^v[0-9]+[.][0-9]+[.][0-9]+$'
     )
   }
   environment {
     NEXUS_PUSH_REGISTRY = 'nora.home.passionke.top'
     NEXUS_NS = 'passionke'
+    // Dual-write same tags to personal ACR (home-ubt / gateway default prefix). Author: kejiqing
+    ACR_REGISTRY = 'crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke'
     REGION = 'china'
     DOCKER_BUILDKIT = '0'
     CLAW_LINUX_COMPILE_PLATFORM = 'linux/amd64'
@@ -61,7 +64,8 @@ if [[ -z "$TAG_TRIM" && -z "$REF_TRIM" ]]; then
     TAG_TRIM="${BASH_REMATCH[1]}"
   elif [[ "$WREF" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
     TAG_TRIM="$WREF"
-  elif [[ "$WREF" == "refs/heads/main" ]]; then
+  elif [[ "$WREF" =~ ^refs/heads/.+ ]]; then
+    # Any branch push → pack that commit (no need to merge main first). Author: kejiqing
     if [[ -n "$WAFTER" && "$WAFTER" != "0000000000000000000000000000000000000000" ]]; then
       REF_TRIM="$WAFTER"
     elif [[ -n "$WSHA" ]]; then
@@ -94,9 +98,12 @@ printf '%s\n' "${RELEASE_TAG}" > .claw-release-tag
 '''
       }
     }
-    stage('Publish Gateway/Admin to Nora') {
+    stage('Publish Gateway/Admin to Nora+ACR') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'nora-deployer', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASSWORD')]) {
+        withCredentials([
+          usernamePassword(credentialsId: 'nora-deployer', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASSWORD'),
+          usernamePassword(credentialsId: 'acr-deployer', usernameVariable: 'ACR_USERNAME', passwordVariable: 'ACR_PASSWORD')
+        ]) {
           sh '''#!/bin/bash
 set -euo pipefail
 RELEASE_TAG="$(cat .claw-release-tag)"

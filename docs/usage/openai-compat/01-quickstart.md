@@ -8,7 +8,9 @@ Author: kejiqing
 
 ## 1. 签发项目模型 API Key
 
-OpenAI 兼容接口只认 Bearer **`ngmk_…`**（project model API key）。Key 绑定固定的 `projId` 与 `modelAlias`。
+OpenAI 兼容接口认 **`ngmk_…`**（project model API key）。Key 绑定固定的 `projId` 与 `modelAlias`。
+
+鉴权：优先 `Authorization: Bearer ngmk_…`；挂在上游网关背后、`Authorization` 被占用时，改传 `neurogate-token: ngmk_…`（两口语义相同，缺或校验失败会回退到第二口）。
 
 ```bash
 export GATEWAY='http://127.0.0.1:18088'

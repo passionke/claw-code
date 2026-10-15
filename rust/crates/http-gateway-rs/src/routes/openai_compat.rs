@@ -58,35 +58,69 @@ fn openai_err_response(status: StatusCode, body: OpenAiErrorBody) -> Response {
     (status, Json(body)).into_response()
 }
 
+/// Second auth mouth when `Authorization` is occupied by an upstream gateway. Author: kejiqing
+const HEADER_NEUROGATE_TOKEN: &str = "neurogate-token";
+
+/// Raw token from `neurogate-token`: bare `ngmk_…` or optional `Bearer ` prefix. Author: kejiqing
+fn extract_neurogate_token(raw: Option<&str>) -> Option<String> {
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some(tok) = extract_bearer_token(Some(raw)) {
+        return Some(tok);
+    }
+    Some(raw.to_string())
+}
+
+/// Ordered candidates: Authorization Bearer first, then `neurogate-token`. Author: kejiqing
+fn project_model_key_candidates(headers: &HeaderMap) -> Vec<String> {
+    let mut out = Vec::with_capacity(2);
+    if let Some(tok) = extract_bearer_token(
+        headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok()),
+    ) {
+        out.push(tok);
+    }
+    if let Some(tok) = extract_neurogate_token(
+        headers
+            .get(HEADER_NEUROGATE_TOKEN)
+            .and_then(|v| v.to_str().ok()),
+    ) {
+        if !out.iter().any(|t| t == &tok) {
+            out.push(tok);
+        }
+    }
+    out
+}
+
 async fn require_project_model_key(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<ProjectModelApiKeyRow, Response> {
-    let token = extract_bearer_token(
-        headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok()),
-    )
-    .ok_or_else(|| {
-        openai_err_response(
+    let candidates = project_model_key_candidates(headers);
+    if candidates.is_empty() {
+        return Err(openai_err_response(
             StatusCode::UNAUTHORIZED,
             openai_error(
-                "Missing Bearer project model API key",
+                "Missing project model API key (Authorization: Bearer ngmk_… or neurogate-token)",
                 "invalid_api_key",
                 "invalid_request_error",
             ),
-        )
-    })?;
-    state
-        .session_db
-        .verify_project_model_api_key(&token)
-        .await
-        .map_err(|e| {
-            openai_err_response(
-                StatusCode::UNAUTHORIZED,
-                openai_error(e, "invalid_api_key", "invalid_request_error"),
-            )
-        })
+        ));
+    }
+    let mut last_err = String::from("invalid project model API key");
+    for tok in candidates {
+        match state.session_db.verify_project_model_api_key(&tok).await {
+            Ok(key) => return Ok(key),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(openai_err_response(
+        StatusCode::UNAUTHORIZED,
+        openai_error(last_err, "invalid_api_key", "invalid_request_error"),
+    ))
 }
 
 /// Resolve session from conversation key / previous_response_id. Author: kejiqing
@@ -655,4 +689,81 @@ pub(crate) async fn revoke_model_api_key(
 fn _unused() {
     let _ = Uuid::new_v4();
     let _ = session_merge::trim_session_id(None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers_from(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                header::HeaderName::from_bytes(k.as_bytes()).expect("header name"),
+                HeaderValue::from_str(v).expect("header value"),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn extract_neurogate_token_bare_and_bearer() {
+        assert_eq!(
+            extract_neurogate_token(Some("ngmk_abc")),
+            Some("ngmk_abc".into())
+        );
+        assert_eq!(
+            extract_neurogate_token(Some("Bearer ngmk_abc")),
+            Some("ngmk_abc".into())
+        );
+        assert_eq!(extract_neurogate_token(Some("  ")), None);
+        assert_eq!(extract_neurogate_token(None), None);
+    }
+
+    #[test]
+    fn candidates_authorization_only() {
+        let h = headers_from(&[("authorization", "Bearer ngmk_auth")]);
+        assert_eq!(
+            project_model_key_candidates(&h),
+            vec!["ngmk_auth".to_string()]
+        );
+    }
+
+    #[test]
+    fn candidates_neurogate_token_only() {
+        let h = headers_from(&[("neurogate-token", "ngmk_ngt")]);
+        assert_eq!(
+            project_model_key_candidates(&h),
+            vec!["ngmk_ngt".to_string()]
+        );
+    }
+
+    #[test]
+    fn candidates_auth_first_then_neurogate_when_both() {
+        let h = headers_from(&[
+            ("authorization", "Bearer gateway_upstream"),
+            ("neurogate-token", "ngmk_real"),
+        ]);
+        assert_eq!(
+            project_model_key_candidates(&h),
+            vec!["gateway_upstream".to_string(), "ngmk_real".to_string()]
+        );
+    }
+
+    #[test]
+    fn candidates_dedupe_same_token() {
+        let h = headers_from(&[
+            ("authorization", "Bearer ngmk_same"),
+            ("neurogate-token", "ngmk_same"),
+        ]);
+        assert_eq!(
+            project_model_key_candidates(&h),
+            vec!["ngmk_same".to_string()]
+        );
+    }
+
+    #[test]
+    fn candidates_empty_when_neither() {
+        assert!(project_model_key_candidates(&HeaderMap::new()).is_empty());
+    }
 }

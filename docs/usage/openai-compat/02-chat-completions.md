@@ -3,7 +3,7 @@
 Author: kejiqing
 
 路径：`POST /v1/chat/completions`  
-鉴权：`Authorization: Bearer ngmk_…`
+鉴权：优先 `Authorization: Bearer ngmk_…`；网关背后可用 `neurogate-token: ngmk_…`
 
 本文说明请求字段、续聊、流式与常见错误。实现与 [`agent_completion.rs`](../../../rust/crates/http-gateway-rs/src/agent_completion.rs) / [`openai_compat.rs`](../../../rust/crates/http-gateway-rs/src/routes/openai_compat.rs) 对齐。
 

@@ -37,18 +37,21 @@ Author: kejiqing
   → Jenkins GIT_TAG=vX.Y.Z → Nora :vX.Y.Z (+ :sha-…)
   → Actions home-neurogate-deploy → up --release vX.Y.Z
 
-快线（main 分支推送，不打 tag）:
-  git push gitea main   # 或 PR merge 进 main
+快线打包（任意分支推送，不必合 main）:
+  git push gitea <branch>
   → Jenkins GIT_REF=<commit> → Nora :sha-<12>
+  （只打 Nora；不自动上 neurogate）
+
+快线启动（合入 / 推 main 后）:
   → Actions home-neurogate-up → up --release sha-<12>
 ```
 
 Jenkins 入参：`GIT_TAG`（正式）与 `GIT_REF`（快线）二选一。  
-Gitea hook / GenericTrigger 须在 **main push** 时把 commit 传给 `GIT_REF`（与 v* 的 `GIT_TAG` 分开）。
+Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GIT_TAG`。
 
 用户日常**不**手搓 `up --release`（紧急除外）。  
 - 正式：[`home-neurogate-deploy.yml`](../.gitea/workflows/home-neurogate-deploy.yml)  
-- 快线：[`home-neurogate-up.yml`](../.gitea/workflows/home-neurogate-up.yml)（`push: branches: [main]`）  
+- 21 启动：[`home-neurogate-up.yml`](../.gitea/workflows/home-neurogate-up.yml)（仍 `push: branches: [main]`）  
 - 脚本：[`home-neurogate-deploy-from-tag.sh`](../deploy/stack/lib/home-neurogate-deploy-from-tag.sh)（接受 `v*` 或 `sha-*`）  
 - runner：[`gitea-act-runner-neurogate.md`](../deploy/docs/gitea-act-runner-neurogate.md)
 
