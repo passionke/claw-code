@@ -117,22 +117,10 @@ async fn proxy_one(mut client: TcpStream, upstream: &Upstream) -> Result<(), Str
             .await
             .map_err(|e| format!("write upstream body prefix: {e}"))?;
     }
-    let (mut cr, mut cw) = client.split();
-    let (mut sr, mut sw) = server.split();
-    let c2s = async {
-        tokio::io::copy(&mut cr, &mut sw)
-            .await
-            .map_err(|e| format!("client→upstream: {e}"))
-    };
-    let s2c = async {
-        tokio::io::copy(&mut sr, &mut cw)
-            .await
-            .map_err(|e| format!("upstream→client: {e}"))
-    };
-    tokio::select! {
-        r = c2s => { r?; }
-        r = s2c => { r?; }
-    }
+    // Full-duplex: streaming SSE must not cancel the other direction early. Author: kejiqing
+    tokio::io::copy_bidirectional(&mut client, &mut server)
+        .await
+        .map_err(|e| format!("proxy copy: {e}"))?;
     Ok(())
 }
 
