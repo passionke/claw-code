@@ -198,7 +198,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 尚未验证，需要在 e2b 上确认的：
 
 1. opencode 的 sqlite（WAL）和 Codex 的多个 sqlite 放在 NAS 上能否正常加锁。
-2. landlock 下 bun（opencode）和 node（codex-acp）对 `/dev`、`/proc` 的访问。默认 DSL 的 ro 列表里没有这两个路径。
+2. **Landlock + bash/spawn（唯一验收面，不加单测）**：neuro 双引擎已通过 `prepare_task` 统一追加 `/dev`（PathBeneath 覆盖 `/dev/null` 等）；opencode 另追加 `/proc`。发版后须在 e2b strict session 确认 bash（如 `echo ok`）与 webfetch 均可用；appserver 有条件同验。内核 Landlock + 运行时 spawn 行为无法在本机 unit 可靠复现。
 3. codex 经 tap 访问真实上游 `/responses`（含 SSE 和 namespace 工具）。
 4. usage 的口径。
 
@@ -212,7 +212,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 | `PUT /v1/projects/{id}/role` | 非 claw 项目只能设为 `normal`，其他角色返回 400 `unsupported_by_engine`。 |
 | `PUT /v1/projects/{id}/config` | 非 claw 项目写入 `workerProfileJson.mode=relaxed` 时返回 400。 |
 | solve（`run_solve_request_docker`） | 非 claw 项目只能走 e2b 后端。`interactionMode=plan` 或带 sealedPlan 时返回 400。task 固定为 `interactionMode=agent`、`askUserQuestionEnabled=false`、`forceSingleTurn=true`。exec 的 bin 换成 `/usr/local/bin/neuro-{opencode,appserver}`。 |
-| strict Landlock（`prepare_task`） | 在解析出的规则（cluster 默认或项目覆盖）上追加引擎运行时需要的只读路径，追加结果写进任务文件，可以审计。opencode 追加 `/proc` 和 `/dev/urandom`：在 e2b 沙箱里重放证实，缺 `/dev/urandom` 时 Bun 崩在 `0xBBADBEEF`，缺 `/proc` 时 SIGABRT，只放 `/proc/self` 不够。appserver 不追加：默认规则下启动正常，行为与不加 Landlock 一致。claw 的规则不变。 |
+| strict Landlock（`prepare_task`） | 在解析出的规则（cluster 默认或项目覆盖）上追加引擎运行时需要的只读路径，追加结果写进任务文件，可以审计。**neuro 双引擎统一追加 `/dev`**（覆盖 `/dev/null`、`/dev/urandom` 等；Bun/Node 的 `ChildProcess.spawn` / bash 在 jail 内需要）。opencode **另追加 `/proc`**：缺 `/dev/urandom`（现由 `/dev` 覆盖）时 Bun 崩在 `0xBBADBEEF`，缺 `/proc` 时 SIGABRT，只放 `/proc/self` 不够。appserver 只追加共用 `/dev`（启动本可不追加 `/proc`）。claw 的规则不变。bash/spawn 能否工作的验收只靠 e2b，不以单测为准。 |
 | `desired_worker_spec` | 模板取自 PG 的 `e2bWorkerOpencode` / `e2bWorkerAppserver`（`templateId` 为空时用 alias `claw-worker-{opencode,appserver}`，`buildId` 为可选 pin），固定使用 strict。contract key 的 profile 段写成 `strict+<engine>`，claw 项目的 key 不变。 |
 | 列表接口、config 接口 | 返回字段 `harnessEngine`。读取失败时返回 `null`，不回落成 claw。 |
 

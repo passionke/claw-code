@@ -118,20 +118,25 @@ pub struct ClawEngine;
 
 impl EngineStrategy for ClawEngine {}
 
+/// Shared Landlock RO for all neuro ACP engines (opencode + appserver): Bun/Node
+/// `ChildProcess.spawn` / shell need `/dev/null` under the jail; PathBeneath on `/dev`
+/// also covers `/dev/urandom`. Author: kejiqing
+const NEURO_LANDLOCK_RUNTIME_RO: &[&str] = &["/dev"];
+
 /// A neuro-harness engine: ACP agent behind `neuro-<name>` on the **shared** strict shell
 /// template; the selected Agent engine is installed during worker.init. Author: kejiqing
 pub struct NeuroEngine {
     name: &'static str,
     worker_bin: &'static str,
-    /// Read-only paths the engine runtime needs inside the strict Landlock jail, appended to the
-    /// resolved DSL (e.g. Bun aborts without `/proc` and `/dev/urandom`).
+    /// Engine-specific RO paths appended after [`NEURO_LANDLOCK_RUNTIME_RO`] (e.g. Bun `/proc`).
     landlock_runtime_ro: &'static [&'static str],
 }
 
 static OPENCODE: NeuroEngine = NeuroEngine {
     name: "opencode",
     worker_bin: "/usr/local/bin/neuro-opencode",
-    landlock_runtime_ro: &["/proc", "/dev/urandom"],
+    // Bun aborts without `/proc` (SIGABRT); `/dev` comes from NEURO_LANDLOCK_RUNTIME_RO.
+    landlock_runtime_ro: &["/proc"],
 };
 
 static APPSERVER: NeuroEngine = NeuroEngine {
@@ -213,8 +218,11 @@ impl EngineStrategy for NeuroEngine {
         task.sealed_plan_id = None;
         task.sealed_plan_markdown = None;
         if let Some(dsl) = task.landlock_dsl.as_mut() {
-            for path in self.landlock_runtime_ro {
-                if !dsl.ro.iter().any(|p| p == path) {
+            for path in NEURO_LANDLOCK_RUNTIME_RO
+                .iter()
+                .chain(self.landlock_runtime_ro.iter())
+            {
+                if !dsl.ro.iter().any(|p| p == *path) {
                     dsl.ro.push((*path).to_string());
                 }
             }
@@ -448,7 +456,7 @@ mod tests {
         assert_eq!(task.ask_user_question_enabled, Some(false));
         assert_eq!(task.force_single_turn, Some(true));
         let ro = &task.landlock_dsl.as_ref().unwrap().ro;
-        for p in ["/proc", "/dev/urandom"] {
+        for p in ["/dev", "/proc"] {
             assert_eq!(
                 ro.iter().filter(|x| *x == p).count(),
                 1,
@@ -456,6 +464,12 @@ mod tests {
             );
         }
         gateway_solve_turn::validate_landlock_dsl(task.landlock_dsl.as_ref().unwrap()).unwrap();
+
+        let mut as_task: GatewaySolveTaskFile = serde_json::from_value(task_json.clone()).unwrap();
+        HarnessEngine::Appserver.strategy().prepare_task(&mut as_task);
+        let as_ro = &as_task.landlock_dsl.as_ref().unwrap().ro;
+        assert_eq!(as_ro.iter().filter(|x| *x == "/dev").count(), 1);
+        assert!(!as_ro.iter().any(|x| x == "/proc"));
 
         let mut claw_task: GatewaySolveTaskFile = serde_json::from_value(task_json).unwrap();
         let before = serde_json::to_value(&claw_task).unwrap();
