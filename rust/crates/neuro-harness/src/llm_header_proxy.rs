@@ -196,9 +196,12 @@ fn inject_trace_headers(
     upstream_host: &str,
     extra: &std::collections::BTreeMap<String, String>,
 ) -> Result<Vec<u8>, String> {
+    // Always emit CRLF upstream — Bun often speaks LF-only; tap needs CRLF to parse
+    // claw-turn-id (otherwise billing is skipped while the body still proxies). Author: kejiqing
+    const OUT_SEP: &str = "\r\n";
     let text = std::str::from_utf8(head).map_err(|e| format!("headers utf8: {e}"))?;
     // Prefer CRLF (HTTP); fall back to LF-only (some Bun builds). Author: kejiqing
-    let (sep, end) = if text.contains("\r\n\r\n") {
+    let (in_sep, end) = if text.contains("\r\n\r\n") {
         ("\r\n", "\r\n\r\n")
     } else if text.contains("\n\n") {
         ("\n", "\n\n")
@@ -211,7 +214,7 @@ fn inject_trace_headers(
     let header_block = &text[..end_at];
     let mut out = String::with_capacity(head.len() + 256);
     let mut saw_host = false;
-    for (i, line) in header_block.split(sep).enumerate() {
+    for (i, line) in header_block.split(in_sep).enumerate() {
         if i == 0 {
             // Normalize openai-compatible path so tap billing matches claw. Author: kejiqing
             let req = if let Some(rest) = line.strip_prefix("POST /chat/completions") {
@@ -222,7 +225,7 @@ fn inject_trace_headers(
                 line.to_string()
             };
             out.push_str(&req);
-            out.push_str(sep);
+            out.push_str(OUT_SEP);
             continue;
         }
         if line.is_empty() {
@@ -232,37 +235,38 @@ fn inject_trace_headers(
         if lower.starts_with("host:") {
             out.push_str("Host: ");
             out.push_str(upstream_host);
-            out.push_str(sep);
+            out.push_str(OUT_SEP);
             saw_host = true;
             continue;
         }
-        // Drop keep-alive / claw headers; force close so one request = one upstream. Author: kejiqing
+        // Drop keep-alive / claw / content-encoding negotiation that confuses billing. Author: kejiqing
         if lower.starts_with("claw-turn-id:")
             || lower.starts_with("claw-session-id:")
             || lower.starts_with("clawcode-session-id:")
             || lower.starts_with("connection:")
             || lower.starts_with("keep-alive:")
             || lower.starts_with("expect:")
+            || lower.starts_with("accept-encoding:")
         {
             continue;
         }
         out.push_str(line);
-        out.push_str(sep);
+        out.push_str(OUT_SEP);
     }
     if !saw_host {
         out.push_str("Host: ");
         out.push_str(upstream_host);
-        out.push_str(sep);
+        out.push_str(OUT_SEP);
     }
     out.push_str("Connection: close");
-    out.push_str(sep);
+    out.push_str(OUT_SEP);
     for (k, v) in extra {
         out.push_str(k);
         out.push_str(": ");
         out.push_str(v);
-        out.push_str(sep);
+        out.push_str(OUT_SEP);
     }
-    out.push_str(sep);
+    out.push_str(OUT_SEP);
     Ok(out.into_bytes())
 }
 
@@ -302,8 +306,9 @@ mod tests {
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("claw-turn-id: T_lf"));
         assert!(s.contains("Host: tap.example:8080"));
-        assert!(s.starts_with("POST /v1/chat/completions HTTP/1.1\n"));
-        assert!(s.contains("Connection: close\n"));
-        assert!(s.ends_with("\n\n"));
+        assert!(s.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
+        assert!(s.contains("Connection: close\r\n"));
+        assert!(s.contains("claw-turn-id: T_lf\r\n"));
+        assert!(s.ends_with("\r\n\r\n"));
     }
 }
