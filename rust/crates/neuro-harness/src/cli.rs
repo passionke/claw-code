@@ -175,12 +175,8 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
         .enable_all()
         .build()
         .map_err(|e| HarnessError::internal(format!("tokio runtime: {e}")))?;
-    let (header_proxy, openai_base_url) = maybe_start_llm_header_proxy(
-        &rt,
-        &upstream_openai_base,
-        &model,
-        task.thinking_enabled,
-    )?;
+    let (header_proxy, openai_base_url) =
+        maybe_start_llm_header_proxy(&rt, &upstream_openai_base, &model, task.thinking_enabled)?;
 
     let mut launch = profile.prepare(&PrepareContext {
         session_root: &session_root,
