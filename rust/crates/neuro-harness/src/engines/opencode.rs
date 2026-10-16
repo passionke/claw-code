@@ -58,6 +58,15 @@ fn opencode_config(ctx: &PrepareContext<'_>) -> Value {
             .map(|(k, v)| (k, Value::String(v)))
             .collect(),
     );
+    let thinking = gateway_solve_turn::chat_thinking_fields(ctx.model, Some(ctx.thinking_enabled));
+    let mut model_entry = json!({"name": ctx.model});
+    // `@ai-sdk/openai-compatible` 2.0.41 copies unknown provider-option keys into the
+    // chat-completions body. The localhost proxy applies the same map on the wire,
+    // because config headers have already been observed not to leave the process.
+    // Author: kejiqing
+    if !thinking.is_empty() {
+        model_entry["options"] = Value::Object(thinking);
+    }
     // Provider-root `headers` (opencode v2) + `options.headers` (v1/Helicone). Author: kejiqing
     json!({
         "$schema": "https://opencode.ai/config.json",
@@ -76,7 +85,7 @@ fn opencode_config(ctx: &PrepareContext<'_>) -> Value {
                     "apiKey": "{env:OPENAI_API_KEY}",
                     "headers": headers_json,
                 },
-                "models": {ctx.model: {"name": ctx.model}},
+                "models": {ctx.model: model_entry},
             }
         },
         "permission": {"edit": "allow", "bash": "allow", "webfetch": "allow"},
@@ -167,6 +176,7 @@ mod tests {
                 openai_base_url: "http://tap:8080",
                 instructions_path: &instructions,
                 skills_dir: &pcr.join(".claw/skills"),
+                thinking_enabled: false,
             })
             .unwrap();
         assert_eq!(launch.args, vec!["acp"]);
@@ -199,6 +209,9 @@ mod tests {
             cfg["instructions"][0],
             instructions.to_string_lossy().as_ref()
         );
+        assert!(cfg["provider"]["neurogate"]["models"]["m1"]
+            .get("options")
+            .is_none());
         assert!(root
             .join(".config/opencode/skills/sql-helper/SKILL.md")
             .is_file());
@@ -221,6 +234,7 @@ mod tests {
                 openai_base_url: "http://tap:8080",
                 instructions_path: &instructions,
                 skills_dir: &pcr.join(".claw/skills"),
+                thinking_enabled: false,
             })
             .unwrap();
         let cfg: Value = serde_json::from_slice(
@@ -232,5 +246,51 @@ mod tests {
         assert_eq!(headers["clawcode-session-id"], "sess-only");
         assert!(headers.get("claw-turn-id").is_none());
         std::env::remove_var("CLAW_SESSION_ID");
+    }
+
+    #[test]
+    fn prepare_writes_upstream_thinking_fields_onto_the_model() {
+        let _guard = env_lock();
+        let (_dir, root, pcr) = prepare_fixture();
+        let instructions = root.join(".neuro-harness/instructions.md");
+        OpencodeProfile
+            .prepare(&PrepareContext {
+                session_root: &root,
+                project_config_root: &pcr,
+                model: "qwen3.7-max",
+                openai_base_url: "http://tap:8080",
+                instructions_path: &instructions,
+                skills_dir: &pcr.join(".claw/skills"),
+                thinking_enabled: false,
+            })
+            .unwrap();
+        let cfg: Value = serde_json::from_slice(
+            &std::fs::read(root.join(".neuro-harness/opencode.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg["provider"]["neurogate"]["models"]["qwen3.7-max"]["options"]["enable_thinking"],
+            false
+        );
+        OpencodeProfile
+            .prepare(&PrepareContext {
+                session_root: &root,
+                project_config_root: &pcr,
+                model: "deepseek-v4-pro",
+                openai_base_url: "http://tap:8080",
+                instructions_path: &instructions,
+                skills_dir: &pcr.join(".claw/skills"),
+                thinking_enabled: true,
+            })
+            .unwrap();
+        let cfg: Value = serde_json::from_slice(
+            &std::fs::read(root.join(".neuro-harness/opencode.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg["provider"]["neurogate"]["models"]["deepseek-v4-pro"]["options"]["thinking"]
+                ["type"],
+            "enabled"
+        );
     }
 }

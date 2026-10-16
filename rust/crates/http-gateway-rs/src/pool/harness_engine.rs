@@ -104,6 +104,13 @@ pub trait EngineStrategy: Sync {
 
     /// Last edit of the task file before it is shipped to the worker.
     fn prepare_task(&self, _task: &mut GatewaySolveTaskFile) {}
+
+    /// Checklist cell. Does not change solve behavior; [`gateway_solve_turn::capability_fit`] is the source.
+    /// Author: kejiqing
+    fn capability_fit(
+        &self,
+        capability: gateway_solve_turn::GatewayCapability,
+    ) -> gateway_solve_turn::CapabilityFit;
 }
 
 /// Inputs of [`EngineStrategy::gate_solve_request`].
@@ -116,7 +123,14 @@ pub struct SolveGate<'a> {
 
 pub struct ClawEngine;
 
-impl EngineStrategy for ClawEngine {}
+impl EngineStrategy for ClawEngine {
+    fn capability_fit(
+        &self,
+        capability: gateway_solve_turn::GatewayCapability,
+    ) -> gateway_solve_turn::CapabilityFit {
+        gateway_solve_turn::capability_fit(gateway_solve_turn::CapabilityEngine::Claw, capability)
+    }
+}
 
 /// Shared Landlock RO for all neuro ACP engines (opencode + appserver): Bun/Node
 /// `ChildProcess.spawn` / shell need `/dev/null` under the jail; PathBeneath on `/dev`
@@ -228,6 +242,18 @@ impl EngineStrategy for NeuroEngine {
             }
         }
     }
+
+    fn capability_fit(
+        &self,
+        capability: gateway_solve_turn::GatewayCapability,
+    ) -> gateway_solve_turn::CapabilityFit {
+        let engine = match self.name {
+            "opencode" => gateway_solve_turn::CapabilityEngine::Opencode,
+            "appserver" => gateway_solve_turn::CapabilityEngine::Appserver,
+            other => panic!("neuro engine {other} has no capability row"),
+        };
+        gateway_solve_turn::capability_fit(engine, capability)
+    }
 }
 
 pub async fn load_project_harness_engine(
@@ -300,6 +326,28 @@ mod tests {
             interaction_mode: mode,
             sealed_plan_id: sealed,
             sealed_plan_markdown: None,
+        }
+    }
+
+    #[test]
+    fn strategy_capability_fit_matches_the_catalog() {
+        for engine in [
+            HarnessEngine::Claw,
+            HarnessEngine::Opencode,
+            HarnessEngine::Appserver,
+        ] {
+            let kind = match engine {
+                HarnessEngine::Claw => gateway_solve_turn::CapabilityEngine::Claw,
+                HarnessEngine::Opencode => gateway_solve_turn::CapabilityEngine::Opencode,
+                HarnessEngine::Appserver => gateway_solve_turn::CapabilityEngine::Appserver,
+            };
+            let strategy = engine.strategy();
+            for capability in gateway_solve_turn::GatewayCapability::all() {
+                assert_eq!(
+                    strategy.capability_fit(*capability),
+                    gateway_solve_turn::capability_fit(kind, *capability)
+                );
+            }
         }
     }
 

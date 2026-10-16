@@ -34,9 +34,9 @@ pub use prompt_cache::{
 };
 pub use providers::anthropic::{AnthropicClient, AnthropicClient as ApiClient, AuthSource};
 pub use providers::openai_compat::{
-    build_chat_completion_request, flatten_tool_result_content, is_deepseek_wire_model,
-    is_reasoning_model, model_rejects_is_error_field, translate_message, OpenAiCompatClient,
-    OpenAiCompatConfig,
+    build_chat_completion_request, chat_thinking_fields, flatten_tool_result_content,
+    is_deepseek_wire_model, is_reasoning_model, model_rejects_is_error_field, translate_message,
+    OpenAiCompatClient, OpenAiCompatConfig,
 };
 pub use providers::{
     apply_dotenv_keys_from_paths, apply_dotenv_search_paths, detect_provider_kind,

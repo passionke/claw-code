@@ -31,10 +31,12 @@ Author: kejiqing
 | `maxIterations` | 客户端统计 `tool_call` 次数，超出后发送 `session/cancel` |
 | `timeoutSeconds` | 本轮内部截止时间；gateway 侧仍有自己的超时和 `force_kill_slot` |
 | `landlockDsl`、`landlockDslSource` | spawn 引擎前对自身执行 `apply_strict_landlock_jail`，子进程继承 |
-| `responsesStream` | 为 true 时才输出 `thinking.delta` |
+| `responsesStream` | 见能力总图。neuro 上是错接：只决定是否把 ACP `agent_thought_chunk` 打成 `thinking.delta`，不控制上游 thinking |
 | `llmRoute` | 只作为审计快照回写到 `outputJson.llmRoute` |
 
-不支持的能力：task 中出现 `interactionMode=plan`、`askUserQuestionEnabled=true`、`sealedPlanId` 或 `sealedPlanMarkdown` 时，直接输出 `solve.done` 错误 `unsupported_by_engine: <field>`（`httpStatusHint=400`），不启动引擎。gateway 侧也会拦截，两边都把关。
+能力总图（落实 / 拒绝 / 静默 / 错接）的真源是 `gateway_solve_turn::capability_matrix`。人读勾叉表由测试 `capability_matrix_snapshot_is_the_checklist` 锁定，快照文件 `rust/crates/gateway-solve-turn/src/capability_matrix_snapshot.txt`。本文不另维护一份支持名单。
+
+worker 在 task 仍带 `interactionMode=plan`、`askUserQuestionEnabled=true`、`sealedPlanId` 或 `sealedPlanMarkdown` 时输出 `solve.done` 错误 `unsupported_by_engine: <field>`（`httpStatusHint=400`），不启动引擎。gateway 对 plan 与 sealed plan 同样 400。`askUserQuestion` 在产品路径上由 `prepare_task` 写成 false，worker 的 400 只在标志仍为 true 时发生。`thinkingEnabled` 在 opencode / appserver 上由 localhost 代理把 `api::chat_thinking_fields` 写入出站 JSON（与 claw 同一份字段）。`allowedTools`、`solveOrchestration`、`otelTraceparent` 在 opencode / appserver 上仍是静默，总图标出，本契约不把它们写成已支持或已拒绝。
 
 环境变量（由 gateway exec 注入，与 claw 相同）：`OPENAI_BASE_URL`（tap 代理）、`OPENAI_API_KEY`（占位值 `claw-tap-cluster`）、`CLAW_DEFAULT_MODEL`、`CLAW_SESSION_ID`、`CLAW_TURN_ID`。
 
@@ -47,7 +49,7 @@ stdout 中以 `__CLAW_GATEWAY_STDOUT__` 开头的行是结构化事件，其他�
 | ACP `session/update` | 契约事件 | 说明 |
 | --- | --- | --- |
 | `agent_message_chunk`（text） | `report.delta{text, emitSeq}` | 同时累积为本轮 `message` |
-| `agent_thought_chunk`（text） | `thinking.delta{text}` | 仅 `responsesStream=true` 时输出 |
+| `agent_thought_chunk`（text） | `thinking.delta{text}` | 仅 `responsesStream=true` 时输出。这是展示投影，不是 `thinkingEnabled` |
 | `tool_call` | `tool.start{toolCallId, name, kind, title, argsSummary}` | `name` 取 ACP `name`，没有时取 `title` |
 | `tool_call_update`，status 为 `in_progress` 且带内容 | `shell.chunk{toolCallId, text}` | 仅 kind 为 `shell` 的工具 |
 | `tool_call_update`，status 为 `completed` / `failed` | `tool.end{toolCallId, name, kind, status, durationMs, resultSummary, output}` | `output` 取 content 中的文本，没有时取 `rawOutput` 的 JSON |
@@ -160,7 +162,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 - 启动：`/usr/local/lib/neuro-engines/opencode/bin/opencode acp`。
 - `OPENCODE_CONFIG={session_root}/.neuro-harness/opencode.json`：
   - `provider.neurogate`：`@ai-sdk/openai-compatible`，`baseURL` 指向本进程 localhost header 代理（上游仍是 gateway 注入的 tap URL），`apiKey` 写 `{env:OPENAI_API_KEY}`；**本进程与子进程** `OPENAI_BASE_URL` 都改成该代理（opencode 实际跟 env，不跟 config）。config 里仍写 `headers`，但 **出站记账以代理注入 `claw-turn-id` 为准**。
-  - `model` 和 `small_model` 都是 `neurogate/<model>`。
+  - `model` 和 `small_model` 都是 `neurogate/<model>`。`models.<model>.options` 写入 `api::chat_thinking_fields`（DeepSeek `thinking.type`，Qwen 关闭时 `enable_thinking=false`）。localhost 代理对 `POST /chat/completions` 和 `POST /responses` 的 JSON 再合并同一份字段，控制面以代理写出的请求体为准。
   - `instructions` 指向 `.neuro-harness/instructions.md`。
   - `permission` 全部 allow，`autoupdate=false`，`share="disabled"`，`plugin=[]`。
 - 环境变量：`OPENCODE_DISABLE_CLAUDE_CODE=1`、`OPENCODE_DISABLE_AUTOUPDATE=1`、`OPENCODE_DISABLE_MODELS_FETCH=1`、`OPENCODE_DISABLE_DEFAULT_PLUGINS=1`、`OPENCODE_DISABLE_LSP_DOWNLOAD=1`、`OPENCODE_DISABLE_SHARE=1`、`OPENCODE_DB={session_root}/.neuro-harness/opencode.db`，以及 `XDG_*` 指向 session 目录。
@@ -170,7 +172,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 
 - 启动：`/usr/local/lib/neuro-engines/codex-acp/node_modules/.bin/codex-acp`。目录由 `npm ci` 按提交的 lockfile 安装，codex 用 codex-acp 自带解析（不设 `CODEX_PATH`），版本由 lockfile 锁定为 0.159.3。
 - `CODEX_HOME={session_root}/.codex`。
-- `config.toml`：`model`、`model_provider="neurogate"`、`[model_providers.neurogate]`（`base_url` 取 `OPENAI_BASE_URL`，`env_key="OPENAI_API_KEY"`，`wire_api="responses"`，`env_http_headers` 把 `claw-session-id` / `clawcode-session-id` / `claw-turn-id` 映射到 `CLAW_SESSION_ID` / `CLAW_TURN_ID`，供 observe tap 记账）、`approval_policy="never"`、`sandbox_mode="danger-full-access"`、`check_for_update_on_startup=false`、`[analytics] enabled=false`、`model_catalog_json`。
+- `config.toml`：`model`、`model_provider="neurogate"`、`[model_providers.neurogate]`（`base_url` 指向本进程 localhost 代理，上游仍是 gateway 注入的 tap URL，`env_key="OPENAI_API_KEY"`，`wire_api="responses"`，`env_http_headers` 把 `claw-session-id` / `clawcode-session-id` / `claw-turn-id` 映射到 `CLAW_SESSION_ID` / `CLAW_TURN_ID`，供 observe tap 记账）、`approval_policy="never"`、`sandbox_mode="danger-full-access"`、`check_for_update_on_startup=false`、`[analytics] enabled=false`、`model_catalog_json`。`thinkingEnabled` 不写 Codex effort；代理把 `api::chat_thinking_fields` 并进 `POST /responses` 的 JSON。
 - `model_catalog_json`：只含当前模型的一条目录，内容与 Codex 内置的 fallback 元数据等价（`model_info_from_slug`，`rust-v0.159.3`），`model_messages.instructions_template` 取同版本的 `prompt.md`（`rust/crates/neuro-harness/assets/codex/rust-v0.159.3/prompt.md`，编译期嵌入）。两处与 fallback 不同：`visibility="list"`（否则 `model/list` 为空，codex-acp 的 `session/new` 报 "Codex did not return any models"）；`context_window` 在 `CLAW_CONTEXT_WINDOW_TOKENS` 存在时取该值。不配这一项时，Codex 会把 "Model metadata for `<model>` not found" 警告作为正文 chunk 输出。
 - 环境变量：`INITIAL_AGENT_MODE=agent-full-access`（隔离交给 landlock）。
 - 指令：`$CODEX_HOME/AGENTS.md` 写入 `.neuro-harness/instructions.md` 的内容（Codex 的全局指令文件）。

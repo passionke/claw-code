@@ -109,7 +109,9 @@ fn toml_str(s: &str) -> String {
 }
 
 fn config_toml(model: &str, base_url: &str, catalog_path: &Path) -> String {
-    // Codex reads env at request time; tap needs claw-turn-id on every LLM call. Author: kejiqing
+    // Codex reads env at request time; tap needs claw-turn-id on every LLM call.
+    // thinkingEnabled is not a Codex effort: the localhost proxy merges
+    // `chat_thinking_fields` into the JSON body. Author: kejiqing
     format!(
         "model = {model}\n\
          model_provider = \"{PROVIDER}\"\n\
@@ -244,11 +246,13 @@ mod tests {
                 openai_base_url: "http://tap:8080",
                 instructions_path: &instructions,
                 skills_dir: &pcr.join(".claw/skills"),
+                thinking_enabled: false,
             })
             .unwrap();
         assert_eq!(launch.env["INITIAL_AGENT_MODE"], "agent-full-access");
         let toml = std::fs::read_to_string(root.join(".codex/config.toml")).unwrap();
         assert!(toml.contains("model = \"gpt-x\""), "{toml}");
+        assert!(!toml.contains("model_reasoning_effort"), "{toml}");
         assert!(toml.contains("base_url = \"http://tap:8080\""), "{toml}");
         assert!(toml.contains("wire_api = \"responses\""), "{toml}");
         assert!(toml.contains("env_http_headers"), "{toml}");
@@ -272,6 +276,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(root.join(".codex/model-catalog.json")).unwrap())
                 .unwrap();
         assert_eq!(catalog["models"][0]["slug"], "gpt-x");
+        assert!(catalog["models"][0]["default_reasoning_level"].is_null());
         assert!(
             catalog["models"][0]["model_messages"]["instructions_template"]
                 .as_str()
