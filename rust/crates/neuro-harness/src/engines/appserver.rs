@@ -32,12 +32,22 @@ impl EngineProfile for AppserverProfile {
         let root = ctx.session_root;
         let codex_home = root.join(".codex");
         let catalog_path = codex_home.join("model-catalog.json");
-        let catalog = serde_json::to_vec_pretty(&model_catalog(ctx.model, context_window()))
-            .map_err(|e| HarnessError::internal(format!("serialize model catalog: {e}")))?;
+        let catalog = serde_json::to_vec_pretty(&model_catalog(
+            ctx.model,
+            context_window(),
+            ctx.thinking_enabled,
+        ))
+        .map_err(|e| HarnessError::internal(format!("serialize model catalog: {e}")))?;
         write_file(&catalog_path, &catalog)?;
         write_file(
             &codex_home.join("config.toml"),
-            config_toml(ctx.model, ctx.openai_base_url, &catalog_path).as_bytes(),
+            config_toml(
+                ctx.model,
+                ctx.openai_base_url,
+                &catalog_path,
+                ctx.thinking_enabled,
+            )
+            .as_bytes(),
         )?;
         let instructions = std::fs::read(ctx.instructions_path).map_err(|e| {
             HarnessError::internal(format!("read {}: {e}", ctx.instructions_path.display()))
@@ -108,10 +118,22 @@ fn toml_str(s: &str) -> String {
     out
 }
 
-fn config_toml(model: &str, base_url: &str, catalog_path: &Path) -> String {
+/// Codex `ReasoningEffort`: off is `none`, on is the client default `medium`.
+/// Author: kejiqing
+fn reasoning_effort(thinking_enabled: bool) -> &'static str {
+    if thinking_enabled {
+        "medium"
+    } else {
+        "none"
+    }
+}
+
+fn config_toml(model: &str, base_url: &str, catalog_path: &Path, thinking_enabled: bool) -> String {
+    let effort = reasoning_effort(thinking_enabled);
     // Codex reads env at request time; tap needs claw-turn-id on every LLM call. Author: kejiqing
     format!(
         "model = {model}\n\
+         model_reasoning_effort = \"{effort}\"\n\
          model_provider = \"{PROVIDER}\"\n\
          model_catalog_json = {catalog}\n\
          approval_policy = \"never\"\n\
@@ -136,13 +158,17 @@ fn config_toml(model: &str, base_url: &str, catalog_path: &Path) -> String {
 /// One-entry catalog equal to codex's fallback metadata, so codex does not prepend the
 /// "Model metadata not found" warning to the reply. `visibility` is `list` (fallback: `none`)
 /// because codex-acp `session/new` fails when `model/list` comes back empty.
-fn model_catalog(model: &str, context_window: u64) -> Value {
+fn model_catalog(model: &str, context_window: u64, thinking_enabled: bool) -> Value {
+    let effort = reasoning_effort(thinking_enabled);
     let mut entry = json!({
         "slug": model,
         "display_name": model,
         "description": null,
-        "default_reasoning_level": null,
-        "supported_reasoning_levels": [],
+        "default_reasoning_level": effort,
+        "supported_reasoning_levels": [
+            {"effort": "none", "description": "thinking off"},
+            {"effort": "medium", "description": "thinking on"}
+        ],
         "shell_type": "unified_exec",
         "visibility": "list",
         "supported_in_api": true,
@@ -244,11 +270,13 @@ mod tests {
                 openai_base_url: "http://tap:8080",
                 instructions_path: &instructions,
                 skills_dir: &pcr.join(".claw/skills"),
+                thinking_enabled: false,
             })
             .unwrap();
         assert_eq!(launch.env["INITIAL_AGENT_MODE"], "agent-full-access");
         let toml = std::fs::read_to_string(root.join(".codex/config.toml")).unwrap();
         assert!(toml.contains("model = \"gpt-x\""), "{toml}");
+        assert!(toml.contains("model_reasoning_effort = \"none\""), "{toml}");
         assert!(toml.contains("base_url = \"http://tap:8080\""), "{toml}");
         assert!(toml.contains("wire_api = \"responses\""), "{toml}");
         assert!(toml.contains("env_http_headers"), "{toml}");
@@ -272,6 +300,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(root.join(".codex/model-catalog.json")).unwrap())
                 .unwrap();
         assert_eq!(catalog["models"][0]["slug"], "gpt-x");
+        assert_eq!(catalog["models"][0]["default_reasoning_level"], "none");
         assert!(
             catalog["models"][0]["model_messages"]["instructions_template"]
                 .as_str()

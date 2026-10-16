@@ -21,6 +21,8 @@ pub struct PrepareContext<'a> {
     pub instructions_path: &'a Path,
     /// `$CLAW_PROJECT_CONFIG_ROOT/.claw/skills`.
     pub skills_dir: &'a Path,
+    /// Project `thinkingEnabled`. Each profile writes it into that engine's own request.
+    pub thinking_enabled: bool,
 }
 
 /// How to spawn the ACP agent. `env` is added on top of the inherited process env.
