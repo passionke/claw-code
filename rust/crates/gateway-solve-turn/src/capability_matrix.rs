@@ -151,7 +151,7 @@ impl GatewayCapability {
             Self::SessionResume => "resume 或 loadSession；都不支持则报错，无兜底",
             Self::TurnBillingHeaders => "出站 claw-turn-id；opencode 走 header 代理，appserver 走 config.toml",
             Self::ThinkingEnabled => {
-                "代码已写字段，出站请求未核对，故仍标静默。opencode 代理与 model options 写 chat thinking 字段；appserver 写 model_reasoning_effort（关 none，开 medium）"
+                "opencode 与 appserver 都由 localhost 代理把与 claw 相同的 chat thinking 字段写入出站 JSON"
             }
             Self::AllowedTools => "neuro 不读 task.allowedTools，MCP 按 settings 全量注入",
             Self::SolveOrchestration => {
@@ -207,12 +207,9 @@ pub fn capability_fit(engine: CapabilityEngine, capability: GatewayCapability) -
             Opencode | Appserver,
             PromptAndAttachments | ExtraSession | Model | MaxIterations | TimeoutSeconds
             | LandlockDsl | Mcp | InstructionsAndRules | Skills | SessionResume
-            | TurnBillingHeaders,
+            | TurnBillingHeaders | ThinkingEnabled,
         ) => Honored,
-        (
-            Opencode | Appserver,
-            ThinkingEnabled | AllowedTools | SolveOrchestration | OtelTraceparent,
-        ) => Silent,
+        (Opencode | Appserver, AllowedTools | SolveOrchestration | OtelTraceparent) => Silent,
         (Opencode | Appserver, ResponsesStream) => Miswired,
     }
 }
@@ -223,13 +220,10 @@ pub fn capability_fit(engine: CapabilityEngine, capability: GatewayCapability) -
 #[must_use]
 pub fn grandfathered_silent(engine: CapabilityEngine, capability: GatewayCapability) -> bool {
     use CapabilityEngine::{Appserver, Opencode};
-    use GatewayCapability::{AllowedTools, OtelTraceparent, SolveOrchestration, ThinkingEnabled};
+    use GatewayCapability::{AllowedTools, OtelTraceparent, SolveOrchestration};
     matches!(
         (engine, capability),
-        (
-            Opencode | Appserver,
-            ThinkingEnabled | AllowedTools | SolveOrchestration | OtelTraceparent
-        )
+        (Opencode | Appserver, AllowedTools | SolveOrchestration | OtelTraceparent)
     )
 }
 

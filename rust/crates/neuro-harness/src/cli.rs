@@ -169,15 +169,14 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
     let state = read_state(&session_root, profile.engine())?;
     let skills_dir = project_config_root.join(".claw").join("skills");
 
-    // Runtime before prepare: opencode needs a localhost header-inject proxy because its
-    // config `options.headers` do not reach the wire (tap then skips billing). Author: kejiqing
+    // Localhost proxy: billing headers, and `chat_thinking_fields` on the JSON body
+    // for both engines. Author: kejiqing
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| HarnessError::internal(format!("tokio runtime: {e}")))?;
     let (header_proxy, openai_base_url) = maybe_start_llm_header_proxy(
         &rt,
-        profile.engine(),
         &upstream_openai_base,
         &model,
         task.thinking_enabled,
@@ -275,14 +274,10 @@ fn bootstrap_session_dirs(
 
 fn maybe_start_llm_header_proxy(
     rt: &tokio::runtime::Runtime,
-    engine: &str,
     upstream: &str,
     model: &str,
     thinking_enabled: bool,
 ) -> Result<(Option<crate::llm_header_proxy::LlmHeaderProxy>, String), HarnessError> {
-    if engine != "opencode" {
-        return Ok((None, upstream.to_string()));
-    }
     let proxy = rt.block_on(crate::llm_header_proxy::LlmHeaderProxy::start(
         upstream,
         model,
