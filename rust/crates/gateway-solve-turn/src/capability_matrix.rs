@@ -223,7 +223,10 @@ pub fn grandfathered_silent(engine: CapabilityEngine, capability: GatewayCapabil
     use GatewayCapability::{AllowedTools, OtelTraceparent, SolveOrchestration};
     matches!(
         (engine, capability),
-        (Opencode | Appserver, AllowedTools | SolveOrchestration | OtelTraceparent)
+        (
+            Opencode | Appserver,
+            AllowedTools | SolveOrchestration | OtelTraceparent
+        )
     )
 }
 
