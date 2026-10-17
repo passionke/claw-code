@@ -38,7 +38,7 @@ There is no platform tar, platform pin, or runtime download of `claw`/`neuro-*`.
 
 ## 3. Agent engines
 
-- Scope: independently versioned ACP implementations such as opencode and codex-acp.
+- Scope: independently versioned ACP implementations such as opencode and appserver.
 - Each engine owns its build script under `deploy/agent-engines/<engine>/`.
 - Private Jenkins entry: `deploy/agent-engines/ci-publish-nora.sh` (manual Job, one engine per run).
 - Jenkins Pipeline source: `deploy/jenkins/claw-agent-engine-nora.Jenkinsfile`.

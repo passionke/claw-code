@@ -385,7 +385,7 @@ impl TurnMapper {
 }
 
 /// Contract `kind` (existing `tool_process_kind` vocabulary). MCP wins over the ACP kind because
-/// codex-acp reports MCP calls as `execute`.
+/// appserver reports MCP calls as `execute`.
 fn kind_for(
     servers: &[String],
     acp: ToolKind,

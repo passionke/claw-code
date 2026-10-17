@@ -6,7 +6,7 @@
 #   ENGINE_ID          directory name under deploy/agent-engines/
 #   ENGINE_VERSION     artifact version label, e.g. 1.18.34 or 1.18.34-amd64
 #   RAW_USERNAME/PASSWORD  Nora deployer (Jenkins credential nora-deployer)
-# Engine-specific build knobs (OPENCODE_VERSION / CODEX_ACP_VERSION / …) stay on the
+# Engine-specific build knobs (OPENCODE_VERSION / APPSERVER_VERSION / …) stay on the
 # engine's own build.sh; Jenkins sets them when needed.
 set -euo pipefail
 
