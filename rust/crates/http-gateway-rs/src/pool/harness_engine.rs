@@ -227,7 +227,6 @@ impl EngineStrategy for NeuroEngine {
     /// Plain agent turn, plus the runtime's read-only paths in the jail (visible in the task file).
     fn prepare_task(&self, task: &mut GatewaySolveTaskFile) {
         task.interaction_mode = Some("agent".to_string());
-        task.ask_user_question_enabled = Some(false);
         task.force_single_turn = Some(true);
         task.sealed_plan_id = None;
         task.sealed_plan_markdown = None;
@@ -501,7 +500,7 @@ mod tests {
         oc.prepare_task(&mut task);
         oc.prepare_task(&mut task);
         assert_eq!(task.interaction_mode.as_deref(), Some("agent"));
-        assert_eq!(task.ask_user_question_enabled, Some(false));
+        assert_eq!(task.ask_user_question_enabled, Some(true));
         assert_eq!(task.force_single_turn, Some(true));
         let ro = &task.landlock_dsl.as_ref().unwrap().ro;
         for p in ["/dev", "/proc"] {
@@ -517,6 +516,7 @@ mod tests {
         HarnessEngine::Appserver
             .strategy()
             .prepare_task(&mut as_task);
+        assert_eq!(as_task.ask_user_question_enabled, Some(true));
         let as_ro = &as_task.landlock_dsl.as_ref().unwrap().ro;
         assert_eq!(as_ro.iter().filter(|x| *x == "/dev").count(), 1);
         assert!(!as_ro.iter().any(|x| x == "/proc"));

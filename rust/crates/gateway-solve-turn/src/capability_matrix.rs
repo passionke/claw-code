@@ -1,7 +1,7 @@
 //! Gateway capability × harness engine. The checklist is this module, not a second list.
 //! Author: kejiqing
 //!
-//! Four cells only: honored, rejected, silent, miswired.
+//! Five cells: honored, rejected, unconfigured, silent, miswired.
 //! A new [`GatewayCapability`] or [`CapabilityEngine`] fails to compile until every cell is set.
 //! New silent cells are forbidden by test; the current silent set is frozen in
 //! [`grandfathered_silent`].
@@ -48,6 +48,8 @@ pub enum CapabilityFit {
     Honored,
     /// Solve is refused (`unsupported_by_engine`) or the worker gate returns 400.
     Rejected,
+    /// This engine has no config for the switch. Solve continues and does not ask the user.
+    Unconfigured,
     /// The switch exists on the task or project config, and this engine neither applies it nor refuses it.
     Silent,
     /// Wired to a different behavior than the control means.
@@ -133,7 +135,7 @@ impl GatewayCapability {
         match self {
             Self::PlanMode => "neuro：gateway gate 与 worker reject_unsupported 均 400",
             Self::AskUserQuestion => {
-                "neuro：worker 在标志仍为 true 时 400；gateway prepare_task 先写成 false，产品路径看不到 400"
+                "opencode 写入 permission.question；appserver 无此项配置，solve 继续且不向用户提问"
             }
             Self::SealedPlan => "neuro：gateway gate 与 worker reject_unsupported 均 400",
             Self::ProjectRoleNonNormal => "neuro：validate_role 仅允许 normal",
@@ -171,6 +173,7 @@ impl CapabilityFit {
         match self {
             Self::Honored => "落实",
             Self::Rejected => "拒绝",
+            Self::Unconfigured => "无配置",
             Self::Silent => "静默",
             Self::Miswired => "错接",
         }
@@ -182,7 +185,7 @@ impl CapabilityFit {
 #[must_use]
 pub fn capability_fit(engine: CapabilityEngine, capability: GatewayCapability) -> CapabilityFit {
     use CapabilityEngine::{Appserver, Claw, Opencode};
-    use CapabilityFit::{Honored, Miswired, Rejected, Silent};
+    use CapabilityFit::{Honored, Miswired, Rejected, Silent, Unconfigured};
     use GatewayCapability::{
         AllowedTools, AskUserQuestion, ExtraSession, InstructionsAndRules, LandlockDsl,
         MaxIterations, Mcp, Model, NonE2bBackend, OtelTraceparent, PlanMode, ProjectRoleNonNormal,
@@ -200,9 +203,10 @@ pub fn capability_fit(engine: CapabilityEngine, capability: GatewayCapability) -
         ) => Honored,
         (
             Opencode | Appserver,
-            PlanMode | AskUserQuestion | SealedPlan | ProjectRoleNonNormal | RelaxedWorkerProfile
-            | NonE2bBackend,
+            PlanMode | SealedPlan | ProjectRoleNonNormal | RelaxedWorkerProfile | NonE2bBackend,
         ) => Rejected,
+        (Opencode, AskUserQuestion) => Honored,
+        (Appserver, AskUserQuestion) => Unconfigured,
         (
             Opencode | Appserver,
             PromptAndAttachments | ExtraSession | Model | MaxIterations | TimeoutSeconds
@@ -234,7 +238,7 @@ pub fn grandfathered_silent(engine: CapabilityEngine, capability: GatewayCapabil
 #[must_use]
 pub fn render_capability_matrix() -> String {
     let mut out = String::from(
-        "ACP 能力总图\n真源：gateway_solve_turn::capability_matrix。四态：落实、拒绝、静默、错接。\n\n",
+        "ACP 能力总图\n真源：gateway_solve_turn::capability_matrix。五态：落实、拒绝、无配置、静默、错接。\n\n",
     );
     out.push_str("| 能力 | claw | opencode | appserver | 说明 |\n");
     out.push_str("| --- | --- | --- | --- | --- |\n");

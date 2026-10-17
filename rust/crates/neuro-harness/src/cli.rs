@@ -186,6 +186,7 @@ fn solve(profile: &'static dyn EngineProfile, task_file: &Path) -> Result<Value,
         instructions_path: &instructions,
         skills_dir: &skills_dir,
         thinking_enabled: task.thinking_enabled,
+        ask_user_question_enabled: task.ask_user_question_enabled == Some(true),
     })?;
     force_proxy_openai_base_url(&mut launch, header_proxy.as_ref());
     let (mcp_servers, mcp_names) = mcp_proxy_servers(&session_root)?;

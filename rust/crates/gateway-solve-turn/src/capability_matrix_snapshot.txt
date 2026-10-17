@@ -1,10 +1,10 @@
 ACP 能力总图
-真源：gateway_solve_turn::capability_matrix。四态：落实、拒绝、静默、错接。
+真源：gateway_solve_turn::capability_matrix。五态：落实、拒绝、无配置、静默、错接。
 
 | 能力 | claw | opencode | appserver | 说明 |
 | --- | --- | --- | --- | --- |
 | planMode | 落实 | 拒绝 | 拒绝 | neuro：gateway gate 与 worker reject_unsupported 均 400 |
-| askUserQuestion | 落实 | 拒绝 | 拒绝 | neuro：worker 在标志仍为 true 时 400；gateway prepare_task 先写成 false，产品路径看不到 400 |
+| askUserQuestion | 落实 | 落实 | 无配置 | opencode 写入 permission.question；appserver 无此项配置，solve 继续且不向用户提问 |
 | sealedPlan | 落实 | 拒绝 | 拒绝 | neuro：gateway gate 与 worker reject_unsupported 均 400 |
 | projectRoleNonNormal | 落实 | 拒绝 | 拒绝 | neuro：validate_role 仅允许 normal |
 | relaxedWorkerProfile | 落实 | 拒绝 | 拒绝 | neuro：validate_worker_profile 仅允许 strict |

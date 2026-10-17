@@ -88,7 +88,12 @@ fn opencode_config(ctx: &PrepareContext<'_>) -> Value {
                 "models": {ctx.model: model_entry},
             }
         },
-        "permission": {"edit": "allow", "bash": "allow", "webfetch": "allow"},
+        "permission": {
+            "edit": "allow",
+            "bash": "allow",
+            "webfetch": "allow",
+            "question": if ctx.ask_user_question_enabled { "allow" } else { "deny" },
+        },
         "instructions": [ctx.instructions_path.to_string_lossy()],
     })
 }
@@ -177,6 +182,7 @@ mod tests {
                 instructions_path: &instructions,
                 skills_dir: &pcr.join(".claw/skills"),
                 thinking_enabled: false,
+                ask_user_question_enabled: false,
             })
             .unwrap();
         assert_eq!(launch.args, vec!["acp"]);
@@ -235,6 +241,7 @@ mod tests {
                 instructions_path: &instructions,
                 skills_dir: &pcr.join(".claw/skills"),
                 thinking_enabled: false,
+                ask_user_question_enabled: false,
             })
             .unwrap();
         let cfg: Value = serde_json::from_slice(
@@ -262,6 +269,7 @@ mod tests {
                 instructions_path: &instructions,
                 skills_dir: &pcr.join(".claw/skills"),
                 thinking_enabled: false,
+                ask_user_question_enabled: false,
             })
             .unwrap();
         let cfg: Value = serde_json::from_slice(
@@ -281,6 +289,7 @@ mod tests {
                 instructions_path: &instructions,
                 skills_dir: &pcr.join(".claw/skills"),
                 thinking_enabled: true,
+                ask_user_question_enabled: false,
             })
             .unwrap();
         let cfg: Value = serde_json::from_slice(
@@ -292,5 +301,38 @@ mod tests {
                 ["type"],
             "enabled"
         );
+    }
+
+    #[test]
+    fn ask_user_permission_question_follows_the_switch() {
+        let _guard = env_lock();
+        let (_dir, root, pcr) = prepare_fixture();
+        let instructions = root.join(".neuro-harness/instructions.md");
+        let prepare = |enabled: bool| {
+            OpencodeProfile
+                .prepare(&PrepareContext {
+                    session_root: &root,
+                    project_config_root: &pcr,
+                    model: "m1",
+                    openai_base_url: "http://tap:8080",
+                    instructions_path: &instructions,
+                    skills_dir: &pcr.join(".claw/skills"),
+                    thinking_enabled: false,
+                    ask_user_question_enabled: enabled,
+                })
+                .unwrap();
+            let cfg: Value = serde_json::from_slice(
+                &std::fs::read(root.join(".neuro-harness/opencode.json")).unwrap(),
+            )
+            .unwrap();
+            cfg
+        };
+        let on = prepare(true);
+        assert_eq!(on["permission"]["question"], "allow");
+        assert_eq!(on["permission"]["edit"], "allow");
+        assert_eq!(on["permission"]["bash"], "allow");
+        assert_eq!(on["permission"]["webfetch"], "allow");
+        let off = prepare(false);
+        assert_eq!(off["permission"]["question"], "deny");
     }
 }

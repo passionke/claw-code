@@ -34,9 +34,9 @@ Author: kejiqing
 | `responsesStream` | 见能力总图。neuro 上是错接：只决定是否把 ACP `agent_thought_chunk` 打成 `thinking.delta`，不控制上游 thinking |
 | `llmRoute` | 只作为审计快照回写到 `outputJson.llmRoute` |
 
-能力总图（落实 / 拒绝 / 静默 / 错接）的真源是 `gateway_solve_turn::capability_matrix`。人读勾叉表由测试 `capability_matrix_snapshot_is_the_checklist` 锁定，快照文件 `rust/crates/gateway-solve-turn/src/capability_matrix_snapshot.txt`。本文不另维护一份支持名单。
+能力总图（落实 / 拒绝 / 无配置 / 静默 / 错接）的真源是 `gateway_solve_turn::capability_matrix`。人读勾叉表由测试 `capability_matrix_snapshot_is_the_checklist` 锁定，快照文件 `rust/crates/gateway-solve-turn/src/capability_matrix_snapshot.txt`。本文不另维护一份支持名单。
 
-worker 在 task 仍带 `interactionMode=plan`、`askUserQuestionEnabled=true`、`sealedPlanId` 或 `sealedPlanMarkdown` 时输出 `solve.done` 错误 `unsupported_by_engine: <field>`（`httpStatusHint=400`），不启动引擎。gateway 对 plan 与 sealed plan 同样 400。`askUserQuestion` 在产品路径上由 `prepare_task` 写成 false，worker 的 400 只在标志仍为 true 时发生。`thinkingEnabled` 在 opencode / appserver 上由 localhost 代理把 `api::chat_thinking_fields` 写入出站 JSON（与 claw 同一份字段）。`allowedTools`、`solveOrchestration`、`otelTraceparent` 在 opencode / appserver 上仍是静默，总图标出，本契约不把它们写成已支持或已拒绝。
+worker 在 task 仍带 `interactionMode=plan`、`sealedPlanId` 或 `sealedPlanMarkdown` 时输出 `solve.done` 错误 `unsupported_by_engine: <field>`（`httpStatusHint=400`），不启动引擎。gateway 对 plan 与 sealed plan 同样 400。`askUserQuestionEnabled` 原样保留：opencode 写入 `permission.question`（开 `allow`，关 `deny`）；appserver 没有这项配置，solve 照常跑，不向用户提问。`thinkingEnabled` 在 opencode / appserver 上由 localhost 代理把 `api::chat_thinking_fields` 写入出站 JSON（与 claw 同一份字段）。`allowedTools`、`solveOrchestration`、`otelTraceparent` 在 opencode / appserver 上仍是静默，总图标出，本契约不把它们写成已支持或已拒绝。
 
 环境变量（由 gateway exec 注入，与 claw 相同）：`OPENAI_BASE_URL`（tap 代理）、`OPENAI_API_KEY`（占位值 `claw-tap-cluster`）、`CLAW_DEFAULT_MODEL`、`CLAW_SESSION_ID`、`CLAW_TURN_ID`。
 
@@ -164,7 +164,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
   - `provider.neurogate`：`@ai-sdk/openai-compatible`，`baseURL` 指向本进程 localhost header 代理（上游仍是 gateway 注入的 tap URL），`apiKey` 写 `{env:OPENAI_API_KEY}`；**本进程与子进程** `OPENAI_BASE_URL` 都改成该代理（opencode 实际跟 env，不跟 config）。config 里仍写 `headers`，但 **出站记账以代理注入 `claw-turn-id` 为准**。
   - `model` 和 `small_model` 都是 `neurogate/<model>`。`models.<model>.options` 写入 `api::chat_thinking_fields`（DeepSeek `thinking.type`，Qwen 关闭时 `enable_thinking=false`）。localhost 代理对 `POST /chat/completions` 和 `POST /responses` 的 JSON 再合并同一份字段，控制面以代理写出的请求体为准。
   - `instructions` 指向 `.neuro-harness/instructions.md`。
-  - `permission` 全部 allow，`autoupdate=false`，`share="disabled"`，`plugin=[]`。
+  - `permission` 里 `edit` / `bash` / `webfetch` 为 allow；`question` 随 `askUserQuestionEnabled` 为 allow 或 deny。`autoupdate=false`，`share="disabled"`，`plugin=[]`。
 - 环境变量：`OPENCODE_DISABLE_CLAUDE_CODE=1`、`OPENCODE_DISABLE_AUTOUPDATE=1`、`OPENCODE_DISABLE_MODELS_FETCH=1`、`OPENCODE_DISABLE_DEFAULT_PLUGINS=1`、`OPENCODE_DISABLE_LSP_DOWNLOAD=1`、`OPENCODE_DISABLE_SHARE=1`、`OPENCODE_DB={session_root}/.neuro-harness/opencode.db`，以及 `XDG_*` 指向 session 目录。
 - skills：每轮重建 `{session_root}/.config/opencode/skills`，`$CLAW_PROJECT_CONFIG_ROOT/.claw/skills` 下每个含 `SKILL.md` 的目录建一个软链接。opencode 只加载名字符合 `^[a-z0-9]+(-[a-z0-9]+)*$` 的 skill，不符合的不链接，并在 stderr 记录跳过的名字。
 
@@ -213,7 +213,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 | `POST /v1/projects` | 新增 `harnessEngine` 字段，缺省为 `claw`，非法值返回 400。不校验 LLM。插入项目之后用一次 UPDATE 写入引擎列；之后所有 upsert 和发布路径都不会碰这一列。 |
 | `PUT /v1/projects/{id}/role` | 非 claw 项目只能设为 `normal`，其他角色返回 400 `unsupported_by_engine`。 |
 | `PUT /v1/projects/{id}/config` | 非 claw 项目写入 `workerProfileJson.mode=relaxed` 时返回 400。 |
-| solve（`run_solve_request_docker`） | 非 claw 项目只能走 e2b 后端。`interactionMode=plan` 或带 sealedPlan 时返回 400。task 固定为 `interactionMode=agent`、`askUserQuestionEnabled=false`、`forceSingleTurn=true`。exec 的 bin 换成 `/usr/local/bin/neuro-{opencode,appserver}`。 |
+| solve（`run_solve_request_docker`） | 非 claw 项目只能走 e2b 后端。`interactionMode=plan` 或带 sealedPlan 时返回 400。task 固定为 `interactionMode=agent`、`forceSingleTurn=true`，`askUserQuestionEnabled` 原样保留。exec 的 bin 换成 `/usr/local/bin/neuro-{opencode,appserver}`。 |
 | strict Landlock（`prepare_task`） | 在解析出的规则（cluster 默认或项目覆盖）上追加引擎运行时需要的只读路径，追加结果写进任务文件，可以审计。**neuro 双引擎统一追加 `/dev`**（覆盖 `/dev/null`、`/dev/urandom` 等；Bun/Node 的 `ChildProcess.spawn` / bash 在 jail 内需要）。opencode **另追加 `/proc`**：缺 `/dev/urandom`（现由 `/dev` 覆盖）时 Bun 崩在 `0xBBADBEEF`，缺 `/proc` 时 SIGABRT，只放 `/proc/self` 不够。appserver 只追加共用 `/dev`（启动本可不追加 `/proc`）。claw 的规则不变。bash/spawn 能否工作的验收只靠 e2b，不以单测为准。 |
 | `desired_worker_spec` | 模板取自 PG 的 `e2bWorkerOpencode` / `e2bWorkerAppserver`（`templateId` 为空时用 alias `claw-worker-{opencode,appserver}`，`buildId` 为可选 pin），固定使用 strict。contract key 的 profile 段写成 `strict+<engine>`，claw 项目的 key 不变。 |
 | 列表接口、config 接口 | 返回字段 `harnessEngine`。读取失败时返回 `null`，不回落成 claw。 |
