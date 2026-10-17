@@ -150,6 +150,10 @@ mod tests {
             9,
             "8539b16282ddedc13b26d363b072c6e9e5cf079d3c8da0a700674bc495edfccc8881ec9386b426216ef2ffc4c0a8387e",
         ),
+        (
+            10,
+            "9ff25879be2d7ff7998284b8669dd8ff978cce9ad67a3ed05354a7e7362bbf7a6e0dafb5cb8d4652f724f86d7ea0e54e",
+        ),
     ];
 
     fn checksum_hex(bytes: &[u8]) -> String {

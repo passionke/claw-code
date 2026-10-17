@@ -1,4 +1,4 @@
-//! `neuro-appserver`: codex-acp (bundled codex app-server) with `CODEX_HOME` under the session root.
+//! `neuro-appserver`: bundled Codex app-server with `CODEX_HOME` under the session root.
 //! Contract: `docs/neuro-harness-contract.md` §8. Author: kejiqing
 
 use std::collections::BTreeMap;
@@ -12,8 +12,8 @@ use crate::profile::{AgentLaunch, EngineProfile, PrepareContext, TurnSignal};
 use crate::projection::{link_skills, write_file};
 use crate::HarnessError;
 
-pub const DEFAULT_BIN: &str = "/usr/local/lib/neuro-engines/codex-acp/node_modules/.bin/codex-acp";
-pub const BIN_ENV: &str = "NEURO_CODEX_ACP_BIN";
+pub const DEFAULT_BIN: &str = "/usr/local/lib/neuro-engines/appserver/bin/appserver";
+pub const BIN_ENV: &str = "NEURO_APPSERVER_BIN";
 const PROVIDER: &str = "neurogate";
 
 /// Base instructions of the pinned codex (`codex-rs/models-manager/prompt.md`, rust-v0.159.3).
@@ -60,7 +60,7 @@ impl EngineProfile for AppserverProfile {
         })
     }
 
-    /// codex-acp reports a dead turn as `_meta.codex.threadStatus.type = "systemError"`, then
+    /// appserver reports a dead turn as `_meta.codex.threadStatus.type = "systemError"`, then
     /// streams the error text as a normal message and answers the prompt with `end_turn`.
     fn turn_signal(&self, update: &SessionUpdate) -> Option<TurnSignal> {
         let SessionUpdate::SessionInfoUpdate(info) = update else {
@@ -137,7 +137,7 @@ fn config_toml(model: &str, base_url: &str, catalog_path: &Path) -> String {
 
 /// One-entry catalog equal to codex's fallback metadata, so codex does not prepend the
 /// "Model metadata not found" warning to the reply. `visibility` is `list` (fallback: `none`)
-/// because codex-acp `session/new` fails when `model/list` comes back empty.
+/// because appserver `session/new` fails when `model/list` comes back empty.
 fn model_catalog(model: &str, context_window: u64) -> Value {
     let mut entry = json!({
         "slug": model,

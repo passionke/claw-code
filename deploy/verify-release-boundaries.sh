@@ -28,7 +28,7 @@ reject 'publish-worker-protocol|claw-worker-base|debian-bookworm-claw-worker|sta
   "$ROOT/deploy/agent-engines/upload-raw.sh" \
   "$ROOT/deploy/agent-engines/ci-publish-nora.sh" \
   "$ROOT/deploy/agent-engines/opencode/build.sh" \
-  "$ROOT/deploy/agent-engines/codex-acp/build.sh" \
+  "$ROOT/deploy/agent-engines/appserver/build.sh" \
   "$ROOT/deploy/jenkins/claw-agent-engine-nora.Jenkinsfile"
 
 if [[ -e "$ROOT/deploy/pack/publish.sh" || -e "$ROOT/.github/workflows/pack-publish.yml" ]]; then
