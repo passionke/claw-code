@@ -1,4 +1,4 @@
-//! `neuro-appserver`: codex-acp (bundled codex app-server) with `CODEX_HOME` under the session root.
+//! `neuro-appserver`: bundled Codex app-server with `CODEX_HOME` under the session root.
 //! Contract: `docs/neuro-harness-contract.md` §8. Author: kejiqing
 
 use std::collections::BTreeMap;
@@ -12,8 +12,8 @@ use crate::profile::{AgentLaunch, EngineProfile, PrepareContext, TurnSignal};
 use crate::projection::{link_skills, write_file};
 use crate::HarnessError;
 
-pub const DEFAULT_BIN: &str = "/usr/local/lib/neuro-engines/codex-acp/node_modules/.bin/codex-acp";
-pub const BIN_ENV: &str = "NEURO_CODEX_ACP_BIN";
+pub const DEFAULT_BIN: &str = "/usr/local/lib/neuro-engines/appserver/bin/appserver";
+pub const BIN_ENV: &str = "NEURO_APPSERVER_BIN";
 const PROVIDER: &str = "neurogate";
 
 /// Base instructions of the pinned codex (`codex-rs/models-manager/prompt.md`, rust-v0.159.3).
@@ -60,7 +60,7 @@ impl EngineProfile for AppserverProfile {
         })
     }
 
-    /// codex-acp reports a dead turn as `_meta.codex.threadStatus.type = "systemError"`, then
+    /// appserver reports a dead turn as `_meta.codex.threadStatus.type = "systemError"`, then
     /// streams the error text as a normal message and answers the prompt with `end_turn`.
     fn turn_signal(&self, update: &SessionUpdate) -> Option<TurnSignal> {
         let SessionUpdate::SessionInfoUpdate(info) = update else {
@@ -109,6 +109,9 @@ fn toml_str(s: &str) -> String {
 }
 
 fn config_toml(model: &str, base_url: &str, catalog_path: &Path) -> String {
+    // Codex reads env at request time; tap needs claw-turn-id on every LLM call.
+    // thinkingEnabled is not a Codex effort: the localhost proxy merges
+    // `chat_thinking_fields` into the JSON body. Author: kejiqing
     format!(
         "model = {model}\n\
          model_provider = \"{PROVIDER}\"\n\
@@ -124,7 +127,8 @@ fn config_toml(model: &str, base_url: &str, catalog_path: &Path) -> String {
          name = \"{PROVIDER}\"\n\
          base_url = {base_url}\n\
          env_key = \"OPENAI_API_KEY\"\n\
-         wire_api = \"responses\"\n",
+         wire_api = \"responses\"\n\
+         env_http_headers = {{ \"claw-session-id\" = \"CLAW_SESSION_ID\", \"clawcode-session-id\" = \"CLAW_SESSION_ID\", \"claw-turn-id\" = \"CLAW_TURN_ID\" }}\n",
         model = toml_str(model),
         catalog = toml_str(&catalog_path.to_string_lossy()),
         base_url = toml_str(base_url),
@@ -133,7 +137,7 @@ fn config_toml(model: &str, base_url: &str, catalog_path: &Path) -> String {
 
 /// One-entry catalog equal to codex's fallback metadata, so codex does not prepend the
 /// "Model metadata not found" warning to the reply. `visibility` is `list` (fallback: `none`)
-/// because codex-acp `session/new` fails when `model/list` comes back empty.
+/// because appserver `session/new` fails when `model/list` comes back empty.
 fn model_catalog(model: &str, context_window: u64) -> Value {
     let mut entry = json!({
         "slug": model,
@@ -242,13 +246,28 @@ mod tests {
                 openai_base_url: "http://tap:8080",
                 instructions_path: &instructions,
                 skills_dir: &pcr.join(".claw/skills"),
+                thinking_enabled: false,
             })
             .unwrap();
         assert_eq!(launch.env["INITIAL_AGENT_MODE"], "agent-full-access");
         let toml = std::fs::read_to_string(root.join(".codex/config.toml")).unwrap();
         assert!(toml.contains("model = \"gpt-x\""), "{toml}");
+        assert!(!toml.contains("model_reasoning_effort"), "{toml}");
         assert!(toml.contains("base_url = \"http://tap:8080\""), "{toml}");
         assert!(toml.contains("wire_api = \"responses\""), "{toml}");
+        assert!(toml.contains("env_http_headers"), "{toml}");
+        assert!(
+            toml.contains("\"claw-session-id\" = \"CLAW_SESSION_ID\""),
+            "{toml}"
+        );
+        assert!(
+            toml.contains("\"clawcode-session-id\" = \"CLAW_SESSION_ID\""),
+            "{toml}"
+        );
+        assert!(
+            toml.contains("\"claw-turn-id\" = \"CLAW_TURN_ID\""),
+            "{toml}"
+        );
         assert_eq!(
             std::fs::read_to_string(root.join(".codex/AGENTS.md")).unwrap(),
             "be terse"
@@ -257,6 +276,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(root.join(".codex/model-catalog.json")).unwrap())
                 .unwrap();
         assert_eq!(catalog["models"][0]["slug"], "gpt-x");
+        assert!(catalog["models"][0]["default_reasoning_level"].is_null());
         assert!(
             catalog["models"][0]["model_messages"]["instructions_template"]
                 .as_str()

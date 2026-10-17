@@ -17,9 +17,9 @@ fn load(rel: &str) -> Recorded {
     let mut prompt_id = None;
     let mut updates = Vec::new();
     for line in raw.lines() {
-        let rec: Value = serde_json::from_str(line).unwrap();
-        let msg = &rec["msg"];
-        match rec["dir"].as_str() {
+        let parsed: Value = serde_json::from_str(line).unwrap();
+        let msg = &parsed["msg"];
+        match parsed["dir"].as_str() {
             Some("out") if msg["method"] == "session/prompt" => prompt_id = Some(msg["id"].clone()),
             Some("in") if prompt_id.is_some() => {
                 if msg["method"] == "session/update" {
@@ -38,13 +38,13 @@ fn load(rel: &str) -> Recorded {
 }
 
 fn replay(rel: &str, servers: &[&str]) -> (Vec<OutEvent>, neuro_harness::mapper::TurnTranscript) {
-    let rec = load(rel);
+    let loaded = load(rel);
     let mut mapper = TurnMapper::new(servers.iter().map(|s| (*s).to_string()).collect(), false);
     let mut events = Vec::new();
-    for n in &rec.updates {
+    for n in &loaded.updates {
         events.extend(mapper.on_update(&n.update));
     }
-    let (transcript, tail) = mapper.finish(rec.response.usage.as_ref().map(token_usage));
+    let (transcript, tail) = mapper.finish(loaded.response.usage.as_ref().map(token_usage));
     events.extend(tail);
     (events, transcript)
 }

@@ -1,10 +1,11 @@
-//! Neuro harness: drive an ACP agent (opencode, codex-acp, …) for one gateway solve turn and speak
+//! Neuro harness: drive an ACP agent (opencode, appserver, …) for one gateway solve turn and speak
 //! the existing worker contract (`__CLAW_GATEWAY_STDOUT__` NDJSON, `solve.done`, session jsonl).
 //! Contract: `docs/neuro-harness-contract.md`. Author: kejiqing
 
 pub mod acp_client;
 pub mod cli;
 pub mod engines;
+pub mod llm_header_proxy;
 pub mod mapper;
 pub mod mcp_proxy;
 pub mod profile;

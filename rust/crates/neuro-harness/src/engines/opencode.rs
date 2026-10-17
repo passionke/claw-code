@@ -50,6 +50,24 @@ impl EngineProfile for OpencodeProfile {
 
 fn opencode_config(ctx: &PrepareContext<'_>) -> Value {
     let model_ref = format!("{PROVIDER}/{}", ctx.model);
+    // Tap bills only when outbound LLM requests carry claw-turn-id. Author: kejiqing
+    let headers = gateway_solve_turn::gateway_llm_session_extra_headers();
+    let headers_json = Value::Object(
+        headers
+            .into_iter()
+            .map(|(k, v)| (k, Value::String(v)))
+            .collect(),
+    );
+    let thinking = gateway_solve_turn::chat_thinking_fields(ctx.model, Some(ctx.thinking_enabled));
+    let mut model_entry = json!({"name": ctx.model});
+    // `@ai-sdk/openai-compatible` 2.0.41 copies unknown provider-option keys into the
+    // chat-completions body. The localhost proxy applies the same map on the wire,
+    // because config headers have already been observed not to leave the process.
+    // Author: kejiqing
+    if !thinking.is_empty() {
+        model_entry["options"] = Value::Object(thinking);
+    }
+    // Provider-root `headers` (opencode v2) + `options.headers` (v1/Helicone). Author: kejiqing
     json!({
         "$schema": "https://opencode.ai/config.json",
         "autoupdate": false,
@@ -61,8 +79,13 @@ fn opencode_config(ctx: &PrepareContext<'_>) -> Value {
             PROVIDER: {
                 "npm": "@ai-sdk/openai-compatible",
                 "name": PROVIDER,
-                "options": {"baseURL": ctx.openai_base_url, "apiKey": "{env:OPENAI_API_KEY}"},
-                "models": {ctx.model: {"name": ctx.model}},
+                "headers": headers_json.clone(),
+                "options": {
+                    "baseURL": ctx.openai_base_url,
+                    "apiKey": "{env:OPENAI_API_KEY}",
+                    "headers": headers_json,
+                },
+                "models": {ctx.model: model_entry},
             }
         },
         "permission": {"edit": "allow", "bash": "allow", "webfetch": "allow"},
@@ -110,6 +133,23 @@ fn is_opencode_skill_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn prepare_fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sess");
+        let pcr = dir.path().join("pcr");
+        std::fs::create_dir_all(pcr.join(".claw/skills/sql-helper")).unwrap();
+        std::fs::write(pcr.join(".claw/skills/sql-helper/SKILL.md"), "x").unwrap();
+        (dir, root, pcr)
+    }
 
     #[test]
     fn skill_name_rule() {
@@ -123,11 +163,10 @@ mod tests {
 
     #[test]
     fn prepare_writes_config_and_env_under_session_root() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("sess");
-        let pcr = dir.path().join("pcr");
-        std::fs::create_dir_all(pcr.join(".claw/skills/sql-helper")).unwrap();
-        std::fs::write(pcr.join(".claw/skills/sql-helper/SKILL.md"), "x").unwrap();
+        let _guard = env_lock();
+        std::env::set_var("CLAW_SESSION_ID", "sess-ut");
+        std::env::set_var("CLAW_TURN_ID", "T_ut");
+        let (_dir, root, pcr) = prepare_fixture();
         let instructions = root.join(".neuro-harness/instructions.md");
         let launch = OpencodeProfile
             .prepare(&PrepareContext {
@@ -137,6 +176,7 @@ mod tests {
                 openai_base_url: "http://tap:8080",
                 instructions_path: &instructions,
                 skills_dir: &pcr.join(".claw/skills"),
+                thinking_enabled: false,
             })
             .unwrap();
         assert_eq!(launch.args, vec!["acp"]);
@@ -157,12 +197,100 @@ mod tests {
             cfg["provider"]["neurogate"]["options"]["baseURL"],
             "http://tap:8080"
         );
+        let headers = &cfg["provider"]["neurogate"]["options"]["headers"];
+        assert_eq!(headers["claw-session-id"], "sess-ut");
+        assert_eq!(headers["clawcode-session-id"], "sess-ut");
+        assert_eq!(headers["claw-turn-id"], "T_ut");
+        assert_eq!(
+            cfg["provider"]["neurogate"]["headers"]["claw-turn-id"],
+            "T_ut"
+        );
         assert_eq!(
             cfg["instructions"][0],
             instructions.to_string_lossy().as_ref()
         );
+        assert!(cfg["provider"]["neurogate"]["models"]["m1"]
+            .get("options")
+            .is_none());
         assert!(root
             .join(".config/opencode/skills/sql-helper/SKILL.md")
             .is_file());
+        std::env::remove_var("CLAW_SESSION_ID");
+        std::env::remove_var("CLAW_TURN_ID");
+    }
+
+    #[test]
+    fn prepare_omits_turn_header_when_env_missing() {
+        let _guard = env_lock();
+        std::env::set_var("CLAW_SESSION_ID", "sess-only");
+        std::env::remove_var("CLAW_TURN_ID");
+        let (_dir, root, pcr) = prepare_fixture();
+        let instructions = root.join(".neuro-harness/instructions.md");
+        OpencodeProfile
+            .prepare(&PrepareContext {
+                session_root: &root,
+                project_config_root: &pcr,
+                model: "m1",
+                openai_base_url: "http://tap:8080",
+                instructions_path: &instructions,
+                skills_dir: &pcr.join(".claw/skills"),
+                thinking_enabled: false,
+            })
+            .unwrap();
+        let cfg: Value = serde_json::from_slice(
+            &std::fs::read(root.join(".neuro-harness/opencode.json")).unwrap(),
+        )
+        .unwrap();
+        let headers = &cfg["provider"]["neurogate"]["options"]["headers"];
+        assert_eq!(headers["claw-session-id"], "sess-only");
+        assert_eq!(headers["clawcode-session-id"], "sess-only");
+        assert!(headers.get("claw-turn-id").is_none());
+        std::env::remove_var("CLAW_SESSION_ID");
+    }
+
+    #[test]
+    fn prepare_writes_upstream_thinking_fields_onto_the_model() {
+        let _guard = env_lock();
+        let (_dir, root, pcr) = prepare_fixture();
+        let instructions = root.join(".neuro-harness/instructions.md");
+        OpencodeProfile
+            .prepare(&PrepareContext {
+                session_root: &root,
+                project_config_root: &pcr,
+                model: "qwen3.7-max",
+                openai_base_url: "http://tap:8080",
+                instructions_path: &instructions,
+                skills_dir: &pcr.join(".claw/skills"),
+                thinking_enabled: false,
+            })
+            .unwrap();
+        let cfg: Value = serde_json::from_slice(
+            &std::fs::read(root.join(".neuro-harness/opencode.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg["provider"]["neurogate"]["models"]["qwen3.7-max"]["options"]["enable_thinking"],
+            false
+        );
+        OpencodeProfile
+            .prepare(&PrepareContext {
+                session_root: &root,
+                project_config_root: &pcr,
+                model: "deepseek-v4-pro",
+                openai_base_url: "http://tap:8080",
+                instructions_path: &instructions,
+                skills_dir: &pcr.join(".claw/skills"),
+                thinking_enabled: true,
+            })
+            .unwrap();
+        let cfg: Value = serde_json::from_slice(
+            &std::fs::read(root.join(".neuro-harness/opencode.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg["provider"]["neurogate"]["models"]["deepseek-v4-pro"]["options"]["thinking"]
+                ["type"],
+            "enabled"
+        );
     }
 }

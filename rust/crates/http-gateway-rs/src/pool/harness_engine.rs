@@ -104,6 +104,13 @@ pub trait EngineStrategy: Sync {
 
     /// Last edit of the task file before it is shipped to the worker.
     fn prepare_task(&self, _task: &mut GatewaySolveTaskFile) {}
+
+    /// Checklist cell. Does not change solve behavior; [`gateway_solve_turn::capability_fit`] is the source.
+    /// Author: kejiqing
+    fn capability_fit(
+        &self,
+        capability: gateway_solve_turn::GatewayCapability,
+    ) -> gateway_solve_turn::CapabilityFit;
 }
 
 /// Inputs of [`EngineStrategy::gate_solve_request`].
@@ -116,22 +123,34 @@ pub struct SolveGate<'a> {
 
 pub struct ClawEngine;
 
-impl EngineStrategy for ClawEngine {}
+impl EngineStrategy for ClawEngine {
+    fn capability_fit(
+        &self,
+        capability: gateway_solve_turn::GatewayCapability,
+    ) -> gateway_solve_turn::CapabilityFit {
+        gateway_solve_turn::capability_fit(gateway_solve_turn::CapabilityEngine::Claw, capability)
+    }
+}
+
+/// Shared Landlock RO for all neuro ACP engines (opencode + appserver): Bun/Node
+/// `ChildProcess.spawn` / shell need `/dev/null` under the jail; PathBeneath on `/dev`
+/// also covers `/dev/urandom`. Author: kejiqing
+const NEURO_LANDLOCK_RUNTIME_RO: &[&str] = &["/dev"];
 
 /// A neuro-harness engine: ACP agent behind `neuro-<name>` on the **shared** strict shell
 /// template; the selected Agent engine is installed during worker.init. Author: kejiqing
 pub struct NeuroEngine {
     name: &'static str,
     worker_bin: &'static str,
-    /// Read-only paths the engine runtime needs inside the strict Landlock jail, appended to the
-    /// resolved DSL (e.g. Bun aborts without `/proc` and `/dev/urandom`).
+    /// Engine-specific RO paths appended after [`NEURO_LANDLOCK_RUNTIME_RO`] (e.g. Bun `/proc`).
     landlock_runtime_ro: &'static [&'static str],
 }
 
 static OPENCODE: NeuroEngine = NeuroEngine {
     name: "opencode",
     worker_bin: "/usr/local/bin/neuro-opencode",
-    landlock_runtime_ro: &["/proc", "/dev/urandom"],
+    // Bun aborts without `/proc` (SIGABRT); `/dev` comes from NEURO_LANDLOCK_RUNTIME_RO.
+    landlock_runtime_ro: &["/proc"],
 };
 
 static APPSERVER: NeuroEngine = NeuroEngine {
@@ -213,12 +232,27 @@ impl EngineStrategy for NeuroEngine {
         task.sealed_plan_id = None;
         task.sealed_plan_markdown = None;
         if let Some(dsl) = task.landlock_dsl.as_mut() {
-            for path in self.landlock_runtime_ro {
-                if !dsl.ro.iter().any(|p| p == path) {
+            for path in NEURO_LANDLOCK_RUNTIME_RO
+                .iter()
+                .chain(self.landlock_runtime_ro.iter())
+            {
+                if !dsl.ro.iter().any(|p| p == *path) {
                     dsl.ro.push((*path).to_string());
                 }
             }
         }
+    }
+
+    fn capability_fit(
+        &self,
+        capability: gateway_solve_turn::GatewayCapability,
+    ) -> gateway_solve_turn::CapabilityFit {
+        let engine = match self.name {
+            "opencode" => gateway_solve_turn::CapabilityEngine::Opencode,
+            "appserver" => gateway_solve_turn::CapabilityEngine::Appserver,
+            other => panic!("neuro engine {other} has no capability row"),
+        };
+        gateway_solve_turn::capability_fit(engine, capability)
     }
 }
 
@@ -292,6 +326,28 @@ mod tests {
             interaction_mode: mode,
             sealed_plan_id: sealed,
             sealed_plan_markdown: None,
+        }
+    }
+
+    #[test]
+    fn strategy_capability_fit_matches_the_catalog() {
+        for engine in [
+            HarnessEngine::Claw,
+            HarnessEngine::Opencode,
+            HarnessEngine::Appserver,
+        ] {
+            let kind = match engine {
+                HarnessEngine::Claw => gateway_solve_turn::CapabilityEngine::Claw,
+                HarnessEngine::Opencode => gateway_solve_turn::CapabilityEngine::Opencode,
+                HarnessEngine::Appserver => gateway_solve_turn::CapabilityEngine::Appserver,
+            };
+            let strategy = engine.strategy();
+            for capability in gateway_solve_turn::GatewayCapability::all() {
+                assert_eq!(
+                    strategy.capability_fit(*capability),
+                    gateway_solve_turn::capability_fit(kind, *capability)
+                );
+            }
         }
     }
 
@@ -448,7 +504,7 @@ mod tests {
         assert_eq!(task.ask_user_question_enabled, Some(false));
         assert_eq!(task.force_single_turn, Some(true));
         let ro = &task.landlock_dsl.as_ref().unwrap().ro;
-        for p in ["/proc", "/dev/urandom"] {
+        for p in ["/dev", "/proc"] {
             assert_eq!(
                 ro.iter().filter(|x| *x == p).count(),
                 1,
@@ -456,6 +512,14 @@ mod tests {
             );
         }
         gateway_solve_turn::validate_landlock_dsl(task.landlock_dsl.as_ref().unwrap()).unwrap();
+
+        let mut as_task: GatewaySolveTaskFile = serde_json::from_value(task_json.clone()).unwrap();
+        HarnessEngine::Appserver
+            .strategy()
+            .prepare_task(&mut as_task);
+        let as_ro = &as_task.landlock_dsl.as_ref().unwrap().ro;
+        assert_eq!(as_ro.iter().filter(|x| *x == "/dev").count(), 1);
+        assert!(!as_ro.iter().any(|x| x == "/proc"));
 
         let mut claw_task: GatewaySolveTaskFile = serde_json::from_value(task_json).unwrap();
         let before = serde_json::to_value(&claw_task).unwrap();

@@ -53,6 +53,7 @@ use tools::{
 
 pub mod agent_orchestration;
 pub mod ask_user;
+pub mod capability_matrix;
 pub mod complete_router_turn;
 pub mod delegate_project_tool;
 pub mod entity_labels;
@@ -80,9 +81,14 @@ pub mod task_progress;
 pub mod turn_language;
 pub mod turn_tools;
 pub mod worker_env;
+pub use api::chat_thinking_fields;
 pub use ask_user::{
     apply_ask_user_tool_gate, ask_user_question_in_agent_from_profile,
     resolve_ask_user_question_enabled, ASK_USER_QUESTION_TOOL_NAME,
+};
+pub use capability_matrix::{
+    capability_fit, grandfathered_silent, render_capability_matrix, CapabilityEngine,
+    CapabilityFit, GatewayCapability,
 };
 pub use complete_router_turn::{
     complete_router_turn_tool_definition, run_complete_router_turn, COMPLETE_ROUTER_TURN_TOOL_NAME,

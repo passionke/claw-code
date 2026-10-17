@@ -31,10 +31,12 @@ Author: kejiqing
 | `maxIterations` | 客户端统计 `tool_call` 次数，超出后发送 `session/cancel` |
 | `timeoutSeconds` | 本轮内部截止时间；gateway 侧仍有自己的超时和 `force_kill_slot` |
 | `landlockDsl`、`landlockDslSource` | spawn 引擎前对自身执行 `apply_strict_landlock_jail`，子进程继承 |
-| `responsesStream` | 为 true 时才输出 `thinking.delta` |
+| `responsesStream` | 见能力总图。neuro 上是错接：只决定是否把 ACP `agent_thought_chunk` 打成 `thinking.delta`，不控制上游 thinking |
 | `llmRoute` | 只作为审计快照回写到 `outputJson.llmRoute` |
 
-不支持的能力：task 中出现 `interactionMode=plan`、`askUserQuestionEnabled=true`、`sealedPlanId` 或 `sealedPlanMarkdown` 时，直接输出 `solve.done` 错误 `unsupported_by_engine: <field>`（`httpStatusHint=400`），不启动引擎。gateway 侧也会拦截，两边都把关。
+能力总图（落实 / 拒绝 / 静默 / 错接）的真源是 `gateway_solve_turn::capability_matrix`。人读勾叉表由测试 `capability_matrix_snapshot_is_the_checklist` 锁定，快照文件 `rust/crates/gateway-solve-turn/src/capability_matrix_snapshot.txt`。本文不另维护一份支持名单。
+
+worker 在 task 仍带 `interactionMode=plan`、`askUserQuestionEnabled=true`、`sealedPlanId` 或 `sealedPlanMarkdown` 时输出 `solve.done` 错误 `unsupported_by_engine: <field>`（`httpStatusHint=400`），不启动引擎。gateway 对 plan 与 sealed plan 同样 400。`askUserQuestion` 在产品路径上由 `prepare_task` 写成 false，worker 的 400 只在标志仍为 true 时发生。`thinkingEnabled` 在 opencode / appserver 上由 localhost 代理把 `api::chat_thinking_fields` 写入出站 JSON（与 claw 同一份字段）。`allowedTools`、`solveOrchestration`、`otelTraceparent` 在 opencode / appserver 上仍是静默，总图标出，本契约不把它们写成已支持或已拒绝。
 
 环境变量（由 gateway exec 注入，与 claw 相同）：`OPENAI_BASE_URL`（tap 代理）、`OPENAI_API_KEY`（占位值 `claw-tap-cluster`）、`CLAW_DEFAULT_MODEL`、`CLAW_SESSION_ID`、`CLAW_TURN_ID`。
 
@@ -47,7 +49,7 @@ stdout 中以 `__CLAW_GATEWAY_STDOUT__` 开头的行是结构化事件，其他�
 | ACP `session/update` | 契约事件 | 说明 |
 | --- | --- | --- |
 | `agent_message_chunk`（text） | `report.delta{text, emitSeq}` | 同时累积为本轮 `message` |
-| `agent_thought_chunk`（text） | `thinking.delta{text}` | 仅 `responsesStream=true` 时输出 |
+| `agent_thought_chunk`（text） | `thinking.delta{text}` | 仅 `responsesStream=true` 时输出。这是展示投影，不是 `thinkingEnabled` |
 | `tool_call` | `tool.start{toolCallId, name, kind, title, argsSummary}` | `name` 取 ACP `name`，没有时取 `title` |
 | `tool_call_update`，status 为 `in_progress` 且带内容 | `shell.chunk{toolCallId, text}` | 仅 kind 为 `shell` 的工具 |
 | `tool_call_update`，status 为 `completed` / `failed` | `tool.end{toolCallId, name, kind, status, durationMs, resultSummary, output}` | `output` 取 content 中的文本，没有时取 `rawOutput` 的 JSON |
@@ -153,30 +155,30 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 
 每个 bin 只负责：启动命令、provider 配置、指令和 skills 的投影。配置每轮重新生成，项目在 session 进行中发布新版本时，下一轮就能生效。
 
-引擎安装位置固定在 `/usr/local/lib/neuro-engines/`（landlock 默认 ro 覆盖 `/usr`）。`NEURO_OPENCODE_BIN`、`NEURO_CODEX_ACP_BIN` 只用于本机开发时指向本地安装，镜像中不设置。
+引擎安装位置固定在 `/usr/local/lib/neuro-engines/`（landlock 默认 ro 覆盖 `/usr`）。`NEURO_OPENCODE_BIN`、`NEURO_APPSERVER_BIN` 只用于本机开发时指向本地安装，镜像中不设置。
 
 ### neuro-opencode（`opencode acp`，v1.18.34）
 
 - 启动：`/usr/local/lib/neuro-engines/opencode/bin/opencode acp`。
 - `OPENCODE_CONFIG={session_root}/.neuro-harness/opencode.json`：
-  - `provider.neurogate`：`@ai-sdk/openai-compatible`，`baseURL` 取 `OPENAI_BASE_URL`，`apiKey` 写 `{env:OPENAI_API_KEY}`。
-  - `model` 和 `small_model` 都是 `neurogate/<model>`。
+  - `provider.neurogate`：`@ai-sdk/openai-compatible`，`baseURL` 指向本进程 localhost header 代理（上游仍是 gateway 注入的 tap URL），`apiKey` 写 `{env:OPENAI_API_KEY}`；**本进程与子进程** `OPENAI_BASE_URL` 都改成该代理（opencode 实际跟 env，不跟 config）。config 里仍写 `headers`，但 **出站记账以代理注入 `claw-turn-id` 为准**。
+  - `model` 和 `small_model` 都是 `neurogate/<model>`。`models.<model>.options` 写入 `api::chat_thinking_fields`（DeepSeek `thinking.type`，Qwen 关闭时 `enable_thinking=false`）。localhost 代理对 `POST /chat/completions` 和 `POST /responses` 的 JSON 再合并同一份字段，控制面以代理写出的请求体为准。
   - `instructions` 指向 `.neuro-harness/instructions.md`。
   - `permission` 全部 allow，`autoupdate=false`，`share="disabled"`，`plugin=[]`。
 - 环境变量：`OPENCODE_DISABLE_CLAUDE_CODE=1`、`OPENCODE_DISABLE_AUTOUPDATE=1`、`OPENCODE_DISABLE_MODELS_FETCH=1`、`OPENCODE_DISABLE_DEFAULT_PLUGINS=1`、`OPENCODE_DISABLE_LSP_DOWNLOAD=1`、`OPENCODE_DISABLE_SHARE=1`、`OPENCODE_DB={session_root}/.neuro-harness/opencode.db`，以及 `XDG_*` 指向 session 目录。
 - skills：每轮重建 `{session_root}/.config/opencode/skills`，`$CLAW_PROJECT_CONFIG_ROOT/.claw/skills` 下每个含 `SKILL.md` 的目录建一个软链接。opencode 只加载名字符合 `^[a-z0-9]+(-[a-z0-9]+)*$` 的 skill，不符合的不链接，并在 stderr 记录跳过的名字。
 
-### neuro-appserver（`codex-acp` 2.1.1 + codex 0.159.3）
+### neuro-appserver（appserver 2.1.1 + codex 0.159.3）
 
-- 启动：`/usr/local/lib/neuro-engines/codex-acp/node_modules/.bin/codex-acp`。目录由 `npm ci` 按提交的 lockfile 安装，codex 用 codex-acp 自带解析（不设 `CODEX_PATH`），版本由 lockfile 锁定为 0.159.3。
+- 启动：`/usr/local/lib/neuro-engines/appserver/bin/appserver`。目录由 `npm ci` 按提交的 lockfile 安装，codex 用包内解析（不设 `CODEX_PATH`），版本由 lockfile 锁定为 0.159.3。
 - `CODEX_HOME={session_root}/.codex`。
-- `config.toml`：`model`、`model_provider="neurogate"`、`[model_providers.neurogate]`（`base_url` 取 `OPENAI_BASE_URL`，`env_key="OPENAI_API_KEY"`，`wire_api="responses"`）、`approval_policy="never"`、`sandbox_mode="danger-full-access"`、`check_for_update_on_startup=false`、`[analytics] enabled=false`、`model_catalog_json`。
-- `model_catalog_json`：只含当前模型的一条目录，内容与 Codex 内置的 fallback 元数据等价（`model_info_from_slug`，`rust-v0.159.3`），`model_messages.instructions_template` 取同版本的 `prompt.md`（`rust/crates/neuro-harness/assets/codex/rust-v0.159.3/prompt.md`，编译期嵌入）。两处与 fallback 不同：`visibility="list"`（否则 `model/list` 为空，codex-acp 的 `session/new` 报 "Codex did not return any models"）；`context_window` 在 `CLAW_CONTEXT_WINDOW_TOKENS` 存在时取该值。不配这一项时，Codex 会把 "Model metadata for `<model>` not found" 警告作为正文 chunk 输出。
+- `config.toml`：`model`、`model_provider="neurogate"`、`[model_providers.neurogate]`（`base_url` 指向本进程 localhost 代理，上游仍是 gateway 注入的 tap URL，`env_key="OPENAI_API_KEY"`，`wire_api="responses"`，`env_http_headers` 把 `claw-session-id` / `clawcode-session-id` / `claw-turn-id` 映射到 `CLAW_SESSION_ID` / `CLAW_TURN_ID`，供 observe tap 记账）、`approval_policy="never"`、`sandbox_mode="danger-full-access"`、`check_for_update_on_startup=false`、`[analytics] enabled=false`、`model_catalog_json`。`thinkingEnabled` 不写 Codex effort；代理把 `api::chat_thinking_fields` 并进 `POST /responses` 的 JSON。
+- `model_catalog_json`：只含当前模型的一条目录，内容与 Codex 内置的 fallback 元数据等价（`model_info_from_slug`，`rust-v0.159.3`），`model_messages.instructions_template` 取同版本的 `prompt.md`（`rust/crates/neuro-harness/assets/codex/rust-v0.159.3/prompt.md`，编译期嵌入）。两处与 fallback 不同：`visibility="list"`（否则 `model/list` 为空，appserver 的 `session/new` 报 "Codex did not return any models"）；`context_window` 在 `CLAW_CONTEXT_WINDOW_TOKENS` 存在时取该值。不配这一项时，Codex 会把 "Model metadata for `<model>` not found" 警告作为正文 chunk 输出。
 - 环境变量：`INITIAL_AGENT_MODE=agent-full-access`（隔离交给 landlock）。
 - 指令：`$CODEX_HOME/AGENTS.md` 写入 `.neuro-harness/instructions.md` 的内容（Codex 的全局指令文件）。
 - skills：每轮重建 `{session_root}/.agents/skills`，`$CLAW_PROJECT_CONFIG_ROOT/.claw/skills` 下每个含 `SKILL.md` 的目录建一个软链接。
 - 上游：Codex 请求 `<tap>/responses`，tap 转发到 `baseModelUrl + /responses`（`claude-tap` `proxy.py`：`target + 请求路径`）。所以项目 LLM 的 `baseModelUrl` 填 API 根地址（如 `https://api.deepseek.com`），上游须支持 Responses API；gateway 不做 URL 校验。
-- 失败识别：codex-acp 出错时先发 `session_info_update._meta.codex.error`（`additionalDetails` 为原因，带重试），放弃时发 `_meta.codex.threadStatus.type="systemError"`，再把错误文本当作正文 chunk、并以 `end_turn` 结束 prompt。`turn_signal` 识别这两种 `_meta`，本轮按失败处理。
+- 失败识别：appserver 出错时先发 `session_info_update._meta.codex.error`（`additionalDetails` 为原因，带重试），放弃时发 `_meta.codex.threadStatus.type="systemError"`，再把错误文本当作正文 chunk、并以 `end_turn` 结束 prompt。`turn_signal` 识别这两种 `_meta`，本轮按失败处理。
 
 ## 9. Spike 结论（2026-10-02，本机 macOS，mock LLM）
 
@@ -185,7 +187,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 | 假设 | 结论 | 证据 |
 | --- | --- | --- |
 | 跨进程续接 | 两个引擎都支持 `session/resume`，在新进程里续接后，下一次 LLM 请求带上了完整历史；resume 不回放历史 update | opencode turn2：`mode=resume`，LLM 请求中出现第一轮的 user 和 assistant；codex turn2：第二次 `/responses` 的 input 带上了 `msg_1` |
-| 续接耗时 | opencode：initialize 约 460ms，resume 约 270ms；codex-acp：initialize 约 200ms，resume 约 30ms | `acp_drive.py` 输出的 `ms` 字段 |
+| 续接耗时 | opencode：initialize 约 460ms，resume 约 270ms；appserver：initialize 约 200ms，resume 约 30ms | `acp_drive.py` 输出的 `ms` 字段 |
 | MCP 注入 | 两个引擎都能列出并调用 stdio MCP。opencode 发出的 `_meta` 只有 `progressToken`；Codex 会带自己的 `x-codex-turn-metadata` 等字段。两者都不会带 gateway 的 `extra_session`，所以 mcp-proxy 注入是必需的 | `mcp.ndjson`：opencode `{"_meta":{"progressToken":2}}`；codex `{"_meta":{"callId":…,"x-codex-turn-metadata":…}}` |
 | token 用量 | 两个引擎都在 `PromptResponse.usage` 里返回；带工具调用的一轮（两次 LLM 调用，每次 11/7）也只报了 11/7，像是最后一次调用的值。**待 e2b 用真实上游确认口径** | turn2 的 `prompt_result.usage` |
 | 离线运行 | 两个引擎在外网不可达（代理指向不可达地址，只放行 127.0.0.1）时都能正常完成；opencode 需要上面列出的 `OPENCODE_DISABLE_*` 开关，否则会在运行时 npm 安装插件 | oc2 / cx turn6，均约 2s 完成，无错误日志 |
@@ -198,9 +200,9 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 尚未验证，需要在 e2b 上确认的：
 
 1. opencode 的 sqlite（WAL）和 Codex 的多个 sqlite 放在 NAS 上能否正常加锁。
-2. landlock 下 bun（opencode）和 node（codex-acp）对 `/dev`、`/proc` 的访问。默认 DSL 的 ro 列表里没有这两个路径。
+2. **Landlock + bash/spawn（唯一验收面，不加单测）**：neuro 双引擎已通过 `prepare_task` 统一追加 `/dev`（PathBeneath 覆盖 `/dev/null` 等）；opencode 另追加 `/proc`。发版后须在 e2b strict session 确认 bash（如 `echo ok`）与 webfetch 均可用；appserver 有条件同验。内核 Landlock + 运行时 spawn 行为无法在本机 unit 可靠复现。
 3. codex 经 tap 访问真实上游 `/responses`（含 SSE 和 namespace 工具）。
-4. usage 的口径。
+4. usage 的口径（ACP `PromptResponse.usage` 是否整轮累计，待 e2b 真实上游确认）。**缺 `claw-turn-id` 导致 `gateway_model_usage` 表空**已闭合：双引擎 prepare 注入出站头，账单仍以 tap 为准。
 
 ## 10. gateway 接入（`http-gateway-rs/src/pool/harness_engine.rs`）
 
@@ -212,7 +214,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
 | `PUT /v1/projects/{id}/role` | 非 claw 项目只能设为 `normal`，其他角色返回 400 `unsupported_by_engine`。 |
 | `PUT /v1/projects/{id}/config` | 非 claw 项目写入 `workerProfileJson.mode=relaxed` 时返回 400。 |
 | solve（`run_solve_request_docker`） | 非 claw 项目只能走 e2b 后端。`interactionMode=plan` 或带 sealedPlan 时返回 400。task 固定为 `interactionMode=agent`、`askUserQuestionEnabled=false`、`forceSingleTurn=true`。exec 的 bin 换成 `/usr/local/bin/neuro-{opencode,appserver}`。 |
-| strict Landlock（`prepare_task`） | 在解析出的规则（cluster 默认或项目覆盖）上追加引擎运行时需要的只读路径，追加结果写进任务文件，可以审计。opencode 追加 `/proc` 和 `/dev/urandom`：在 e2b 沙箱里重放证实，缺 `/dev/urandom` 时 Bun 崩在 `0xBBADBEEF`，缺 `/proc` 时 SIGABRT，只放 `/proc/self` 不够。appserver 不追加：默认规则下启动正常，行为与不加 Landlock 一致。claw 的规则不变。 |
+| strict Landlock（`prepare_task`） | 在解析出的规则（cluster 默认或项目覆盖）上追加引擎运行时需要的只读路径，追加结果写进任务文件，可以审计。**neuro 双引擎统一追加 `/dev`**（覆盖 `/dev/null`、`/dev/urandom` 等；Bun/Node 的 `ChildProcess.spawn` / bash 在 jail 内需要）。opencode **另追加 `/proc`**：缺 `/dev/urandom`（现由 `/dev` 覆盖）时 Bun 崩在 `0xBBADBEEF`，缺 `/proc` 时 SIGABRT，只放 `/proc/self` 不够。appserver 只追加共用 `/dev`（启动本可不追加 `/proc`）。claw 的规则不变。bash/spawn 能否工作的验收只靠 e2b，不以单测为准。 |
 | `desired_worker_spec` | 模板取自 PG 的 `e2bWorkerOpencode` / `e2bWorkerAppserver`（`templateId` 为空时用 alias `claw-worker-{opencode,appserver}`，`buildId` 为可选 pin），固定使用 strict。contract key 的 profile 段写成 `strict+<engine>`，claw 项目的 key 不变。 |
 | 列表接口、config 接口 | 返回字段 `harnessEngine`。读取失败时返回 `null`，不回落成 claw。 |
 
@@ -224,12 +226,12 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
   - `linux-compile.sh` 对它单独调用一次 `cargo build --manifest-path crates/neuro-harness/Cargo.toml`，使用同一个 `CARGO_TARGET_DIR`。
   - `.githooks/pre-push` 发现自带 `Cargo.lock` 的 crate 时，用 `--manifest-path` 单独执行 fmt、clippy（`--all-targets -D warnings`）和 test，不会因此触发 workspace 全量检查。
   - 本地产物位于 `rust/crates/neuro-harness/target/`。
-  - 已知缺口：`rust-ci.yml` 的 `cargo test --workspace` 不覆盖这个 crate，目前只靠 pre-push 和 `claw-code-branch-worker` 的编译覆盖。
+  - `rust-ci.yml` 另有 job `neuro-harness (standalone)`：对 `crates/neuro-harness/Cargo.toml` 单独跑 fmt / clippy（`--all-targets -D warnings`）/ test，与 pre-push 同隔离。
 - `deploy/stack/lib/linux-compile.sh`：产物统一由 `CLAW_LINUX_RELEASE_BINS` 列出，包括 `claw`、`http-gateway-rs`、`neuro-opencode`、`neuro-appserver`。
 - npm 源统一用 `claw_npm_registry`（`deploy/stack/lib/claw-region.sh`）：region 为 `china` 时用 `registry.npmmirror.com`，其他情况用 `registry.npmjs.org`。已实测：同一份 lockfile 用 `npm ci --registry=https://registry.npmmirror.com` 安装时，全部从 npmmirror 下载，integrity 校验通过（npm 默认 `replace-registry-host=npmjs`）。
 - `deploy/agent-engines/opencode/` 独立生成 opencode raw tar；glibc 平台包
   `opencode-linux-{x64,arm64}@1.18.34` 的 sha512 integrity 固定在该引擎的 Containerfile。
-- `deploy/agent-engines/codex-acp/` 独立生成 codex-acp raw tar，并包含 Node 22 与 lockfile
+- `deploy/agent-engines/appserver/` 独立生成 appserver raw tar，并包含 Node 22 与 lockfile
   固定的 npm 依赖。
 - 两个制品都通过 `deploy/agent-engines/upload-raw.sh` 校验、计算 sha256 并 `curl -T`
   上传，不再构建引擎 Worker 镜像。

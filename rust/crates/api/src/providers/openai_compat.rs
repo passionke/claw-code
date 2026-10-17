@@ -1187,6 +1187,33 @@ fn deepseek_thinking_active(request: &MessageRequest, wire_model: &str) -> bool 
     is_deepseek_wire_model(wire_model) && request.thinking_enabled != Some(false)
 }
 
+/// Chat-completions fields for the project thinking switch.
+/// `None` matches a caller that did not set the switch (Qwen still gets
+/// `enable_thinking=false`). Gateway and neuro pass `Some`. Author: kejiqing
+#[must_use]
+pub fn chat_thinking_fields(
+    model: &str,
+    thinking_enabled: Option<bool>,
+) -> serde_json::Map<String, Value> {
+    let wire_model = strip_routing_prefix(model);
+    let mut fields = serde_json::Map::new();
+    if is_deepseek_wire_model(wire_model) {
+        if let Some(enabled) = thinking_enabled {
+            fields.insert(
+                "thinking".to_string(),
+                json!({ "type": if enabled { "enabled" } else { "disabled" } }),
+            );
+        }
+    }
+    if is_qwen_wire_model(wire_model)
+        && !is_reasoning_model(model)
+        && thinking_enabled != Some(true)
+    {
+        fields.insert("enable_thinking".to_string(), json!(false));
+    }
+    fields
+}
+
 /// Estimate the serialized JSON size of a request payload in bytes.
 /// This is a pre-flight check to avoid hitting provider-specific size limits.
 pub fn estimate_request_body_size(request: &MessageRequest, config: OpenAiCompatConfig) -> usize {
@@ -1300,21 +1327,12 @@ pub fn build_chat_completion_request(
         payload["reasoning_effort"] = json!(effort);
     }
 
-    if is_deepseek_wire_model(wire_model) {
-        if let Some(enabled) = request.thinking_enabled {
-            payload["thinking"] = json!({
-                "type": if enabled { "enabled" } else { "disabled" }
-            });
+    // DeepSeek `thinking.type` and Qwen `enable_thinking`. Same map neuro writes
+    // onto opencode's chat-completions body. Author: kejiqing
+    if let Some(obj) = payload.as_object_mut() {
+        for (key, value) in chat_thinking_fields(&request.model, request.thinking_enabled) {
+            obj.insert(key, value);
         }
-    }
-
-    // DashScope Qwen3+ defaults thinking on; tokens land in `reasoning_content` with empty
-    // `content`, which breaks boss-report live SSE and `outputJson.message` extraction.
-    if is_qwen_wire_model(wire_model)
-        && !is_reasoning_model(&request.model)
-        && request.thinking_enabled != Some(true)
-    {
-        payload["enable_thinking"] = json!(false);
     }
 
     payload

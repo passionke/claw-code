@@ -1,0 +1,27 @@
+ACP 能力总图
+真源：gateway_solve_turn::capability_matrix。四态：落实、拒绝、静默、错接。
+
+| 能力 | claw | opencode | appserver | 说明 |
+| --- | --- | --- | --- | --- |
+| planMode | 落实 | 拒绝 | 拒绝 | neuro：gateway gate 与 worker reject_unsupported 均 400 |
+| askUserQuestion | 落实 | 拒绝 | 拒绝 | neuro：worker 在标志仍为 true 时 400；gateway prepare_task 先写成 false，产品路径看不到 400 |
+| sealedPlan | 落实 | 拒绝 | 拒绝 | neuro：gateway gate 与 worker reject_unsupported 均 400 |
+| projectRoleNonNormal | 落实 | 拒绝 | 拒绝 | neuro：validate_role 仅允许 normal |
+| relaxedWorkerProfile | 落实 | 拒绝 | 拒绝 | neuro：validate_worker_profile 仅允许 strict |
+| nonE2bBackend | 落实 | 拒绝 | 拒绝 | neuro：gate_solve_request 拒绝非 e2b |
+| promptAndAttachments | 落实 | 落实 | 落实 | neuro：ACP resource_link + text |
+| extraSession | 落实 | 落实 | 落实 | neuro：instructions 与 mcp-proxy _meta |
+| model | 落实 | 落实 | 落实 | task.model，否则 CLAW_DEFAULT_MODEL |
+| maxIterations | 落实 | 落实 | 落实 | neuro 按 ACP tool_call 次数取消，不是 LLM 往返次数 |
+| timeoutSeconds | 落实 | 落实 | 落实 | 本轮截止；gateway 另有自己的超时 |
+| landlockDsl | 落实 | 落实 | 落实 | neuro 追加 /dev；opencode 再追加 /proc |
+| mcp | 落实 | 落实 | 落实 | stdio/http/sse 经 mcp-proxy |
+| instructionsAndRules | 落实 | 落实 | 落实 | CLAUDE.md 与 rules 投影到 instructions |
+| skills | 落实 | 落实 | 落实 | opencode 丢掉不符合 ^[a-z0-9]+(-[a-z0-9]+)*$ 的名字，stderr 有记录 |
+| sessionResume | 落实 | 落实 | 落实 | resume 或 loadSession；都不支持则报错，无兜底 |
+| turnBillingHeaders | 落实 | 落实 | 落实 | 出站 claw-turn-id；opencode 走 header 代理，appserver 走 config.toml |
+| thinkingEnabled | 落实 | 落实 | 落实 | opencode 与 appserver 都由 localhost 代理把与 claw 相同的 chat thinking 字段写入出站 JSON |
+| allowedTools | 落实 | 静默 | 静默 | neuro 不读 task.allowedTools，MCP 按 settings 全量注入 |
+| solveOrchestration | 落实 | 静默 | 静默 | 只在 claw run_gateway_solve_turn 读取。neuro 不读；forceSingleTurn 被写成 true 但 neuro 也不读 |
+| otelTraceparent | 落实 | 静默 | 静默 | claw worker 读取；neuro 不读 |
+| responsesStream | 落实 | 错接 | 错接 | neuro TurnMapper 用它决定是否 emit thinking.delta，不控制上游 thinking |
