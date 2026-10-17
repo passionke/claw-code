@@ -151,7 +151,7 @@ impl GatewayCapability {
             Self::SessionResume => "resume 或 loadSession；都不支持则报错，无兜底",
             Self::TurnBillingHeaders => "出站 claw-turn-id；opencode 走 header 代理，appserver 走 config.toml",
             Self::ThinkingEnabled => {
-                "opencode 与 appserver 都由 localhost 代理把与 claw 相同的 chat thinking 字段写入出站 JSON"
+                "opencode 与 appserver 由 localhost 代理写入与 claw 相同的 chat thinking 字段。appserver 关闭时目录不请求 reasoning summary，responses 写 reasoning.effort=none，并丢掉上游仍返回的 reasoning 事件"
             }
             Self::AllowedTools => "neuro 不读 task.allowedTools，MCP 按 settings 全量注入",
             Self::SolveOrchestration => {
