@@ -17,9 +17,9 @@ fn load(rel: &str) -> Recorded {
     let mut prompt_id = None;
     let mut updates = Vec::new();
     for line in raw.lines() {
-        let row: Value = serde_json::from_str(line).unwrap();
-        let msg = &row["msg"];
-        match row["dir"].as_str() {
+        let parsed: Value = serde_json::from_str(line).unwrap();
+        let msg = &parsed["msg"];
+        match parsed["dir"].as_str() {
             Some("out") if msg["method"] == "session/prompt" => prompt_id = Some(msg["id"].clone()),
             Some("in") if prompt_id.is_some() => {
                 if msg["method"] == "session/update" {
