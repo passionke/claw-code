@@ -51,7 +51,7 @@ impl LlmHeaderProxy {
                         let Ok((client, _)) = acc else { continue };
                         let upstream = Arc::clone(&upstream);
                         tokio::spawn(async move {
-                            if let Err(e) = proxy_one(client, &upstream).await {
+                            if let Err(e) = Box::pin(proxy_one(client, &upstream)).await {
                                 eprintln!("[llm-header-proxy] {e}");
                             }
                         });
@@ -199,7 +199,7 @@ async fn proxy_one(mut client: TcpStream, target: &ProxyTarget) -> Result<(), St
     // Responses upstream still emits reasoning_text after effort=none. The project
     // switch off drops those events before the engine can surface them. Author: kejiqing
     if !target.thinking_enabled && is_responses_post(&head) {
-        forward_response_without_reasoning(&mut server, &mut client).await?;
+        Box::pin(forward_response_without_reasoning(&mut server, &mut client)).await?;
     } else {
         tokio::io::copy_bidirectional(&mut client, &mut server)
             .await
@@ -635,7 +635,7 @@ fn rewrite_llm_body(
         if obj
             .get("include")
             .and_then(|v| v.as_array())
-            .is_some_and(|items| items.is_empty())
+            .is_some_and(Vec::is_empty)
         {
             obj.remove("include");
         }
