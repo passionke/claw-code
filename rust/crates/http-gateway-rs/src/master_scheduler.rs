@@ -1,9 +1,10 @@
 //! Lightweight daily/weekly scheduler for master solve kickoff. Author: kejiqing
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use chrono::{Datelike, Local, Timelike};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::process::Command;
 use tracing::{info, warn};
 
@@ -203,12 +204,12 @@ async fn run_kb_sync_job(state: &AppState, job: &mut GatewayScheduledJobRow) -> 
         .work_root
         .join(format!("proj_{}", job.master_proj_id))
         .join("home");
-    let worker_env = crate::pool::parse_worker_env_map(&cfg.worker_env_json).map_err(|e| {
-        format!(
-            "invalid worker_env_json for kb_sync proj {}: {e}",
-            job.master_proj_id
-        )
-    })?;
+    let mcp = select_kb_sync_mcp(&cfg.mcp_servers_json)?;
+    let mcp_json = serde_json::to_string(&json!({
+        "url": mcp.url,
+        "headers": mcp.headers,
+    }))
+    .map_err(|e| format!("serialize kb_sync mcp: {e}"))?;
     let mut cmd = Command::new("python3");
     cmd.arg(&script_path)
         .arg("--gw")
@@ -219,10 +220,10 @@ async fn run_kb_sync_job(state: &AppState, job: &mut GatewayScheduledJobRow) -> 
         .arg(kb_sources.to_string())
         .arg("--project-home")
         .arg(project_home)
-        .arg("--skip-config");
-    for (k, v) in worker_env {
-        cmd.env(k, v);
-    }
+        .arg("--mcp-json")
+        .arg(mcp_json)
+        .arg("--skip-config")
+        .arg("--skip-reset");
     let output = cmd
         .output()
         .await
@@ -246,6 +247,59 @@ async fn run_kb_sync_job(state: &AppState, job: &mut GatewayScheduledJobRow) -> 
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// HTTP MCP the gateway kb_sync job calls. Author: kejiqing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KbSyncMcp {
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+}
+
+/// Pick the only `mcpServers` entry that has a non-empty `url`. Author: kejiqing
+///
+/// Stdio entries (no `url`) are ignored. Zero or more than one URL fails; `worker_env` is not consulted.
+pub(crate) fn select_kb_sync_mcp(mcp_servers_json: &Value) -> Result<KbSyncMcp, String> {
+    let obj = mcp_servers_json
+        .as_object()
+        .ok_or("mcpServersJson must be an object")?;
+    let mut hits: Vec<KbSyncMcp> = Vec::new();
+    for (name, spec) in obj {
+        let Some(spec_obj) = spec.as_object() else {
+            continue;
+        };
+        let Some(url) = spec_obj
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let mut headers = BTreeMap::new();
+        if let Some(raw_headers) = spec_obj.get("headers") {
+            let header_obj = raw_headers
+                .as_object()
+                .ok_or_else(|| format!("mcpServersJson.{name}.headers must be an object"))?;
+            for (key, value) in header_obj {
+                let text = value.as_str().ok_or_else(|| {
+                    format!("mcpServersJson.{name}.headers.{key} must be a string")
+                })?;
+                headers.insert(key.clone(), text.to_string());
+            }
+        }
+        hits.push(KbSyncMcp {
+            url: url.to_string(),
+            headers,
+        });
+    }
+    match hits.len() {
+        1 => Ok(hits.remove(0)),
+        0 => Err("kb_sync requires exactly one MCP server with url".into()),
+        n => Err(format!(
+            "kb_sync requires exactly one MCP server with url, found {n}"
+        )),
+    }
 }
 
 fn gateway_loopback_base() -> Option<String> {
@@ -356,5 +410,45 @@ mod tests {
         let rendered = render_schedule_prompt(&weekly, &[7], "20260801");
         assert!(rendered.contains("7"));
         assert!(rendered.contains("20260801"));
+    }
+
+    #[test]
+    fn select_kb_sync_mcp_returns_the_only_url() {
+        let mcp = select_kb_sync_mcp(&json!({
+            "stdio-tool": {"command": "npx"},
+            "gpos-spa-mind": {
+                "type": "streamable-http",
+                "url": " https://mind.example/mcp ",
+                "headers": {"Authorization": "Bearer mak_test"}
+            }
+        }))
+        .unwrap();
+        assert_eq!(mcp.url, "https://mind.example/mcp");
+        assert_eq!(
+            mcp.headers.get("Authorization").map(String::as_str),
+            Some("Bearer mak_test")
+        );
+    }
+
+    #[test]
+    fn select_kb_sync_mcp_rejects_zero_or_many_urls() {
+        let none = select_kb_sync_mcp(&json!({"stdio-tool": {"command": "npx"}})).unwrap_err();
+        assert!(none.contains("exactly one"));
+        let many = select_kb_sync_mcp(&json!({
+            "a": {"url": "https://a.example/mcp"},
+            "b": {"url": "https://b.example/mcp"}
+        }))
+        .unwrap_err();
+        assert!(many.contains("found 2"));
+    }
+
+    #[test]
+    fn select_kb_sync_mcp_ignores_worker_env_shape() {
+        let err = select_kb_sync_mcp(&json!({
+            "CLAW_MIND_API_URL": "https://mind.example/mcp",
+            "CLAW_MIND_API_AUTHORIZATION": "Bearer ut_old"
+        }))
+        .unwrap_err();
+        assert!(err.contains("exactly one"));
     }
 }
