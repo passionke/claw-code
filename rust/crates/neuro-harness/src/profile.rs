@@ -23,6 +23,8 @@ pub struct PrepareContext<'a> {
     pub skills_dir: &'a Path,
     /// Project `thinkingEnabled`. Each profile writes it into that engine's own request.
     pub thinking_enabled: bool,
+    /// Product `askUserQuestionEnabled`. Each profile writes it into that engine's own config.
+    pub ask_user_question_enabled: bool,
 }
 
 /// How to spawn the ACP agent. `env` is added on top of the inherited process env.

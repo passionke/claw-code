@@ -258,6 +258,7 @@ mod tests {
                 instructions_path: &instructions,
                 skills_dir: &pcr.join(".claw/skills"),
                 thinking_enabled: false,
+                ask_user_question_enabled: false,
             })
             .unwrap();
         assert_eq!(launch.env["INITIAL_AGENT_MODE"], "agent-full-access");
@@ -300,5 +301,32 @@ mod tests {
                 .starts_with("You are a coding agent running in the Codex CLI")
         );
         assert!(root.join(".agents/skills/My_Skill/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn ask_user_appserver_config_has_no_question_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sess");
+        let pcr = dir.path().join("pcr");
+        std::fs::create_dir_all(&pcr).unwrap();
+        let instructions = root.join(".neuro-harness/instructions.md");
+        write_file(&instructions, b"be terse").unwrap();
+        for enabled in [true, false] {
+            AppserverProfile
+                .prepare(&PrepareContext {
+                    session_root: &root,
+                    project_config_root: &pcr,
+                    model: "gpt-x",
+                    openai_base_url: "http://tap:8080",
+                    instructions_path: &instructions,
+                    skills_dir: &pcr.join(".claw/skills"),
+                    thinking_enabled: false,
+                    ask_user_question_enabled: enabled,
+                })
+                .unwrap();
+            let toml = std::fs::read_to_string(root.join(".codex/config.toml")).unwrap();
+            assert!(toml.contains("approval_policy = \"never\""), "{toml}");
+            assert!(!toml.contains("question"), "{toml}");
+        }
     }
 }

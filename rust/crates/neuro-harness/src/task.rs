@@ -16,7 +16,7 @@ pub fn load_task(path: &Path) -> Result<GatewaySolveTaskFile, HarnessError> {
         .map_err(|e| HarnessError::new(400, format!("parse task file {}: {e}", path.display())))
 }
 
-/// Plan mode, ask-user and sealed plans exist only in the claw engine.
+/// Plan mode and sealed plans exist only in the claw engine.
 pub fn reject_unsupported(task: &GatewaySolveTaskFile) -> Result<(), HarnessError> {
     let mode = task
         .interaction_mode
@@ -25,8 +25,6 @@ pub fn reject_unsupported(task: &GatewaySolveTaskFile) -> Result<(), HarnessErro
         .unwrap_or_default();
     let field = if mode.eq_ignore_ascii_case("plan") {
         Some("interactionMode")
-    } else if task.ask_user_question_enabled == Some(true) {
-        Some("askUserQuestionEnabled")
     } else if task.sealed_plan_id.is_some() {
         Some("sealedPlanId")
     } else if task.sealed_plan_markdown.is_some() {
@@ -84,13 +82,14 @@ mod tests {
     }
 
     #[test]
-    fn plan_ask_user_and_sealed_plan_are_rejected_with_400() {
+    fn ask_user_question_enabled_does_not_reject() {
+        assert!(reject_unsupported(&task(&json!({"askUserQuestionEnabled":true}))).is_ok());
+    }
+
+    #[test]
+    fn plan_and_sealed_plan_are_rejected_with_400() {
         for (extra, field) in [
             (json!({"interactionMode":"plan"}), "interactionMode"),
-            (
-                json!({"askUserQuestionEnabled":true}),
-                "askUserQuestionEnabled",
-            ),
             (json!({"sealedPlanId":"p1"}), "sealedPlanId"),
             (json!({"sealedPlanMarkdown":"# p"}), "sealedPlanMarkdown"),
         ] {
