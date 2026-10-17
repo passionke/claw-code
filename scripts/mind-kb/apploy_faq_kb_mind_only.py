@@ -18,11 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-MCP_CONFIG = Path.home() / ".cursor/mcp.json"
-MCP_SERVER = "mind_455785b1-1358-45ce-89c0-5a66e56d7826"
-MIND_API_URL_ENV = "CLAW_MIND_API_URL"
-MIND_API_HEADERS_ENV = "CLAW_MIND_API_HEADERS_JSON"
-MIND_API_AUTH_ENV = "CLAW_MIND_API_AUTHORIZATION"
 KB_ALLOWED_TOOLS = ["grep_search", "read_file", "glob_search", "Skill"]
 DEFAULT_NAS_SSH = ""
 DEFAULT_CLUSTER = "pre-claw-01"
@@ -160,24 +155,17 @@ def http(method: str, gw: str, token: str, path: str, body: dict | None = None) 
         return json.loads(resp.read().decode("utf-8"))
 
 
-def load_mcp() -> tuple[str, dict[str, str]]:
-    env_url = os.environ.get(MIND_API_URL_ENV, "").strip()
-    if env_url:
-        headers_json = os.environ.get(MIND_API_HEADERS_ENV, "").strip()
-        if headers_json:
-            headers = json.loads(headers_json)
-        else:
-            headers = {}
-        auth = os.environ.get(MIND_API_AUTH_ENV, "").strip()
-        if auth:
-            headers.setdefault("Authorization", auth)
-        headers.setdefault("Content-Type", "application/json")
-        headers.setdefault("Accept", "application/json, text/event-stream")
-        return env_url, {k: str(v) for k, v in headers.items()}
-    cfg = json.loads(MCP_CONFIG.read_text(encoding="utf-8"))
-    srv = cfg["mcpServers"][MCP_SERVER]
-    url = srv["url"]
-    headers = {k: str(v) for k, v in srv.get("headers", {}).items()}
+def mcp_from_json(raw: str) -> tuple[str, dict[str, str]]:
+    spec = json.loads(raw)
+    if not isinstance(spec, dict):
+        raise SystemExit("--mcp-json must be an object")
+    url = str(spec.get("url") or "").strip()
+    if not url:
+        raise SystemExit("--mcp-json requires url")
+    headers_in = spec.get("headers") or {}
+    if not isinstance(headers_in, dict):
+        raise SystemExit("--mcp-json headers must be an object")
+    headers = {str(k): str(v) for k, v in headers_in.items()}
     headers.setdefault("Content-Type", "application/json")
     headers.setdefault("Accept", "application/json, text/event-stream")
     return url, headers
@@ -205,15 +193,51 @@ def mind_call(url: str, headers: dict[str, str], name: str, arguments: dict) -> 
     return json.loads(text) if text else {}
 
 
+def tool_not_found(exc: BaseException, tool_name: str) -> bool:
+    text = str(exc)
+    return "Tool not found" in text and tool_name in text
+
+
 def resolve_folder(url: str, headers: dict[str, str], folder_id: str) -> tuple[str, list[dict]]:
     spaces = mind_call(url, headers, "list_spaces", {}).get("spaces") or []
+    tree_unavailable = False
     for space in spaces:
         doc_space_id = str(space["id"])
-        tree = mind_call(url, headers, "get_space_tree", {"docSpaceId": doc_space_id})
+        try:
+            tree = mind_call(url, headers, "get_space_tree", {"docSpaceId": doc_space_id})
+        except RuntimeError as exc:
+            # Author: kejiqing — external mak_ MCP does not register get_space_tree.
+            if not tool_not_found(exc, "get_space_tree"):
+                raise
+            tree_unavailable = True
+            break
         nodes = tree.get("nodes") or []
         if any(str(node.get("id")) == folder_id for node in nodes):
             return doc_space_id, nodes
+    if tree_unavailable:
+        return resolve_folder_by_direct_parent(url, headers, folder_id, spaces)
     raise SystemExit(f"mind folder not found: {folder_id}")
+
+
+def resolve_folder_by_direct_parent(
+    url: str,
+    headers: dict[str, str],
+    folder_id: str,
+    spaces: list[dict],
+) -> tuple[str, list[dict]]:
+    """Resolve a folder when the MCP has no space tree. Author: kejiqing
+
+    list_documents(parentId) returns only direct child documents. Nested folders
+    are not visible without get_space_tree.
+    """
+    for space in spaces:
+        doc_space_id = str(space["id"])
+        docs = list_folder_documents(url, headers, doc_space_id, folder_id)
+        if docs:
+            return doc_space_id, [{"id": folder_id, "type": "folder", "parentId": ""}]
+    raise SystemExit(
+        f"mind folder not found or has no direct documents without get_space_tree: {folder_id}"
+    )
 
 
 def descendant_folder_ids(nodes: list[dict], root_folder_id: str) -> list[str]:
@@ -264,8 +288,9 @@ def list_folder_documents(
     return docs
 
 
-def export_mind_folder(folder_id: str, out_root: Path, target_rel_path: str) -> int:
-    url, headers = load_mcp()
+def export_mind_folder(
+    folder_id: str, out_root: Path, target_rel_path: str, url: str, headers: dict[str, str]
+) -> int:
     doc_space_id, nodes = resolve_folder(url, headers, folder_id)
     folder_ids = descendant_folder_ids(nodes, folder_id)
     docs: list[dict] = []
@@ -500,13 +525,16 @@ def main() -> int:
     )
     ap.add_argument("--nas-ssh", default=os.environ.get("CLAW_E2B_NAS_SSH", DEFAULT_NAS_SSH))
     ap.add_argument("--project-home", default="")
+    ap.add_argument("--mcp-json", required=True)
     ap.add_argument("--skip-sync", action="store_true")
+    ap.add_argument("--skip-reset", action="store_true")
     ap.add_argument("--config-only", action="store_true")
     ap.add_argument("--skip-config", action="store_true")
     args = ap.parse_args()
 
     gw = args.gw.rstrip("/")
     token = args.admin_token.strip()
+    mcp_url, mcp_headers = mcp_from_json(args.mcp_json)
 
     temp_root = Path(tempfile.mkdtemp(prefix=f"faq-kb-{args.faq_proj_id}-"))
     try:
@@ -527,6 +555,8 @@ def main() -> int:
                 item["folderId"],
                 kb_root,
                 item["targetRelPath"],
+                mcp_url,
+                mcp_headers,
             )
             print(
                 f"==> exported {count} mind docs into {item['targetRelPath']} from folder {item['folderId']}"
@@ -551,7 +581,8 @@ def main() -> int:
                     args.nas_host_mount,
                     args.nas_ssh,
                 )
-            reset_worker(gw, token, args.faq_proj_id)
+            if not args.skip_reset:
+                reset_worker(gw, token, args.faq_proj_id)
         if not args.skip_config:
             verify(gw, token, args.faq_proj_id)
     finally:
