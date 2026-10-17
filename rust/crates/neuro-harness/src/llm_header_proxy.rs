@@ -287,6 +287,14 @@ fn rewrite_llm_body(
     {
         obj.insert(key, field);
     }
+    // Codex catalog asks for `reasoning.summary=auto`. DeepSeek then returns
+    // reasoning text even when `thinking.type` is disabled. The project switch
+    // off drops that summary; on leaves the body Codex already sent. Author: kejiqing
+    if !thinking_enabled {
+        if let Some(reasoning) = obj.get_mut("reasoning").and_then(|v| v.as_object_mut()) {
+            reasoning.remove("summary");
+        }
+    }
     serde_json::to_vec(&value)
         .map(Some)
         .map_err(|e| format!("rewrite llm body: {e}"))
@@ -432,6 +440,37 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["enable_thinking"], false);
+    }
+
+    #[test]
+    fn rewrite_drops_reasoning_summary_when_thinking_is_off() {
+        let body = br#"{"model":"deepseek-flash","reasoning":{"effort":"none","summary":"auto"}}"#;
+        let head = format!(
+            "POST /v1/responses HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let out = rewrite_llm_body(head.as_bytes(), body, "deepseek-flash", false)
+            .unwrap()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["thinking"]["type"], "disabled");
+        assert_eq!(v["reasoning"]["effort"], "none");
+        assert!(v["reasoning"].get("summary").is_none());
+    }
+
+    #[test]
+    fn rewrite_keeps_reasoning_summary_when_thinking_is_on() {
+        let body = br#"{"model":"deepseek-flash","reasoning":{"effort":"none","summary":"auto"}}"#;
+        let head = format!(
+            "POST /v1/responses HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let out = rewrite_llm_body(head.as_bytes(), body, "deepseek-flash", true)
+            .unwrap()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["thinking"]["type"], "enabled");
+        assert_eq!(v["reasoning"]["summary"], "auto");
     }
 
     #[test]
