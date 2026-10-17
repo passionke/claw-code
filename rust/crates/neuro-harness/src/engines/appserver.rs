@@ -32,8 +32,12 @@ impl EngineProfile for AppserverProfile {
         let root = ctx.session_root;
         let codex_home = root.join(".codex");
         let catalog_path = codex_home.join("model-catalog.json");
-        let catalog = serde_json::to_vec_pretty(&model_catalog(ctx.model, context_window()))
-            .map_err(|e| HarnessError::internal(format!("serialize model catalog: {e}")))?;
+        let catalog = serde_json::to_vec_pretty(&model_catalog(
+            ctx.model,
+            context_window(),
+            ctx.thinking_enabled,
+        ))
+        .map_err(|e| HarnessError::internal(format!("serialize model catalog: {e}")))?;
         write_file(&catalog_path, &catalog)?;
         write_file(
             &codex_home.join("config.toml"),
@@ -138,7 +142,14 @@ fn config_toml(model: &str, base_url: &str, catalog_path: &Path) -> String {
 /// One-entry catalog equal to codex's fallback metadata, so codex does not prepend the
 /// "Model metadata not found" warning to the reply. `visibility` is `list` (fallback: `none`)
 /// because appserver `session/new` fails when `model/list` comes back empty.
-fn model_catalog(model: &str, context_window: u64) -> Value {
+fn model_catalog(model: &str, context_window: u64, thinking_enabled: bool) -> Value {
+    // Codex sends `reasoning.summary` from this catalog. The project switch off
+    // must not ask for it. Author: kejiqing
+    let summary = if thinking_enabled {
+        json!("auto")
+    } else {
+        Value::Null
+    };
     let mut entry = json!({
         "slug": model,
         "display_name": model,
@@ -157,8 +168,8 @@ fn model_catalog(model: &str, context_window: u64) -> Value {
         "include_skills_usage_instructions": false,
         "include_plugin_usage_instructions": false,
         "include_apps_usage_instructions": false,
-        "supports_reasoning_summary_parameter": true,
-        "default_reasoning_summary": "auto",
+        "supports_reasoning_summary_parameter": thinking_enabled,
+        "default_reasoning_summary": summary,
         "support_verbosity": false,
         "default_verbosity": null,
         "apply_patch_tool_type": null,
@@ -277,6 +288,11 @@ mod tests {
                 .unwrap();
         assert_eq!(catalog["models"][0]["slug"], "gpt-x");
         assert!(catalog["models"][0]["default_reasoning_level"].is_null());
+        assert_eq!(
+            catalog["models"][0]["supports_reasoning_summary_parameter"],
+            false
+        );
+        assert!(catalog["models"][0]["default_reasoning_summary"].is_null());
         assert!(
             catalog["models"][0]["model_messages"]["instructions_template"]
                 .as_str()

@@ -20,7 +20,7 @@ ACP 能力总图
 | skills | 落实 | 落实 | 落实 | opencode 丢掉不符合 ^[a-z0-9]+(-[a-z0-9]+)*$ 的名字，stderr 有记录 |
 | sessionResume | 落实 | 落实 | 落实 | resume 或 loadSession；都不支持则报错，无兜底 |
 | turnBillingHeaders | 落实 | 落实 | 落实 | 出站 claw-turn-id；opencode 走 header 代理，appserver 走 config.toml |
-| thinkingEnabled | 落实 | 落实 | 落实 | opencode 与 appserver 都由 localhost 代理把与 claw 相同的 chat thinking 字段写入出站 JSON |
+| thinkingEnabled | 落实 | 落实 | 落实 | opencode 与 appserver 由 localhost 代理写入与 claw 相同的 chat thinking 字段。appserver 关闭时目录不请求 reasoning summary，responses 写 reasoning.effort=none，并丢掉上游仍返回的 reasoning 事件 |
 | allowedTools | 落实 | 静默 | 静默 | neuro 不读 task.allowedTools，MCP 按 settings 全量注入 |
 | solveOrchestration | 落实 | 静默 | 静默 | 只在 claw run_gateway_solve_turn 读取。neuro 不读；forceSingleTurn 被写成 true 但 neuro 也不读 |
 | otelTraceparent | 落实 | 静默 | 静默 | claw worker 读取；neuro 不读 |
