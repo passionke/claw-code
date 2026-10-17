@@ -196,10 +196,15 @@ async fn proxy_one(mut client: TcpStream, target: &ProxyTarget) -> Result<(), St
             .await
             .map_err(|e| format!("write upstream body: {e}"))?;
     }
-    // Full-duplex: streaming SSE must not cancel the other direction early. Author: kejiqing
-    tokio::io::copy_bidirectional(&mut client, &mut server)
-        .await
-        .map_err(|e| format!("proxy copy: {e}"))?;
+    // Responses upstream still emits reasoning_text after effort=none. The project
+    // switch off drops those events before the engine can surface them. Author: kejiqing
+    if !target.thinking_enabled && is_responses_post(&head) {
+        forward_response_without_reasoning(&mut server, &mut client).await?;
+    } else {
+        tokio::io::copy_bidirectional(&mut client, &mut server)
+            .await
+            .map_err(|e| format!("proxy copy: {e}"))?;
+    }
     Ok(())
 }
 
@@ -245,18 +250,342 @@ fn content_length_of(head: &[u8]) -> Option<usize> {
 }
 
 fn is_llm_post(head: &[u8]) -> bool {
-    let Ok(text) = std::str::from_utf8(head) else {
-        return false;
-    };
-    let Some(line) = text.lines().next() else {
-        return false;
-    };
+    request_path(head)
+        .is_some_and(|path| path.ends_with("/chat/completions") || path.ends_with("/responses"))
+}
+
+fn is_responses_post(head: &[u8]) -> bool {
+    request_path(head).is_some_and(|path| path.ends_with("/responses"))
+}
+
+fn request_path(head: &[u8]) -> Option<&str> {
+    let text = std::str::from_utf8(head).ok()?;
+    let line = text.lines().next()?;
     if !line.starts_with("POST ") {
-        return false;
+        return None;
     }
-    let path = line.split_whitespace().nth(1).unwrap_or("");
-    let path = path.split('?').next().unwrap_or(path);
-    path.ends_with("/chat/completions") || path.ends_with("/responses")
+    let path = line.split_whitespace().nth(1)?;
+    Some(path.split('?').next().unwrap_or(path))
+}
+
+fn is_deepseek_model(model: &str) -> bool {
+    let lowered = model.to_ascii_lowercase();
+    let canonical = lowered.rsplit('/').next().unwrap_or(lowered.as_str());
+    canonical.starts_with("deepseek")
+}
+
+/// Drop Responses reasoning events. Incomplete trailing bytes stay in `pending`.
+/// Author: kejiqing
+struct ReasoningSseFilter {
+    pending: Vec<u8>,
+}
+
+impl ReasoningSseFilter {
+    fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
+        self.pending.extend_from_slice(chunk);
+        let mut out = Vec::new();
+        loop {
+            let Some(end) = sse_event_end(&self.pending) else {
+                break;
+            };
+            let event: Vec<u8> = self.pending.drain(..end).collect();
+            if let Some(kept) = rewrite_sse_event(&event) {
+                out.extend_from_slice(&kept);
+            }
+        }
+        out
+    }
+
+    fn finish(&mut self) -> Vec<u8> {
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        let event: Vec<u8> = self.pending.drain(..).collect();
+        rewrite_sse_event(&event).unwrap_or_default()
+    }
+}
+
+fn sse_event_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|p| p + 4)
+        .or_else(|| buf.windows(2).position(|w| w == b"\n\n").map(|p| p + 2))
+}
+
+fn rewrite_sse_event(event: &[u8]) -> Option<Vec<u8>> {
+    let text = std::str::from_utf8(event).ok()?;
+    let sep = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut others = Vec::new();
+    let mut data_parts = Vec::new();
+    for line in text.split(sep) {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("data:") {
+            data_parts.push(rest.trim_start());
+        } else {
+            others.push(line);
+        }
+    }
+    if data_parts.is_empty() {
+        return Some(event.to_vec());
+    }
+    let data = data_parts.join("\n");
+    if data == "[DONE]" {
+        return Some(event.to_vec());
+    }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&data) else {
+        return Some(event.to_vec());
+    };
+    if sse_event_is_reasoning(&value) {
+        return None;
+    }
+    scrub_reasoning_output(&mut value);
+    let rendered = serde_json::to_string(&value).ok()?;
+    let mut out = String::new();
+    for line in others {
+        out.push_str(line);
+        out.push_str(sep);
+    }
+    out.push_str("data: ");
+    out.push_str(&rendered);
+    out.push_str(sep);
+    out.push_str(sep);
+    Some(out.into_bytes())
+}
+
+fn sse_event_is_reasoning(value: &serde_json::Value) -> bool {
+    let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if kind.starts_with("response.reasoning_text.")
+        || kind.starts_with("response.reasoning_summary")
+    {
+        return true;
+    }
+    if kind == "response.output_item.added" || kind == "response.output_item.done" {
+        return value
+            .get("item")
+            .and_then(|item| item.get("type"))
+            .and_then(|v| v.as_str())
+            == Some("reasoning");
+    }
+    if kind == "response.content_part.added" || kind == "response.content_part.done" {
+        return value
+            .get("part")
+            .and_then(|part| part.get("type"))
+            .and_then(|v| v.as_str())
+            == Some("reasoning_text");
+    }
+    false
+}
+
+fn scrub_reasoning_output(value: &mut serde_json::Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    if let Some(response) = obj.get_mut("response") {
+        retain_non_reasoning_output(response);
+    }
+    retain_non_reasoning_output(value);
+}
+
+fn retain_non_reasoning_output(value: &mut serde_json::Value) {
+    let Some(output) = value.get_mut("output").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    output.retain(|item| item.get("type").and_then(|v| v.as_str()) != Some("reasoning"));
+}
+
+async fn forward_response_without_reasoning(
+    server: &mut TcpStream,
+    client: &mut TcpStream,
+) -> Result<(), String> {
+    let mut buf = Vec::with_capacity(8 * 1024);
+    let header_end = read_http_headers(server, &mut buf).await?;
+    let head = std::str::from_utf8(&buf[..header_end])
+        .map_err(|e| format!("response headers utf8: {e}"))?
+        .to_string();
+    let mut body = buf[header_end..].to_vec();
+    let chunked = header_is_chunked(&head);
+    let content_length = content_length_of(head.as_bytes());
+    if chunked {
+        client
+            .write_all(chunked_response_head(&head).as_bytes())
+            .await
+            .map_err(|e| format!("write filtered response head: {e}"))?;
+        let mut decoder = ChunkDecoder::default();
+        let mut filter = ReasoningSseFilter::new();
+        decoder.push(&body)?;
+        write_filtered_chunks(client, &filter.push(&decoder.take_data())).await?;
+        let mut tmp = [0_u8; 8192];
+        while !decoder.done {
+            let n = server
+                .read(&mut tmp)
+                .await
+                .map_err(|e| format!("read upstream response: {e}"))?;
+            if n == 0 {
+                return Err("upstream closed before chunked body ended".into());
+            }
+            decoder.push(&tmp[..n])?;
+            write_filtered_chunks(client, &filter.push(&decoder.take_data())).await?;
+        }
+        write_filtered_chunks(client, &filter.finish()).await?;
+        client
+            .write_all(b"0\r\n\r\n")
+            .await
+            .map_err(|e| format!("write filtered terminator: {e}"))?;
+        return Ok(());
+    }
+    if let Some(len) = content_length {
+        while body.len() < len {
+            let mut tmp = [0_u8; 8192];
+            let n = server
+                .read(&mut tmp)
+                .await
+                .map_err(|e| format!("read upstream response: {e}"))?;
+            if n == 0 {
+                return Err("upstream closed before response body ended".into());
+            }
+            body.extend_from_slice(&tmp[..n]);
+        }
+        body.truncate(len);
+    } else {
+        let mut tmp = [0_u8; 8192];
+        loop {
+            let n = server
+                .read(&mut tmp)
+                .await
+                .map_err(|e| format!("read upstream response: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&tmp[..n]);
+        }
+    }
+    let mut filter = ReasoningSseFilter::new();
+    let mut filtered = filter.push(&body);
+    filtered.extend(filter.finish());
+    let head = content_length_response_head(&head, filtered.len());
+    client
+        .write_all(head.as_bytes())
+        .await
+        .map_err(|e| format!("write filtered response head: {e}"))?;
+    client
+        .write_all(&filtered)
+        .await
+        .map_err(|e| format!("write filtered response body: {e}"))?;
+    Ok(())
+}
+
+fn header_is_chunked(head: &str) -> bool {
+    header_value(head, "transfer-encoding")
+        .is_some_and(|value| value.to_ascii_lowercase().contains("chunked"))
+}
+
+fn header_value(head: &str, name: &str) -> Option<String> {
+    for line in head.lines().skip(1) {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.eq_ignore_ascii_case(name) {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+fn content_length_response_head(head: &str, len: usize) -> String {
+    rewrite_response_head(head, &format!("Content-Length: {len}"))
+}
+
+fn chunked_response_head(head: &str) -> String {
+    rewrite_response_head(head, "Transfer-Encoding: chunked")
+}
+
+fn rewrite_response_head(head: &str, replacement: &str) -> String {
+    let sep = if head.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut out = String::new();
+    for (i, line) in head.split(sep).enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        if i > 0 {
+            let name = line.split_once(':').map_or(line, |(name, _)| name);
+            if name.eq_ignore_ascii_case("content-length")
+                || name.eq_ignore_ascii_case("transfer-encoding")
+            {
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    out.push_str(replacement);
+    out.push_str("\r\n\r\n");
+    out
+}
+
+async fn write_filtered_chunks(client: &mut TcpStream, data: &[u8]) -> Result<(), String> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let header = format!("{:X}\r\n", data.len());
+    client
+        .write_all(header.as_bytes())
+        .await
+        .map_err(|e| format!("write filtered chunk: {e}"))?;
+    client
+        .write_all(data)
+        .await
+        .map_err(|e| format!("write filtered chunk: {e}"))?;
+    client
+        .write_all(b"\r\n")
+        .await
+        .map_err(|e| format!("write filtered chunk: {e}"))?;
+    Ok(())
+}
+
+#[derive(Default)]
+struct ChunkDecoder {
+    buf: Vec<u8>,
+    data: Vec<u8>,
+    done: bool,
+}
+
+impl ChunkDecoder {
+    fn push(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.buf.extend_from_slice(bytes);
+        while !self.done {
+            let Some(line_end) = self.buf.windows(2).position(|w| w == b"\r\n") else {
+                break;
+            };
+            let line = std::str::from_utf8(&self.buf[..line_end])
+                .map_err(|e| format!("chunk size utf8: {e}"))?;
+            let size_hex = line.split(';').next().unwrap_or("").trim();
+            let size =
+                usize::from_str_radix(size_hex, 16).map_err(|e| format!("chunk size: {e}"))?;
+            let start = line_end + 2;
+            if size == 0 {
+                self.done = true;
+                break;
+            }
+            if self.buf.len() < start + size + 2 {
+                break;
+            }
+            self.data.extend_from_slice(&self.buf[start..start + size]);
+            self.buf.drain(..start + size + 2);
+        }
+        Ok(())
+    }
+
+    fn take_data(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.data)
+    }
 }
 
 /// Merge the project thinking switch into a chat/responses JSON body.
@@ -282,15 +611,35 @@ fn rewrite_llm_body(
     let wire_model = obj
         .get("model")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or(model);
-    for (key, field) in gateway_solve_turn::chat_thinking_fields(wire_model, Some(thinking_enabled))
+        .unwrap_or(model)
+        .to_string();
+    for (key, field) in
+        gateway_solve_turn::chat_thinking_fields(&wire_model, Some(thinking_enabled))
     {
         obj.insert(key, field);
     }
     // Codex catalog asks for `reasoning.summary=auto`. DeepSeek then returns
     // reasoning text even when `thinking.type` is disabled. The project switch
     // off drops that summary; on leaves the body Codex already sent. Author: kejiqing
-    if !thinking_enabled {
+    if !thinking_enabled && is_responses_post(head) && is_deepseek_model(&wire_model) {
+        let reasoning = obj
+            .entry("reasoning")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(reasoning) = reasoning.as_object_mut() {
+            reasoning.insert("effort".to_string(), serde_json::json!("none"));
+            reasoning.remove("summary");
+        }
+        if let Some(include) = obj.get_mut("include").and_then(|v| v.as_array_mut()) {
+            include.retain(|v| v.as_str() != Some("reasoning.encrypted_content"));
+        }
+        if obj
+            .get("include")
+            .and_then(|v| v.as_array())
+            .is_some_and(|items| items.is_empty())
+        {
+            obj.remove("include");
+        }
+    } else if !thinking_enabled {
         if let Some(reasoning) = obj.get_mut("reasoning").and_then(|v| v.as_object_mut()) {
             reasoning.remove("summary");
         }
@@ -471,6 +820,82 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["thinking"]["type"], "enabled");
         assert_eq!(v["reasoning"]["summary"], "auto");
+    }
+
+    #[test]
+    fn rewrite_forces_responses_effort_none_and_drops_reasoning_include() {
+        let body = br#"{"model":"deepseek-flash","include":["reasoning.encrypted_content"],"reasoning":{"effort":"high","summary":"auto"}}"#;
+        let head = format!(
+            "POST /v1/responses HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let out = rewrite_llm_body(head.as_bytes(), body, "deepseek-flash", false)
+            .unwrap()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["thinking"]["type"], "disabled");
+        assert_eq!(v["reasoning"]["effort"], "none");
+        assert!(v.get("include").is_none());
+        assert!(v["reasoning"].get("summary").is_none());
+    }
+
+    #[test]
+    fn filter_drops_reasoning_events_and_keeps_the_answer() {
+        let raw = "\
+data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"SECRET\"}\n\n\
+data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"reasoning\",\"id\":\"r1\"}}\n\n\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\"好\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"reasoning\",\"content\":[{\"type\":\"reasoning_text\",\"text\":\"SECRET\"}]},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"好\"}]}]}}\n\n";
+        let mut filter = ReasoningSseFilter::new();
+        let mut out = filter.push(raw.as_bytes());
+        out.extend(filter.finish());
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("SECRET"));
+        assert!(text.contains("好"));
+        assert!(text.contains("response.output_text.delta"));
+        assert!(text.contains("\"type\":\"message\""));
+    }
+
+    #[tokio::test]
+    async fn proxy_strips_chunked_reasoning_when_thinking_is_off() {
+        let sse = "\
+data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"SECRET\"}\n\n\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\"好\"}\n\n";
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let sse_bytes = sse.as_bytes().to_vec();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0_u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            let chunk = format!("{:X}\r\n", sse_bytes.len());
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+            sock.write_all(head.as_bytes()).await.unwrap();
+            sock.write_all(chunk.as_bytes()).await.unwrap();
+            sock.write_all(&sse_bytes).await.unwrap();
+            sock.write_all(b"\r\n0\r\n\r\n").await.unwrap();
+        });
+        let proxy = LlmHeaderProxy::start(&format!("http://{addr}"), "deepseek-flash", false)
+            .await
+            .unwrap();
+        let mut client = TcpStream::connect(proxy.local_base_url.trim_start_matches("http://"))
+            .await
+            .unwrap();
+        let req_body = b"{\"model\":\"deepseek-flash\",\"input\":\"ga\"}";
+        let req = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            req_body.len()
+        );
+        client.write_all(req.as_bytes()).await.unwrap();
+        client.write_all(req_body).await.unwrap();
+        let mut got = Vec::new();
+        client.read_to_end(&mut got).await.unwrap();
+        proxy.stop().await;
+        let text = String::from_utf8_lossy(&got);
+        assert!(!text.contains("SECRET"), "{text}");
+        assert!(text.contains("好"), "{text}");
     }
 
     #[test]
