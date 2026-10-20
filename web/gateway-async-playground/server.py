@@ -563,21 +563,41 @@ def is_allowed_upstream(url: str) -> bool:
     return _upstream_host_port_allowed(url)
 
 
-def read_allowed_json_body(handler: BaseHTTPRequestHandler, max_bytes: int = 2_000_000) -> dict | None:
+def _proxy_max_body_bytes() -> int:
+    """Admin PUT /v1/project/config can embed multi-MB skill archives. Author: kejiqing"""
+    raw = os.environ.get("PLAYGROUND_PROXY_MAX_BODY_BYTES", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return 32_000_000
+
+
+def read_allowed_json_body(
+    handler: BaseHTTPRequestHandler, max_bytes: int | None = None
+) -> tuple[dict | None, str | None]:
+    """Parse JSON body. Returns (payload, error). Author: kejiqing"""
+    limit = _proxy_max_body_bytes() if max_bytes is None else max_bytes
     length = handler.headers.get("Content-Length")
     if not length:
-        return None
+        return None, "missing Content-Length"
     try:
         n = int(length)
     except ValueError:
-        return None
-    if n < 0 or n > max_bytes:
-        return None
+        return None, "invalid Content-Length"
+    if n < 0:
+        return None, "invalid Content-Length"
+    if n > limit:
+        return None, f"JSON body too large ({n} > {limit} bytes)"
     raw = handler.rfile.read(n)
     try:
-        return json.loads(raw.decode("utf-8"))
+        data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
+        return None, "invalid JSON body"
+    if not isinstance(data, dict):
+        return None, "JSON body must be an object"
+    return data, None
 
 
 def send_json(handler: BaseHTTPRequestHandler, status: int, obj: dict) -> None:
@@ -882,9 +902,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/__admin_login__":
-            payload = read_allowed_json_body(self)
-            if not isinstance(payload, dict):
-                send_json(self, 400, {"error": "invalid JSON body"})
+            payload, body_err = read_allowed_json_body(self)
+            if payload is None:
+                send_json(self, 400, {"error": body_err or "invalid JSON body"})
                 return
             user = str(payload.get("user") or "").strip()
             password = str(payload.get("password") or "")
@@ -930,9 +950,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404, "not found")
             return
 
-        payload = read_allowed_json_body(self)
-        if not isinstance(payload, dict):
-            send_json(self, 400, {"error": "invalid JSON body"})
+        payload, body_err = read_allowed_json_body(self)
+        if payload is None:
+            send_json(self, 400, {"error": body_err or "invalid JSON body"})
             return
 
         base = str(payload.get("baseUrl") or "").strip().rstrip("/")

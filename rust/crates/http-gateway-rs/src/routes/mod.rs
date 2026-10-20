@@ -21,6 +21,7 @@ pub(crate) mod solve;
 pub(crate) mod tasks;
 pub(crate) mod turns;
 
+use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::Router;
 use tower_http::trace::TraceLayer;
@@ -28,6 +29,21 @@ use tracing::field::Empty;
 
 use crate::app_state::{AppState, HttpRequestId};
 use crate::routes::app::inject_http_request_id;
+
+/// Admin project configs can embed multi-MB skill archives (Axum default is 2 MiB).
+/// Override with `CLAW_HTTP_MAX_BODY_BYTES`. Author: kejiqing
+fn http_max_body_bytes() -> usize {
+    const DEFAULT: usize = 32 * 1024 * 1024;
+    match std::env::var("CLAW_HTTP_MAX_BODY_BYTES") {
+        Ok(raw) => raw
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT),
+        Err(_) => DEFAULT,
+    }
+}
 
 pub(crate) fn build_router(state: AppState) -> Router {
     Router::new()
@@ -51,6 +67,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .merge(delegate::router())
         .merge(mcp::router())
         .merge(openai_compat::router())
+        .layer(DefaultBodyLimit::max(http_max_body_bytes()))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &http::Request<axum::body::Body>| {
