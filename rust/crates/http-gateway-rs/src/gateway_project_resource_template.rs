@@ -122,6 +122,12 @@ pub fn get_ensure_resource_template_status() -> ResourceTemplateEnsureResponse {
 }
 
 fn resolve_ensure_script() -> Result<PathBuf, String> {
+    // Prefer image-bundled script (release hosts may mount a stale CLAW_REPO_ROOT).
+    // Same pattern as pool/agent_engine_inject.rs. Author: kejiqing
+    let bundled = PathBuf::from("/app/deploy/e2b/ensure-worker-resource-template.py");
+    if bundled.is_file() {
+        return Ok(bundled);
+    }
     let root = resolve_bootstrap_repo_root().ok_or_else(|| {
         "repo root missing (set CLAW_REPO_ROOT so Gateway can run ensure-worker-resource-template.py)"
             .to_string()
@@ -330,7 +336,8 @@ pub async fn start_ensure_resource_template(
     }
 
     let script = resolve_ensure_script()?;
-    let repo = resolve_bootstrap_repo_root().ok_or_else(|| "repo root missing".to_string())?;
+    // cwd for dotenv / relative paths; bundled script does not require a host checkout.
+    let repo = resolve_bootstrap_repo_root().unwrap_or_else(|| PathBuf::from("/app"));
 
     {
         let mut guard = ensure_state()

@@ -46,8 +46,9 @@ project). Normalize first (cpu ceil `1..=16`, memory ceil to 256 MiB, max 16384)
 Nora (`claw-e2b-protocol-nora`). Gateway sets both env vars; missing either fails loudly.
 
 **Product path (preferred):** Admin → Worker profile → 保存自定义 cpu/memory → **确保派生模板** → **强制重建**.
-Gateway `POST /v1/projects/{projId}/e2b-worker/ensure-resource-template` spawns the same script and
-binds `resourceTemplate` (requires `CLAW_REPO_ROOT` + e2b API env + the two image-contract vars).
+Gateway `POST /v1/projects/{projId}/e2b-worker/ensure-resource-template` spawns the same script
+(bundled at `/app/deploy/e2b/` in the release image; host `CLAW_REPO_ROOT` is optional) and binds
+`resourceTemplate` (requires e2b API env + the two image-contract vars).
 
 CPU/MEM are set only by `Template.build` (standard e2b). Warm create uses
 `templateID=<buildUUID>` (pin). Home e2b must resolve that build's declared cpu/mem; default

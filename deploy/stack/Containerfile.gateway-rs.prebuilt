@@ -25,6 +25,10 @@ WORKDIR /app
 COPY deploy/stack/.linux-artifacts/release/http-gateway-rs /usr/local/bin/http-gateway-rs
 COPY deploy/e2b/e2b_exec.py /app/deploy/e2b/
 COPY deploy/e2b/guest-install-agent-engine.sh /app/deploy/e2b/
+# Admin「确保派生模板」must work without a fresh host repo bind. Author: kejiqing
+COPY deploy/e2b/ensure-worker-resource-template.py /app/deploy/e2b/
+COPY deploy/e2b/e2b_template_build.py /app/deploy/e2b/
+COPY deploy/e2b/e2b_template_registry.py /app/deploy/e2b/
 COPY deploy/e2b/requirements-e2b-sdk.txt /tmp/requirements-e2b-sdk.txt
 COPY scripts/mind-kb/ /app/scripts/mind-kb/
 COPY docs/gpos-assistant-prompt-content.md /app/docs/
