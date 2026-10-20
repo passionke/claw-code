@@ -95,8 +95,8 @@ def _verify(template_id: str, engine: str, opts: dict[str, str]) -> int:
     print(f"==> verify: sandbox template={template_id!r} engine={engine}")
     sandbox = Sandbox.create(template_id, timeout=900, **opts)
     try:
+        # Legacy baked-engine path: protocol no longer ships claw. Author: kejiqing
         cmds = [
-            "command -v claw",
             f"command -v neuro-{engine}",
             *ENGINES[engine]["smoke"],  # type: ignore[misc]
         ]

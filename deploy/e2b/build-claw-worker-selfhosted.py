@@ -250,10 +250,11 @@ def _verify(template: str, opts: dict[str, str]) -> int:
     sandbox = Sandbox.create(template, timeout=900, **opts)
     try:
         print(f"sandbox_id: {sandbox.sandbox_id}")
+        # Protocol image: neuro-* only; claw arrives via neuro-harness-acp init. Author: kejiqing
         for cmd in (
-            "command -v claw",
             "command -v neuro-opencode",
             "command -v neuro-appserver",
+            "test ! -e /usr/local/bin/claw",
             "test -x /usr/local/bin/claw-worker-start",
             "test -x /usr/local/bin/claw-worker-ready",
         ):

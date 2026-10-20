@@ -236,7 +236,9 @@ def main() -> int:
         )
 
         checks = [
-            "command -v claw",
+            "command -v neuro-opencode",
+            "command -v neuro-appserver",
+            "test ! -e /usr/local/bin/claw",
             "command -v curl",
             "command -v git",
             "command -v python3",
