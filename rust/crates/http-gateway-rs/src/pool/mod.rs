@@ -22,6 +22,7 @@ mod traits;
 mod worker_env;
 mod worker_lifecycle_preflight;
 mod worker_profile;
+mod worker_resources;
 
 pub use traits::{PoolOps, SlotLease, TaskOutcome};
 
@@ -79,6 +80,10 @@ pub use worker_lifecycle_preflight::{
 pub use worker_profile::{
     default_worker_profile_json, desired_strict_pool_size_from_profile, effective_mode,
     load_desired_worker_pool_size, mode_from_json, pool_size_override_from_json,
-    profile_mode_label, system_landlock_default_json, validate_system_landlock_default,
-    validate_worker_profile_json, WorkerProfileMode,
+    profile_mode_label, sanitize_worker_profile_json, system_landlock_default_json,
+    validate_system_landlock_default, validate_worker_profile_json, WorkerProfileMode,
+};
+pub use worker_resources::{
+    effective_resource_template, normalize_worker_resources, resource_template_alias,
+    resources_from_json, WorkerResources, CPU_MAX, MEMORY_MAX_MB, MEMORY_QUANTUM_MB,
 };

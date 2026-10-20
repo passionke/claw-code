@@ -23,7 +23,14 @@ import { useApp } from "../context/AppContext";
 import { putProjectConfigDraft } from "../utils/projectConfig";
 import type { GlobalSettingsResponse } from "../types/globalSettings";
 import type { LandlockDsl, WorkerProfileJson } from "../types/landlock";
-import { validateLandlockDslClient } from "../types/landlock";
+import {
+  normalizeWorkerResourcesClient,
+  validateLandlockDslClient,
+  workerResourcesFingerprint,
+  WORKER_CPU_MAX,
+  WORKER_MEMORY_MAX_MB,
+  WORKER_MEMORY_QUANTUM_MB,
+} from "../types/landlock";
 import type {
   ProjectE2bWorkerInfo,
   ProjectE2bWorkerResetResponse,
@@ -36,6 +43,9 @@ type FormValues = {
   mode: Mode;
   poolSize?: number | null;
   askUserQuestionInAgent?: boolean;
+  resourcesCustom: boolean;
+  cpuCount?: number | null;
+  memoryMb?: number | null;
   landlockInherit: boolean;
   landlockEnabled: boolean;
   landlockRw: string[];
@@ -53,9 +63,19 @@ export default function WorkerProfilePage() {
   const [workerLoading, setWorkerLoading] = useState(false);
   const [workerResetting, setWorkerResetting] = useState(false);
   const mode = Form.useWatch("mode", form);
+  const resourcesCustom = Form.useWatch("resourcesCustom", form);
+  const cpuWatch = Form.useWatch("cpuCount", form);
+  const memWatch = Form.useWatch("memoryMb", form);
   const harnessEngine = projectConfig?.harnessEngine;
   const engineStrictOnly = harnessEngine != null && harnessEngine !== "claw";
   const relaxedOffered = relaxedAllowed && !engineStrictOnly;
+
+  const resourcesPreview =
+    resourcesCustom &&
+    typeof cpuWatch === "number" &&
+    typeof memWatch === "number"
+      ? normalizeWorkerResourcesClient(cpuWatch, memWatch)
+      : null;
 
   const loadWorkerStatus = useCallback(async () => {
     setWorkerLoading(true);
@@ -107,10 +127,17 @@ export default function WorkerProfilePage() {
       rawMode === "strict" &&
       (strict?.useSystemDefault === true || !strict?.landlock);
     const landlock = strict?.landlock;
+    const hasResources =
+      wp?.resources != null &&
+      typeof wp.resources.cpuCount === "number" &&
+      typeof wp.resources.memoryMb === "number";
     form.setFieldsValue({
       mode: rawMode,
       poolSize: typeof wp?.poolSize === "number" ? wp.poolSize : null,
       askUserQuestionInAgent: wp?.askUserQuestionInAgent === true,
+      resourcesCustom: hasResources,
+      cpuCount: hasResources ? wp!.resources!.cpuCount : null,
+      memoryMb: hasResources ? wp!.resources!.memoryMb : null,
       landlockInherit: inherit,
       landlockEnabled: landlock?.enabled ?? systemDefault?.enabled ?? true,
       landlockRw: landlock?.rw ?? systemDefault?.rw ?? ["${session_root}"],
@@ -132,8 +159,36 @@ export default function WorkerProfilePage() {
       v.askUserQuestionInAgent === true
         ? { askUserQuestionInAgent: true as const }
         : {};
+    const existingRt = projectConfig?.workerProfileJson?.resourceTemplate;
+
+    let resourcesBlock: Pick<WorkerProfileJson, "resources" | "resourceTemplate"> =
+      {};
+    if (v.resourcesCustom) {
+      if (typeof v.cpuCount !== "number" || typeof v.memoryMb !== "number") {
+        throw new Error("自定义资源时必须填写 cpu 与 memoryMb");
+      }
+      const norm = normalizeWorkerResourcesClient(v.cpuCount, v.memoryMb);
+      if ("error" in norm) {
+        throw new Error(norm.error);
+      }
+      const fp = workerResourcesFingerprint(norm);
+      resourcesBlock = { resources: norm };
+      if (
+        existingRt &&
+        existingRt.fingerprint === fp &&
+        existingRt.templateId?.trim()
+      ) {
+        resourcesBlock.resourceTemplate = {
+          templateId: existingRt.templateId,
+          buildId: existingRt.buildId ?? undefined,
+          fingerprint: fp,
+        };
+      }
+    }
+    // resourcesCustom=false → omit resources + resourceTemplate (reverse: clear pointer)
+
     if (v.mode === "relaxed") {
-      return { mode: "relaxed", ...askUser };
+      return { mode: "relaxed", ...askUser, ...resourcesBlock };
     }
     const poolSize =
       typeof v.poolSize === "number" && Number.isFinite(v.poolSize) ? v.poolSize : undefined;
@@ -142,6 +197,7 @@ export default function WorkerProfilePage() {
         mode: "strict",
         ...(poolSize != null ? { poolSize } : {}),
         ...askUser,
+        ...resourcesBlock,
         strict: { useSystemDefault: true },
       };
     }
@@ -154,6 +210,7 @@ export default function WorkerProfilePage() {
       mode: "strict",
       ...(poolSize != null ? { poolSize } : {}),
       ...askUser,
+      ...resourcesBlock,
       strict: { useSystemDefault: false, landlock },
     };
   };
@@ -445,6 +502,102 @@ export default function WorkerProfilePage() {
           </Form.Item>
         ) : null}
 
+        <Card
+          type="inner"
+          title="Worker 资源（cpu / memory）"
+          size="small"
+          style={{ marginBottom: 16 }}
+        >
+          <Form.Item
+            name="resourcesCustom"
+            label="规格来源"
+            extra="默认使用全局公用模板；自定义后需 ensure 派生模板并重建 worker。"
+          >
+            <Radio.Group>
+              <Radio value={false}>系统默认（全局模板）</Radio>
+              <Radio value={true}>本项目自定义</Radio>
+            </Radio.Group>
+          </Form.Item>
+          {resourcesCustom ? (
+            <>
+              <Space wrap style={{ marginBottom: 8 }}>
+                <Form.Item
+                  name="cpuCount"
+                  label="CPU"
+                  rules={[{ required: true, message: "必填" }]}
+                  style={{ marginBottom: 0 }}
+                >
+                  <InputNumber
+                    min={0.1}
+                    max={WORKER_CPU_MAX}
+                    step={1}
+                    style={{ width: 120 }}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="memoryMb"
+                  label="Memory (MiB)"
+                  rules={[{ required: true, message: "必填" }]}
+                  style={{ marginBottom: 0 }}
+                >
+                  <InputNumber
+                    min={1}
+                    max={WORKER_MEMORY_MAX_MB}
+                    step={WORKER_MEMORY_QUANTUM_MB}
+                    style={{ width: 160 }}
+                  />
+                </Form.Item>
+              </Space>
+              {resourcesPreview && "error" in resourcesPreview ? (
+                <Alert type="error" showIcon message={resourcesPreview.error} />
+              ) : resourcesPreview ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message={`规范化预览：cpu=${resourcesPreview.cpuCount} memoryMb=${resourcesPreview.memoryMb}（指纹 ${workerResourcesFingerprint(resourcesPreview)}）`}
+                  description="任意值会向上取整：cpu 整数、memory 按 256 MiB。保存后若指纹与已绑定模板不一致，需重新 ensure。"
+                />
+              ) : null}
+              {projectConfig?.workerProfileJson?.resourceTemplate ? (
+                <Descriptions size="small" column={1} style={{ marginTop: 12 }} bordered>
+                  <Descriptions.Item label="已绑定 templateId">
+                    <Typography.Text copyable>
+                      {projectConfig.workerProfileJson.resourceTemplate.templateId}
+                    </Typography.Text>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="fingerprint">
+                    {projectConfig.workerProfileJson.resourceTemplate.fingerprint}
+                  </Descriptions.Item>
+                </Descriptions>
+              ) : (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginTop: 12 }}
+                  message="尚未绑定 resourceTemplate"
+                  description={
+                    <>
+                      保存 resources 后运行{" "}
+                      <Typography.Text code>
+                        deploy/e2b/ensure-worker-resource-template.py --cpu … --memory-mb … --bind-proj{" "}
+                        {projId}
+                      </Typography.Text>
+                      ，再点上方「强制重建」。
+                    </>
+                  }
+                />
+              )}
+            </>
+          ) : (
+            <Alert
+              type="success"
+              showIcon
+              message="使用全局 e2b worker 模板"
+              description="关闭自定义会清空 resources 与 resourceTemplate，回落到全局模板。"
+            />
+          )}
+        </Card>
+
         {mode === "strict" ? (
           <Card type="inner" title="Landlock 隔离规则" size="small" style={{ marginBottom: 16 }}>
             <Form.Item name="landlockInherit" label="配置来源">
@@ -525,7 +678,13 @@ export default function WorkerProfilePage() {
           onClick={async () => {
             if (!projectConfig) return;
             const v = await form.validateFields();
-            const workerProfileJson = buildWorkerProfileJson(v);
+            let workerProfileJson: WorkerProfileJson;
+            try {
+              workerProfileJson = buildWorkerProfileJson(v);
+            } catch (e) {
+              message.error(e instanceof Error ? e.message : String(e));
+              return;
+            }
             if (
               v.mode === "strict" &&
               !v.landlockInherit &&
@@ -540,8 +699,16 @@ export default function WorkerProfilePage() {
             await putProjectConfigDraft(gatewayBase, projId, projectConfig, {
               workerProfileJson,
             });
-            message.success("Worker profile 已保存；下次 solve 时生效");
+            const cleared = !v.resourcesCustom;
+            message.success(
+              cleared
+                ? "已保存：resources 已清空，将回落全局模板；请强制重建 worker"
+                : workerProfileJson.resourceTemplate
+                  ? "Worker profile 已保存；请强制重建 worker 使规格生效"
+                  : "resources 已保存；请 ensure 派生模板并强制重建 worker"
+            );
             await refreshProjectConfig();
+            await loadWorkerStatus();
           }}
         >
           保存 Worker profile

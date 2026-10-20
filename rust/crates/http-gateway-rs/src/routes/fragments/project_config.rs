@@ -814,7 +814,10 @@ pub(crate) fn validate_project_config_payload(req: &UpsertProjectConfigRequest) 
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     }
     if let Some(ref wi) = req.worker_profile_json {
-        pool::validate_worker_profile_json(wi)
+        // Validate after same sanitize rules as PUT (resources ceil + strip stale pointer).
+        let cleaned = pool::sanitize_worker_profile_json(wi)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+        pool::validate_worker_profile_json(&cleaned)
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     }
     if let Some(ref we) = req.worker_env_json {
@@ -1154,7 +1157,8 @@ pub(crate) async fn put_project_config(
         None => existing.prompt_limits_json.clone(),
     };
     let worker_profile_json = match &req.worker_profile_json {
-        Some(incoming) => incoming.clone(),
+        Some(incoming) => pool::sanitize_worker_profile_json(incoming)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?,
         None => existing.worker_profile_json.clone(),
     };
     let harness_engine =
