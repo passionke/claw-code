@@ -63,49 +63,19 @@ Author: kejiqing
 - **All `deploy/stack/*.env` except `.env.example`:** generated or overridden by **`./deploy/stack/gateway.sh`** / `deploy/stack/lib/*.sh` — do not edit by hand; re-run `gateway.sh up` after changing root `.env`.
 - **Never create `deploy/stack/.env`** — Compose loads it implicitly and fights root `.env` / release pins (`docs/env-files.md`).
 
-## Interactive coding terminal (CDP)
+## Interactive / OVS / web CLI（已退出）
+
+OVS `@claw`、web CLI（CDP / `agent/ws` / `gateway-interactive-once`）已全面退出，**不是**现行边界。历史取证：`docs/ovs-chat/`、`docs/ovs-chat-source-handoff.md`。
+
+## e2b cloud sandbox（solve）
 
 | Layer | Path | Role |
 | --- | --- | --- |
-| **Claw CLI display** | `rust/crates/rusty-claude-cli/src/display.rs` | `DisplaySession`: ANSI (local TTY) vs OSC **Claw Display Protocol** (`CLAW_DISPLAY_MODE=web`) |
-| **Worker env** | `gateway-solve-turn/src/ovs_interactive.rs` | Sets `CLAW_DISPLAY_MODE=web` for browser workers |
-| **Web bundle** | `web/claw-display/` → `web/gateway-async-playground/claw-display/` | `DisplayRouter`: strip OSC → document pane (markdown) + status bar; clean bytes → xterm |
-| **Playground UI** | `web/gateway-async-playground/coding.html` | Hybrid shell: document view + xterm input pane |
-
-CDP v1 frame (embedded in worker stdout): `ESC ] 1337 ; Claw ; <base64url(json)> BEL` — events `content.delta`, `content.flush`, `status`, `thinking`, `turn.begin`. One WS (`agent/ws`); no second SSE for interactive REPL.
-
-Build (local): `CLAW_DISPLAY_LOCAL_BUILD=1 ./deploy/stack/gateway.sh claw-display-build`
-
-## Web IDE (openvscode-server) — primary interactive entry (OVS + plugin)
-
-| Layer | Path | Role |
-| --- | --- | --- |
-| **Product entry** | `/ovs?projId=N` (playground) or `:13000/ovs/` | VS Code Web IDE for `proj_N/home/`; **forward path** for `@claw` Chat (`/coding` shelved) |
-| **OVS service** | `deploy/stack/podman-compose.yml` → `openvscode-server` | Central **openvscode-server**; mounts `CLAW_WORK_ROOT` at `/home/workspace` |
-| **Extension** | `extensions/claw-vscode/`（`ovs-chat-demo` 仅 plumbing 参考） | `@claw` Chat + stub LM；agent WS via `/ovs/agent/ws` |
-| **Agent bridge** | `session_agent_api.rs` | `GET /v1/sessions/{id}/agent/ws` → `gateway-interactive-once` exec CDP；每次 `prompt` 写 `gateway_turns`（`client_origin=ovs-chat`） |
-| **Project workspace** | `session_ovs_api.rs` | `GET /v1/projects/{id}/ovs/workspace` — folder contract |
-| **Session registry** | `session_terminal_api.rs` | `ovs-*` 首次 `ensure_terminal_active` → `gateway_sessions`（`client_origin=ovs-chat`） |
-
-Default OVS agent session id: `ovs-{projId}`（每 project 一个 REPL；后续 git 分支见 `docs/ovs-chat/PLAN.md`）。**OVS 交互** worker：`cwd=/claw_ds`（= `proj_N/home`）；**solve** worker：仍为 `/claw_host_root` session 工作区。
-
-Build (local): `./deploy/stack/gateway.sh build` builds `claw-openvscode-server:local` via `Containerfile.openvscode`.
-
-## e2b cloud sandbox (interactive only)
-
-| Layer | Path | Role |
-| --- | --- | --- |
-| **Backend switch** | `CLAW_INTERACTIVE_BACKEND=e2b` | Interactive + solve 均经 e2b |
-| **Rust e2b client** | `rust/crates/claw-e2b-sandbox-client/` | E2B-compatible REST (`cn-beijing`); guest exec via `deploy/e2b/e2b_exec.py` |
-| **Backend trait** | `pool/interactive_backend/` | `E2bInteractiveBackend` |
-| **Interactive worker lifecycle** | `session_terminal_api.rs` | `ensure_terminal_active` → `InteractiveSandboxBackend` lease + registry |
-| **Agent bridge** | `session_agent_api.rs` | per-turn `gateway-interactive-once` exec on the leased sandbox (`sandboxId` + `sandboxDomain` from the lease) |
-| **Workspace truth** | NAS (e2b sandbox mount) | `CLAW_OVS_BACKEND=e2b` → OVS singleton on e2b (`claw-ovs`); `CLAW_USE_NAS_VOLUME=0` on Mac; see `docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md` |
-| **Deploy docs** | `deploy/e2b/README.md` | Phase 0 quickstart, template, NAS, ~¥876/yr @100GB |
-| **Env overlay** | `deploy/stack/env.e2b-interactive.example` | e2b + NAS vars for repo root `.env` |
-| **E2E** | `deploy/stack/lib/verify-e2b-ovs-e2e.sh` | NAS probe + optional OVS agent WS |
-
-**OVS Chat 源码修复（另开工程）：** `docs/ovs-chat-source-handoff.md` — 调用链、证据、证伪清单、demo 成功标准。
+| **Rust e2b client** | `rust/crates/claw-e2b-sandbox-client/` | E2B-compatible REST；guest exec via `deploy/e2b/e2b_exec.py` |
+| **Worker pool** | `pool/e2b_proj_worker_registry.rs` + `e2b_orchestrated_pool.rs` | per-project warm workers；`acquire_for_solve` |
+| **NAS / Observe helpers** | `pool/interactive_backend/`（历史命名） | `E2bNasApiSingleton`、worker tap、`e2b_observe_is_enabled` |
+| **Workspace materialize** | `session_terminal_api.rs`（仅留 materialize） | `proj_N/home` + `claw.projId` settings |
+| **Deploy docs** | `deploy/e2b/README.md` | template、NAS、worker 构建 |
 
 ## See also
 

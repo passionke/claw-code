@@ -1,4 +1,4 @@
-//! Gateway → e2b cloud sandbox (solve + interactive). Author: kejiqing
+//! Gateway → e2b cloud sandbox (solve). Author: kejiqing
 
 use std::sync::Arc;
 
@@ -9,9 +9,6 @@ use crate::session_db::GatewaySessionDb;
 use super::config::relaxed_worker_allowed_from_env;
 use super::e2b_orchestrated_pool::{E2bOrchestratedPool, E2B_POOL_ID};
 use super::e2b_proj_worker_registry::E2bProjWorkerRegistry;
-use super::interactive_backend::{
-    E2bInteractiveBackend, InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend,
-};
 use super::traits::PoolOps;
 use super::worker_profile::{
     default_worker_profile_json, effective_mode, mode_from_json, WorkerProfileMode,
@@ -24,7 +21,6 @@ pub struct PoolClients {
     e2b_pool: Arc<E2bOrchestratedPool>,
     e2b_workers: Arc<E2bProjWorkerRegistry>,
     pool_id: String,
-    e2b_interactive: Arc<E2bInteractiveBackend>,
     e2b_client: Arc<E2bSandboxClient>,
     nas_layout: NasLayoutBackend,
 }
@@ -73,18 +69,11 @@ impl PoolClients {
             nas_layout.clone(),
             Arc::clone(&e2b_workers),
         ));
-        let e2b_interactive = Arc::new(E2bInteractiveBackend::new(
-            Arc::clone(&e2b_client),
-            pool_id.clone(),
-            nas_layout.clone(),
-            Arc::clone(&e2b_workers),
-        ));
 
         Self {
             e2b_pool,
             e2b_workers,
             pool_id,
-            e2b_interactive,
             e2b_client,
             nas_layout,
         }
@@ -98,16 +87,6 @@ impl PoolClients {
     #[must_use]
     pub fn e2b_nas_layout_active(&self) -> bool {
         self.nas_layout.active()
-    }
-
-    #[must_use]
-    pub fn e2b_interactive(&self) -> Option<&E2bInteractiveBackend> {
-        Some(&self.e2b_interactive)
-    }
-
-    #[must_use]
-    pub fn e2b_interactive_arc(&self) -> Arc<dyn InteractiveSandboxBackend + Send + Sync> {
-        Arc::clone(&self.e2b_interactive) as Arc<dyn InteractiveSandboxBackend + Send + Sync>
     }
 
     #[must_use]
@@ -128,7 +107,7 @@ impl PoolClients {
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| "default".to_string());
 
-        self.e2b_interactive.shutdown_all().await;
+        self.e2b_workers.shutdown_all().await;
 
         let mut skip = self.e2b_workers.all_persisted_sandbox_ids().await;
         skip.extend(self.e2b_client.persistent_sandbox_ids());
@@ -234,21 +213,6 @@ impl PoolClients {
             .map(|(pool, _)| pool)
     }
 
-    #[allow(clippy::unused_async)]
-    pub async fn interactive_backend_for_proj(
-        &self,
-        _db: &GatewaySessionDb,
-        _proj_id: i64,
-    ) -> Result<Arc<dyn InteractiveSandboxBackend + Send + Sync>, String> {
-        Ok(self.e2b_interactive.clone() as Arc<dyn InteractiveSandboxBackend + Send + Sync>)
-    }
-
-    pub async fn stop_interactive_lease(&self, lease: &InteractiveLease) -> Result<(), String> {
-        match lease.backend {
-            InteractiveBackendKind::E2b => self.e2b_interactive.stop_session(lease).await,
-        }
-    }
-
     pub async fn has_report_for_turn(&self, _db: &GatewaySessionDb, turn_id: &str) -> bool {
         self.e2b_pool.has_report_for_turn(turn_id).await
     }
@@ -263,8 +227,7 @@ impl PoolClients {
 
     pub async fn bind_session_db(&self, db: Arc<GatewaySessionDb>) {
         self.e2b_pool.bind_session_db(Arc::clone(&db)).await;
-        self.e2b_workers.bind_session_db(Arc::clone(&db)).await;
-        self.e2b_interactive.bind_session_db(db).await;
+        self.e2b_workers.bind_session_db(db).await;
     }
 
     /// Version switch (startup entry): mark workers on an older buildId invalid (no kill, no create).
@@ -302,7 +265,7 @@ impl PoolClients {
         );
     }
 
-    /// Request-path ensure: nas-api + observe (global or project) before solve/interactive.
+    /// Request-path ensure: nas-api + observe (global or project) before solve.
     pub async fn ensure_e2b_runtime_for_proj(
         &self,
         db: &GatewaySessionDb,
