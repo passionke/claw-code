@@ -3,8 +3,9 @@ use crate::app_state::AppState;
 use crate::routes::app::{
     apply_project_llm_model_head_handler, apply_project_llm_model_revision_handler,
     delete_project_llm_model_handler, get_project_e2b_worker_handler,
-    get_project_inference_handler, get_project_observe_handler,
-    list_project_llm_model_versions_handler, lookup_project_llm_context_window_handler,
+    get_project_ensure_resource_template_handler, get_project_inference_handler,
+    get_project_observe_handler, list_project_llm_model_versions_handler,
+    lookup_project_llm_context_window_handler, post_project_ensure_resource_template_handler,
     reset_project_e2b_worker_handler, reset_project_observe_handler,
     test_project_llm_model_handler, upsert_project_llm_model_handler,
     verify_project_llm_context_window_handler,
@@ -21,6 +22,11 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/v1/projects/{proj_id}/e2b-worker/reset",
             post(reset_project_e2b_worker_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/e2b-worker/ensure-resource-template",
+            get(get_project_ensure_resource_template_handler)
+                .post(post_project_ensure_resource_template_handler),
         )
         .route(
             "/v1/projects/{proj_id}/inference",

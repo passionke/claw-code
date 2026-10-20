@@ -62,6 +62,8 @@ export default function WorkerProfilePage() {
   const [workerStatus, setWorkerStatus] = useState<ProjectE2bWorkerStatusResponse | null>(null);
   const [workerLoading, setWorkerLoading] = useState(false);
   const [workerResetting, setWorkerResetting] = useState(false);
+  const [ensureBusy, setEnsureBusy] = useState(false);
+  const [ensureLog, setEnsureLog] = useState<string[]>([]);
   const mode = Form.useWatch("mode", form);
   const resourcesCustom = Form.useWatch("resourcesCustom", form);
   const cpuWatch = Form.useWatch("cpuCount", form);
@@ -213,6 +215,63 @@ export default function WorkerProfilePage() {
       ...resourcesBlock,
       strict: { useSystemDefault: false, landlock },
     };
+  };
+
+  const ensureResourceTemplate = async () => {
+    if (!projectConfig) return;
+    setEnsureBusy(true);
+    setEnsureLog([]);
+    try {
+      // Persist current form resources first so Gateway reads the intended fingerprint.
+      const v = await form.validateFields();
+      const workerProfileJson = buildWorkerProfileJson(v);
+      await putProjectConfigDraft(gatewayBase, projId, projectConfig, { workerProfileJson });
+      await refreshProjectConfig();
+
+      const start = await proxyHttp<{
+        accepted: boolean;
+        message?: string;
+        job: {
+          phase: string;
+          message?: string;
+          logTail?: string[];
+          fingerprint?: string;
+        };
+      }>(gatewayBase, "POST", `/v1/projects/${projId}/e2b-worker/ensure-resource-template`);
+      if (start.message) message.info(start.message);
+      if (start.job.logTail?.length) setEnsureLog(start.job.logTail);
+
+      if (!start.accepted && start.job.phase !== "running") {
+        await refreshProjectConfig();
+        return;
+      }
+
+      for (let i = 0; i < 120; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const st = await proxyHttp<{
+          job: {
+            phase: string;
+            message?: string;
+            logTail?: string[];
+          };
+        }>(gatewayBase, "GET", `/v1/projects/${projId}/e2b-worker/ensure-resource-template`);
+        if (st.job.logTail?.length) setEnsureLog(st.job.logTail);
+        if (st.job.phase === "succeeded") {
+          message.success(st.job.message || "派生模板已绑定；请强制重建 worker");
+          await refreshProjectConfig();
+          await loadWorkerStatus();
+          return;
+        }
+        if (st.job.phase === "failed") {
+          throw new Error(st.job.message || "ensure 失败");
+        }
+      }
+      throw new Error("ensure 超时（仍在 running）；请稍后刷新查看绑定状态");
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "ensure 派生模板失败");
+    } finally {
+      setEnsureBusy(false);
+    }
   };
 
   const resetWorker = async (slotIndex?: number) => {
@@ -511,7 +570,7 @@ export default function WorkerProfilePage() {
           <Form.Item
             name="resourcesCustom"
             label="规格来源"
-            extra="默认使用全局公用模板；自定义后需 ensure 派生模板并重建 worker。"
+            extra="默认使用全局公用模板；自定义后在本页点「确保派生模板」再强制重建。"
           >
             <Radio.Group>
               <Radio value={false}>系统默认（全局模板）</Radio>
@@ -555,8 +614,35 @@ export default function WorkerProfilePage() {
                   type="info"
                   showIcon
                   message={`规范化预览：cpu=${resourcesPreview.cpuCount} memoryMb=${resourcesPreview.memoryMb}（指纹 ${workerResourcesFingerprint(resourcesPreview)}）`}
-                  description="任意值会向上取整：cpu 整数、memory 按 256 MiB。保存后若指纹与已绑定模板不一致，需重新 ensure。"
+                  description="任意值会向上取整：cpu 整数、memory 按 256 MiB。指纹与已绑定模板不一致时，点「确保派生模板」。"
                 />
+              ) : null}
+              <Space wrap style={{ marginTop: 12 }}>
+                <Button
+                  type="primary"
+                  loading={ensureBusy}
+                  disabled={!resourcesPreview || "error" in (resourcesPreview || {})}
+                  onClick={() => void ensureResourceTemplate()}
+                >
+                  确保派生模板
+                </Button>
+                <Typography.Text type="secondary">
+                  Gateway 打 e2b SKU 模板并写回 resourceTemplate；完成后点上方「强制重建」。
+                </Typography.Text>
+              </Space>
+              {ensureLog.length > 0 ? (
+                <Typography.Paragraph
+                  code
+                  style={{
+                    marginTop: 12,
+                    maxHeight: 160,
+                    overflow: "auto",
+                    whiteSpace: "pre-wrap",
+                    fontSize: 12,
+                  }}
+                >
+                  {ensureLog.slice(-40).join("\n")}
+                </Typography.Paragraph>
               ) : null}
               {projectConfig?.workerProfileJson?.resourceTemplate ? (
                 <Descriptions size="small" column={1} style={{ marginTop: 12 }} bordered>
@@ -575,16 +661,7 @@ export default function WorkerProfilePage() {
                   showIcon
                   style={{ marginTop: 12 }}
                   message="尚未绑定 resourceTemplate"
-                  description={
-                    <>
-                      保存 resources 后运行{" "}
-                      <Typography.Text code>
-                        deploy/e2b/ensure-worker-resource-template.py --cpu … --memory-mb … --bind-proj{" "}
-                        {projId}
-                      </Typography.Text>
-                      ，再点上方「强制重建」。
-                    </>
-                  }
+                  description="保存自定义规格后，点「确保派生模板」；成功后再「强制重建」。"
                 />
               )}
             </>
@@ -705,7 +782,7 @@ export default function WorkerProfilePage() {
                 ? "已保存：resources 已清空，将回落全局模板；请强制重建 worker"
                 : workerProfileJson.resourceTemplate
                   ? "Worker profile 已保存；请强制重建 worker 使规格生效"
-                  : "resources 已保存；请 ensure 派生模板并强制重建 worker"
+                  : "resources 已保存；请点「确保派生模板」，再强制重建"
             );
             await refreshProjectConfig();
             await loadWorkerStatus();

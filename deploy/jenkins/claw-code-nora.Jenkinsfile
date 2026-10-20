@@ -45,6 +45,8 @@ pipeline {
     CLAW_REPO = 'https://code.passionke.top/passionke/claw-code.git'
     // CI only: no incremental on wiped-per-job target. Keep Cargo release opt=3 / mold. Author: kejiqing
     CARGO_INCREMENTAL = '0'
+    // Pack path: rustc direct (no sccache). Author: kejiqing
+    CLAW_DISABLE_SCCACHE = '1'
   }
   stages {
     stage('Checkout') {

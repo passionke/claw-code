@@ -72,6 +72,48 @@ pub(crate) async fn reset_project_e2b_worker_handler(
 }
 
 #[utoipa::path(
+    post,
+    path = "/v1/projects/{proj_id}/e2b-worker/ensure-resource-template",
+    tag = "ProjectInference",
+    operation_id = "post_project_ensure_resource_template_handler",
+    params(("proj_id" = i64, Path, description = "Project ID")),
+    responses(
+        (status = 200, description = "Ensure job accepted or already bound", body = gateway_project_resource_template::ResourceTemplateEnsureResponse),
+        (status = 400, description = "Missing resources / invalid proj")
+    )
+)]
+pub(crate) async fn post_project_ensure_resource_template_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+) -> Result<Json<gateway_project_resource_template::ResourceTemplateEnsureResponse>, ApiError> {
+    let body = gateway_project_resource_template::start_ensure_resource_template(
+        state.session_db.clone(),
+        proj_id,
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(body))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/projects/{proj_id}/e2b-worker/ensure-resource-template",
+    tag = "ProjectInference",
+    operation_id = "get_project_ensure_resource_template_handler",
+    params(("proj_id" = i64, Path, description = "Project ID (job is cluster-wide; path for Admin consistency)")),
+    responses(
+        (status = 200, description = "Ensure job status", body = gateway_project_resource_template::ResourceTemplateEnsureResponse)
+    )
+)]
+pub(crate) async fn get_project_ensure_resource_template_handler(
+    AxumPath(_proj_id): AxumPath<i64>,
+) -> Result<Json<gateway_project_resource_template::ResourceTemplateEnsureResponse>, ApiError> {
+    Ok(Json(
+        gateway_project_resource_template::get_ensure_resource_template_status(),
+    ))
+}
+
+#[utoipa::path(
     get,
     path = "/v1/projects/{proj_id}/inference",
     tag = "ProjectInference",

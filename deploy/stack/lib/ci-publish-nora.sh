@@ -41,6 +41,9 @@ if [[ -z "$ACR_LOGIN_HOST" || "$ACR_LOGIN_HOST" == "$ACR_REGISTRY" ]]; then
   exit 1
 fi
 
+# Home pack: no sccache. Wrapper hid host SIGSEGV/GPF and hit rates were junk. Author: kejiqing
+export CLAW_DISABLE_SCCACHE="${CLAW_DISABLE_SCCACHE:-1}"
+
 # Single platform for this publish path (Nora amd64 agents). Author: kejiqing
 export CLAW_LINUX_COMPILE_PLATFORM="${CLAW_LINUX_COMPILE_PLATFORM:-linux/amd64}"
 case "${CLAW_LINUX_COMPILE_PLATFORM}" in
