@@ -224,6 +224,8 @@ async fn run_ensure_script(
     if relaxed {
         cmd.arg("--relaxed");
     }
+    // SKU path: e2b API + PREFIX/BASE_TAG only (script does Template.build, not docker).
+    // Author: kejiqing
     for key in [
         "REGION",
         "region",
@@ -238,11 +240,7 @@ async fn run_ensure_script(
         "CLAW_E2B_DOMAIN",
         "E2B_DOMAIN",
         "CLAW_IMAGE_PREFIX",
-        "CLAW_IMAGE_REGISTRY",
-        "CLAW_E2B_WORKER_IMAGE",
-        "CLAW_E2B_WORKER_RELAXED_IMAGE",
-        "CLAW_DOCKER_CONFIG",
-        "DOCKER_CONFIG",
+        "CLAW_E2B_WORKER_BASE_TAG",
         "CLAW_E2B_TEMPLATE_SKIP_CACHE",
     ] {
         if let Ok(v) = std::env::var(key) {

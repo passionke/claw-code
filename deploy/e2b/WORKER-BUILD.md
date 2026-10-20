@@ -33,15 +33,27 @@ present in these images; worker init downloads only the engine selected for the 
 ## Project resource SKU templates (cpu / memory)
 
 Project-level cpu/memory overrides use fingerprint-keyed **shared** templates (not one template per
-project). Normalize first (cpu ceil `1..=16`, memory ceil to 256 MiB, max 16384), then:
+project). Normalize first (cpu ceil `1..=16`, memory ceil to 256 MiB, max 16384), then e2b
+`Template.build` only — **SKU does not build images**.
+
+**from_image contract (one path):**
+
+```text
+{CLAW_IMAGE_PREFIX}/debian-bookworm-claw-worker:{CLAW_E2B_WORKER_BASE_TAG}
+```
+
+(`-relaxed` suffix when relaxed.) `CLAW_E2B_WORKER_BASE_TAG` must match a protocol tag already in
+Nora (`claw-e2b-protocol-nora`). Gateway sets both env vars; missing either fails loudly.
 
 **Product path (preferred):** Admin → Worker profile → 保存自定义 cpu/memory → **确保派生模板** → **强制重建**.
-Gateway `POST /v1/projects/{projId}/e2b-worker/ensure-resource-template` runs the same script and binds
-`resourceTemplate` (requires `CLAW_REPO_ROOT` + e2b env on the Gateway host).
+Gateway `POST /v1/projects/{projId}/e2b-worker/ensure-resource-template` spawns the same script and
+binds `resourceTemplate` (requires `CLAW_REPO_ROOT` + e2b API env + the two image-contract vars).
 
 **CLI escape hatch only:**
 
 ```bash
+CLAW_IMAGE_PREFIX=nora.home.passionke.top/passionke \
+CLAW_E2B_WORKER_BASE_TAG=v2.0.43 \
 python3 deploy/e2b/ensure-worker-resource-template.py \
   --cpu 4 --memory-mb 8192 \
   --bind-proj <projId>
