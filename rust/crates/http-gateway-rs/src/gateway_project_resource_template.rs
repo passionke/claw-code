@@ -315,8 +315,8 @@ pub async fn start_ensure_resource_template(
         .await
         .map_err(|e| e.to_string())?;
     let resources = resources_from_profile(&wp)?;
-    let relaxed = effective_mode(relaxed_worker_allowed_from_env(), &wp)
-        == WorkerProfileMode::Relaxed;
+    let relaxed =
+        effective_mode(relaxed_worker_allowed_from_env(), &wp) == WorkerProfileMode::Relaxed;
     let fp = resources.fingerprint();
     if let Some(existing) = effective_resource_template(&wp) {
         if existing.fingerprint == fp {
