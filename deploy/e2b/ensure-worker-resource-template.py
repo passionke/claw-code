@@ -8,17 +8,20 @@ Builds a shared SKU template (not per-project):
 CPU ceil → 1..=16; memory ceil → 256 MiB steps, max 16384 MiB.
 Optional Gateway bind writes worker_profile_json.resourceTemplate.
 
+Requires CLAW_IMAGE_PREFIX + CLAW_E2B_WORKER_BASE_TAG (protocol runtime already in Nora).
+
 Examples:
+  CLAW_IMAGE_PREFIX=nora…/passionke CLAW_E2B_WORKER_BASE_TAG=v2.0.43 \\
   CLAW_E2B_RESOURCE_CPU=4 CLAW_E2B_RESOURCE_MEMORY_MB=8192 \\
     python3 deploy/e2b/ensure-worker-resource-template.py
 
-  python3 deploy/e2b/ensure-worker-resource-template.py --cpu 1.1 --memory-mb 257 \\
+  CLAW_IMAGE_PREFIX=… CLAW_E2B_WORKER_BASE_TAG=v2.0.43 \\
+    python3 deploy/e2b/ensure-worker-resource-template.py --cpu 1.1 --memory-mb 257 \\
     --bind-proj 42
 """
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import math
 import os
@@ -26,23 +29,11 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 _E2B_DIR = Path(__file__).resolve().parent
 if str(_E2B_DIR) not in sys.path:
     sys.path.insert(0, str(_E2B_DIR))
-
-
-def _load_hyphen_module(mod_name: str, filename: str) -> ModuleType:
-    """Load deploy/e2b/*.py scripts whose filenames use hyphens (not importable). Author: kejiqing"""
-    path = _E2B_DIR / filename
-    spec = importlib.util.spec_from_file_location(mod_name, path)
-    if spec is None or spec.loader is None:
-        raise SystemExit(f"error: cannot load {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 from e2b_template_build import build_template_with_retry
 from e2b_template_registry import (
@@ -155,26 +146,29 @@ def bind_project(
     print(f"OK: bound proj {proj_id} fingerprint={fp} templateId={template_id}")
 
 
-def _build_e2b_image(relaxed: bool) -> str:
-    if relaxed:
-        relaxed_mod = _load_hyphen_module(
-            "claw_worker_relaxed_build", "build-claw-worker-relaxed-selfhosted.py"
-        )
-        source = _env("CLAW_E2B_WORKER_RELAXED_IMAGE") or relaxed_mod._worker_base_image()
-        if not relaxed_mod._is_protocol_relaxed(source):
-            raise SystemExit(
-                "error: relaxed resource template requires …/claw-worker-base-relaxed:<tag>"
-            )
-        return relaxed_mod._build_e2b_relaxed_image(source)
-    strict_mod = _load_hyphen_module(
-        "claw_worker_strict_build", "build-claw-worker-selfhosted.py"
+def _sku_from_image(relaxed: bool) -> str:
+    """Single path: protocol runtime already in registry; SKU only Template.build.
+
+    from_image = {CLAW_IMAGE_PREFIX}/debian-bookworm-claw-worker[-relaxed]:{CLAW_E2B_WORKER_BASE_TAG}
+    No local docker, no claw-worker-base guess, no image-name overrides.
+    Author: kejiqing
+    """
+    prefix = _env("CLAW_IMAGE_PREFIX").rstrip("/")
+    tag = _env("CLAW_E2B_WORKER_BASE_TAG")
+    repo = (
+        "debian-bookworm-claw-worker-relaxed"
+        if relaxed
+        else "debian-bookworm-claw-worker"
     )
-    source = strict_mod._worker_base_image()
-    if not strict_mod._is_worker_series_source(source):
+    if not prefix or not tag:
         raise SystemExit(
-            "error: strict resource template requires …/claw-worker-base:<tag>"
+            "error: SKU ensure needs CLAW_IMAGE_PREFIX and CLAW_E2B_WORKER_BASE_TAG "
+            f"(expects {{prefix}}/{repo}:{{tag}} from claw-e2b-protocol-nora; "
+            "Gateway does not build images — set BASE_TAG to the protocol tag already in Nora)"
         )
-    return strict_mod._build_e2b_worker_image(source)
+    e2b_image = f"{prefix}/{repo}:{tag}"
+    print(f"==> from_image={e2b_image!r} (protocol runtime; e2b Template.build only)")
+    return e2b_image
 
 
 def main() -> int:
@@ -228,7 +222,7 @@ def main() -> int:
 
     from e2b import Template, default_build_logger
 
-    e2b_image = _build_e2b_image(relaxed)
+    e2b_image = _sku_from_image(relaxed)
     start_cmd = RELAXED_START_CMD if relaxed else WORKER_START_CMD
     ready_cmd = RELAXED_READY_CMD if relaxed else WORKER_READY_CMD
     skip_cache = _env("CLAW_E2B_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no")

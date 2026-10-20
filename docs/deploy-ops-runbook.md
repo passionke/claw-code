@@ -36,7 +36,7 @@ Author: kejiqing
 | 节点 | 角色 |
 |------|------|
 | `home29`（`10.8.0.29`） | 主打包机；label 含 `nora-pack` + `primary` |
-| Built-In（Jenkins controller on `10.8.0.21`，docker.sock） | 备份；label 含 `nora-pack`。home29 离线时 Job 落到这里，**不会**一直排队夯死 |
+| `home-ubt`（`10.8.0.21` **宿主机** SSH agent） | 备份打包机（Jenkins 容器也在 21，但 Built-In **不**打包，`numExecutors=0`） |
 
 ```text
 正式线（v* tag）:
@@ -180,10 +180,13 @@ cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID、PG 
 |------|------------|---------|-------|------------|
 | Worker (strict) | 协议 Job / `publish-worker-protocol.sh` | **Admin / Gateway API** | `e2bWorker.templateId` | `claw-worker` |
 | Worker (relaxed) | 同上 | **Admin / Gateway API** | `e2bWorkerRelaxed.templateId` | `claw-worker-relaxed` |
+| Worker SKU (cpu/mem) | e2b `Template.build` only（`ensure-worker-resource-template.py`） | Admin「确保派生模板」/ Gateway API | 项目 `resourceTemplate` | `claw-worker-r-cpuN-memM` |
 | NAS API | `build-claw-nas-api-selfhosted.py` 等 | Gateway ensure / Admin | `e2bNasApi.templateId` | `claw-nas-api` |
 | Observe | `build-claw-observe-selfhosted.py` | Gateway ensure / Admin | `e2bObserve.templateId` | `claw-observe` |
 
 **协议发布 Job 不写 PG。** 绑定入口：Admin → E2b 核心组件。
+
+**SKU 不编镜像：** Gateway 只 spawn 脚本 → e2b 用已有 `{CLAW_IMAGE_PREFIX}/debian-bookworm-claw-worker:{CLAW_E2B_WORKER_BASE_TAG}` 做 `Template.build`；缺 PREFIX/BASE_TAG 或 Nora 无该镜像则硬失败（先跑协议 Job）。
 
 ### 1.2 协议模板注册（制品侧）
 
