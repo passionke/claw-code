@@ -50,6 +50,8 @@ pipeline {
     CARGO_INCREMENTAL = '0'
     // True-compile path was SIGSEGV under sccache wrapper; re-enable after green. Author: kejiqing
     CLAW_DISABLE_SCCACHE = '1'
+    // home29: rustc SIGSEGV on proc-macro link with -fuse-ld=mold. Author: kejiqing
+    CLAW_DISABLE_MOLD = '1'
   }
   stages {
     stage('Checkout') {
