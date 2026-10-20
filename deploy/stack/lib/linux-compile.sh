@@ -144,10 +144,14 @@ claw_linux_compile_release() {
 
   local sccache_size="${CLAW_SCCACHE_CACHE_SIZE:-10G}"
   # Home CI: cap crate parallelism (default ~nproc was crashing rustc under sccache).
-  # Stack: after 32MiB still SIGSEGV, rustc help text asks for 64MiB. Author: kejiqing
+  # Disable release incremental on shared CI target dir (Cargo.toml sets incremental=true).
+  # sccache optional: CLAW_DISABLE_SCCACHE=1 skips RUSTC_WRAPPER (default on for CI —
+  # cold true-compiles were SIGSEGV/SIGBUS under the wrapper). Author: kejiqing
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
     export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
     export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
+    export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
+    export CLAW_DISABLE_SCCACHE="${CLAW_DISABLE_SCCACHE:-1}"
   fi
   export RUST_MIN_STACK="${RUST_MIN_STACK:-67108864}"
 
@@ -165,7 +169,7 @@ claw_linux_compile_release() {
       -v "${ci_cache}/sccache:/root/.cache/sccache:Z"
     )
     echo "  ci cache: ${ci_cache}"
-    echo "  CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} RUST_MIN_STACK=${RUST_MIN_STACK} CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-}"
+    echo "  CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} RUST_MIN_STACK=${RUST_MIN_STACK} CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-} CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-} CLAW_DISABLE_SCCACHE=${CLAW_DISABLE_SCCACHE:-0}"
   else
     vol_args=(
       -v claw-cargo-registry:/usr/local/cargo/registry
@@ -174,8 +178,15 @@ claw_linux_compile_release() {
     )
   fi
 
+  local use_sccache=1
+  if [[ "${CLAW_DISABLE_SCCACHE:-0}" == "1" || "${CLAW_DISABLE_SCCACHE:-}" == "true" ]]; then
+    use_sccache=0
+    echo "linux compile: sccache disabled (CLAW_DISABLE_SCCACHE=1)"
+  fi
+
   # Explicit wipe: CLAW_SCCACHE_RESET=1. Author: kejiqing
-  if [[ "${CLAW_SCCACHE_RESET:-0}" == "1" || "${CLAW_SCCACHE_RESET:-}" == "true" ]]; then
+  if [[ "${use_sccache}" -eq 1 ]] \
+    && { [[ "${CLAW_SCCACHE_RESET:-0}" == "1" || "${CLAW_SCCACHE_RESET:-}" == "true" ]]; }; then
     claw_linux_sccache_reset "${ci_cache}"
   fi
 
@@ -248,9 +259,19 @@ claw_linux_compile_release() {
   local compile_attempt=1
   local compile_max_attempts=1
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" \
+    && "${use_sccache}" -eq 1 \
     && "${CLAW_SCCACHE_RETRY_ON_FAIL:-1}" != "0" \
     && "${CLAW_SCCACHE_RETRY_ON_FAIL:-}" != "false" ]]; then
     compile_max_attempts=2
+  fi
+
+  local -a sccache_env_args=()
+  if [[ "${use_sccache}" -eq 1 ]]; then
+    sccache_env_args=(
+      -e "RUSTC_WRAPPER=sccache"
+      -e "SCCACHE_DIR=/root/.cache/sccache"
+      -e "SCCACHE_CACHE_SIZE=${sccache_size}"
+    )
   fi
 
   while [[ "${compile_attempt}" -le "${compile_max_attempts}" ]]; do
@@ -261,9 +282,7 @@ claw_linux_compile_release() {
     -e "CLAW_RUST_VERSION=${CLAW_RUST_VERSION}" \
     -e "RUSTUP_DIST_SERVER=${rustup_dist}" \
     -e "RUSTUP_UPDATE_ROOT=${rustup_root}" \
-    -e "RUSTC_WRAPPER=sccache" \
-    -e "SCCACHE_DIR=/root/.cache/sccache" \
-    -e "SCCACHE_CACHE_SIZE=${sccache_size}" \
+    "${sccache_env_args[@]+"${sccache_env_args[@]}"}" \
     -e "RUST_MIN_STACK=${RUST_MIN_STACK}" \
     -e "CLAW_LINUX_RELEASE_BINS=${CLAW_LINUX_RELEASE_BINS}" \
     "${cargo_env_args[@]+"${cargo_env_args[@]}"}" \
@@ -286,8 +305,8 @@ claw_linux_compile_release() {
         echo "rustc version mismatch: want $want got $got" >&2
         exit 1
       fi
-      echo "rustc $got (locked)"
-      if command -v sccache >/dev/null 2>&1; then
+      echo "rustc $got (locked) RUSTC_WRAPPER=${RUSTC_WRAPPER:-} CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-}"
+      if [ -n "${RUSTC_WRAPPER:-}" ] && command -v sccache >/dev/null 2>&1; then
         sccache --show-stats || true
       fi
       main_args=()
@@ -311,7 +330,7 @@ claw_linux_compile_release() {
       if [ "${#neuro_args[@]}" -gt 0 ]; then
         cargo build --release --manifest-path crates/neuro-harness/Cargo.toml "${neuro_args[@]}"
       fi
-      if command -v sccache >/dev/null 2>&1; then
+      if [ -n "${RUSTC_WRAPPER:-}" ] && command -v sccache >/dev/null 2>&1; then
         sccache --show-stats || true
       fi
       keep_args=""
@@ -345,7 +364,9 @@ claw_linux_compile_release() {
   fi
   if [[ "${compile_attempt}" -lt "${compile_max_attempts}" ]]; then
     echo "linux compile: attempt ${compile_attempt} failed (rc=${compile_rc}); reset sccache and retry once" >&2
-    claw_linux_sccache_reset "${ci_cache}"
+    if [[ "${use_sccache}" -eq 1 ]]; then
+      claw_linux_sccache_reset "${ci_cache}"
+    fi
     # Drop partial target dir so retry does not link against broken objects. Author: kejiqing
     rm -rf "${out_root}" 2>/dev/null || true
     if [[ -d "${out_root}" ]] && command -v docker >/dev/null 2>&1; then

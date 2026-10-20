@@ -54,12 +54,14 @@ Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GI
 | 旋钮 | 默认 | 作用 |
 |------|------|------|
 | `CARGO_BUILD_JOBS` | `4` | crate 级并行（避免默认≈16 路把 rustc 打崩） |
-| `RUST_MIN_STACK` | `67108864`（64MiB） | rustc 线程栈（32MiB 仍 SIGSEGV 时按 rustc 提示升到 64） |
+| `RUST_MIN_STACK` | `67108864`（64MiB） | rustc 线程栈 |
 | `CARGO_PROFILE_RELEASE_CODEGEN_UNITS` | `16` | 单 crate 内并行（覆盖 Cargo.toml 的 256） |
-| `CLAW_SCCACHE_RESET=1` / Job 勾选 `SCCACHE_RESET` | 关 | 编译前清空 `~/claw-ci-cache/claw-code/sccache` |
-| `CLAW_SCCACHE_RETRY_ON_FAIL` | `1`（CI） | 首次失败后自动清 sccache 再编一次 |
+| `CARGO_INCREMENTAL` | `0`（CI） | 关掉 release incremental（共享 target 上易脏） |
+| `CLAW_DISABLE_SCCACHE` | `1`（CI 默认） | 直连 rustc；`0` 可重新启用 sccache |
+| `CLAW_SCCACHE_RESET=1` / Job 勾选 `SCCACHE_RESET` | 关 | 编译前清空 sccache 目录 |
+| `CLAW_SCCACHE_RETRY_ON_FAIL` | `1`（CI 且启用 sccache） | 失败后清 sccache 再编一次 |
 
-sccache 是编译结果缓存；清缓存不会改产物语义，只避免半残缓存干扰真编。
+sccache = 编译结果缓存（加速重复构建）。机制：可手动 `RESET`；启用时失败自动清一次重试；当前 CI 默认关掉 wrapper，先保证真编能绿。
 
 用户日常**不**手搓 `up --release`（紧急除外）。  
 - 正式：[`home-neurogate-deploy.yml`](../.gitea/workflows/home-neurogate-deploy.yml)  

@@ -47,6 +47,9 @@ pipeline {
     CARGO_BUILD_JOBS = '4'
     RUST_MIN_STACK = '67108864'
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS = '16'
+    CARGO_INCREMENTAL = '0'
+    // True-compile path was SIGSEGV under sccache wrapper; re-enable after green. Author: kejiqing
+    CLAW_DISABLE_SCCACHE = '1'
   }
   stages {
     stage('Checkout') {
