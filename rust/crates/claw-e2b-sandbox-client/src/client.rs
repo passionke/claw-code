@@ -719,6 +719,9 @@ impl E2bSandboxClient {
     ///
     /// `home_read_only`: strict workers mount project home RO; relaxed (permissions-only)
     /// workers mount home RW. Workers no longer carry built-in OVS metadata/URLs. Author: kejiqing
+    /// Warm-proj create; `volume_mounts` is official e2b Volume protocol (beside nasConfig).
+    /// Author: kejiqing
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_warm_proj_sandbox(
         &self,
         cluster_id: &str,
