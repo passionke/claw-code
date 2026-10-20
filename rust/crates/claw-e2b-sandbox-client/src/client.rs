@@ -107,7 +107,8 @@ impl SandboxSnapshot {
 
 use crate::config::E2bSandboxConfig;
 use crate::e2b_platform::{
-    fetch_e2b_platform_nas, fetch_e2b_templates, E2bNasPlatform, E2bTemplateEntry,
+    fetch_e2b_platform_nas, fetch_e2b_templates, fetch_e2b_volumes, E2bNasPlatform,
+    E2bTemplateEntry, E2bVolumeEntry, E2bVolumeMount,
 };
 use crate::nas_paths::{self, warm_worker_mounts, worker_mounts, NasMountPoint};
 use crate::types::{CreateSandboxResponse, E2bExecOutcome, E2bSandboxHandle, GatewaySolveInputs};
@@ -273,6 +274,11 @@ impl E2bSandboxClient {
     /// Templates registered on e2bserver (`GET /health` → `templates.items`).
     pub async fn list_templates(&self) -> Result<Vec<E2bTemplateEntry>, String> {
         fetch_e2b_templates(&self.http, &self.config().api_url, &self.config().api_key).await
+    }
+
+    /// Logical volumes on e2bserver (`GET /volumes`). Author: kejiqing
+    pub async fn list_volumes(&self) -> Result<Vec<E2bVolumeEntry>, String> {
+        fetch_e2b_volumes(&self.http, &self.config().api_url, &self.config().api_key).await
     }
 
     /// Cached e2b `GET /health` NAS block (host bind root lives on e2b host, not Gateway env).
@@ -721,6 +727,7 @@ impl E2bSandboxClient {
         template_id: &str,
         home_read_only: bool,
         env_vars: BTreeMap<String, String>,
+        volume_mounts: &[E2bVolumeMount],
     ) -> Result<E2bSandboxHandle, String> {
         self.prepare_self_hosted_create().await?;
         let warm_session_id = format!("warm-proj-{proj_id}");
@@ -742,6 +749,10 @@ impl E2bSandboxClient {
         }
         let nas = self.require_nas_config_body(&mount_points)?;
         body["nasConfig"] = json!(nas);
+        // Official Volume protocol (CIFS/SMB etc.); orthogonal to internal nasConfig. Author: kejiqing
+        if !volume_mounts.is_empty() {
+            body["volumeMounts"] = json!(volume_mounts);
+        }
         let nas_configured = true;
         self.apply_self_hosted_create_opts(&mut body);
 

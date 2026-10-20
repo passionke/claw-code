@@ -13,7 +13,9 @@ pub use client::{
     SINGLETON_ROLE_NAS_API, SINGLETON_ROLE_OBSERVE, SINGLETON_ROLE_OBSERVE_PROJ, WARM_PROJ_ROLE,
 };
 pub use config::E2bSandboxConfig;
-pub use e2b_platform::{nas_mount_source_addr, E2bNasPlatform, E2bTemplateEntry};
+pub use e2b_platform::{
+    nas_mount_source_addr, E2bNasPlatform, E2bTemplateEntry, E2bVolumeEntry, E2bVolumeMount,
+};
 pub use e2b_schedule_error::format_create_sandbox_error;
 pub use nas_paths::{
     export_root_mounts, export_root_rel, guest_path_from_nas_proj_rel, guest_path_under_claw_ds,

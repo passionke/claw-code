@@ -23,6 +23,7 @@ mod worker_env;
 mod worker_lifecycle_preflight;
 mod worker_profile;
 mod worker_resources;
+mod worker_volume_mounts;
 
 pub use traits::{PoolOps, SlotLease, TaskOutcome};
 
@@ -86,4 +87,8 @@ pub use worker_profile::{
 pub use worker_resources::{
     effective_resource_template, normalize_worker_resources, resource_template_alias,
     resources_from_json, WorkerResources, CPU_MAX, MEMORY_MAX_MB, MEMORY_QUANTUM_MB,
+};
+pub use worker_volume_mounts::{
+    sanitize_worker_profile_volume_mounts, validate_worker_profile_volume_mounts,
+    volume_mounts_from_json,
 };

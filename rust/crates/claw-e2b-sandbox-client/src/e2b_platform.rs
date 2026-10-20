@@ -26,6 +26,23 @@ pub struct E2bTemplateEntry {
     pub arch: Option<String>,
 }
 
+/// Logical volume from e2bserver `GET /volumes` (Admin binds backend; Gateway only pins name).
+/// Author: kejiqing
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct E2bVolumeEntry {
+    #[serde(rename = "volumeID")]
+    pub volume_id: String,
+    pub name: String,
+}
+
+/// Guest mount request for `POST /sandboxes` `volumeMounts` (official e2b Volume protocol).
+/// Author: kejiqing
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct E2bVolumeMount {
+    pub name: String,
+    pub path: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct E2bHealthTemplatesBlock {
     items: Option<Vec<E2bTemplateEntryRaw>>,
@@ -212,6 +229,36 @@ pub async fn fetch_e2b_templates(
         return Ok(out);
     }
     Err("e2b GET /health missing templates.items (self-hosted e2bserver required)".into())
+}
+
+/// List logical volumes from self-hosted e2bserver (`GET /volumes`). Author: kejiqing
+pub async fn fetch_e2b_volumes(
+    http: &reqwest::Client,
+    api_url: &str,
+    api_key: &str,
+) -> Result<Vec<E2bVolumeEntry>, String> {
+    let url = format!("{}/volumes", api_url.trim_end_matches('/'));
+    let resp = http
+        .get(&url)
+        .header("X-API-Key", api_key)
+        .send()
+        .await
+        .map_err(|e| format!("e2b GET {url}: {e}"))?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("e2b GET {url} body: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("e2b GET /volumes HTTP {status}: {text}"));
+    }
+    let rows: Vec<E2bVolumeEntry> = serde_json::from_str(text.trim()).unwrap_or_default();
+    let mut out: Vec<E2bVolumeEntry> = rows
+        .into_iter()
+        .filter(|v| !v.name.trim().is_empty())
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
 }
 
 #[cfg(test)]

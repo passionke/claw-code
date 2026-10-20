@@ -9,6 +9,9 @@ use super::config::relaxed_worker_allowed_from_env;
 use super::worker_resources::{
     sanitize_worker_profile_resources, validate_worker_profile_resources,
 };
+use super::worker_volume_mounts::{
+    sanitize_worker_profile_volume_mounts, validate_worker_profile_volume_mounts,
+};
 use crate::gateway_e2b_worker_settings::{
     clamp_strict_worker_pool_size, load_e2b_strict_worker_pool_size,
     validate_strict_worker_pool_size,
@@ -149,9 +152,11 @@ fn validate_ask_user_question_in_agent_flag(value: &Value) -> Result<(), String>
     Ok(())
 }
 
-/// Normalize resources + strip stale `resourceTemplate`, then validate. Author: kejiqing
+/// Normalize resources + volumeMounts, strip stale `resourceTemplate`, then validate.
+/// Author: kejiqing
 pub fn sanitize_worker_profile_json(value: &Value) -> Result<Value, String> {
     let sanitized = sanitize_worker_profile_resources(value)?;
+    let sanitized = sanitize_worker_profile_volume_mounts(&sanitized)?;
     validate_worker_profile_json(&sanitized)?;
     Ok(sanitized)
 }
@@ -172,6 +177,7 @@ pub fn validate_worker_profile_json(value: &Value) -> Result<(), String> {
             validate_worker_profile_pool_size(value)?;
             validate_ask_user_question_in_agent_flag(value)?;
             validate_worker_profile_resources(value)?;
+            validate_worker_profile_volume_mounts(value)?;
             Ok(())
         }
         "relaxed" => {
@@ -193,6 +199,7 @@ pub fn validate_worker_profile_json(value: &Value) -> Result<(), String> {
             }
             validate_ask_user_question_in_agent_flag(value)?;
             validate_worker_profile_resources(value)?;
+            validate_worker_profile_volume_mounts(value)?;
             Ok(())
         }
         other => Err(format!("invalid worker_profile_json.mode={other:?}")),
