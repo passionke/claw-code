@@ -54,7 +54,7 @@ Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GI
 | 旋钮 | 默认 | 作用 |
 |------|------|------|
 | `CARGO_BUILD_JOBS` | `1`（CI） | crate 级并行（home29 真编 SIGSEGV 时先串行） |
-| `RUST_MIN_STACK` | `67108864`（64MiB） | rustc 线程栈 |
+| `RUST_MIN_STACK` | `268435456`（256MiB，CI） | rustc 线程栈（#54 MIR SIGSEGV 后按 rustc 提示加大） |
 | `CARGO_PROFILE_RELEASE_CODEGEN_UNITS` | `1`（CI） | 单 crate 内并行（覆盖 Cargo.toml 的 256） |
 | `CARGO_INCREMENTAL` | `0`（CI） | 关掉 release incremental（共享 target 上易脏） |
 | `CLAW_DISABLE_SCCACHE` | `1`（CI 默认） | 直连 rustc；`0` 可重新启用 sccache |

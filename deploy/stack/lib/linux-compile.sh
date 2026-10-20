@@ -156,7 +156,12 @@ claw_linux_compile_release() {
     export CLAW_DISABLE_SCCACHE="${CLAW_DISABLE_SCCACHE:-1}"
     export CLAW_LINUX_LINKER="${CLAW_LINUX_LINKER:-lld}"
   fi
-  export RUST_MIN_STACK="${RUST_MIN_STACK:-67108864}"
+  # CI/home29: rustc MIR SIGSEGV on large crates; rustc help escalates 32→64→128. Author: kejiqing
+  if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
+    export RUST_MIN_STACK="${RUST_MIN_STACK:-268435456}"
+  else
+    export RUST_MIN_STACK="${RUST_MIN_STACK:-67108864}"
+  fi
 
   local ci_cache=""
   local -a vol_args=()
