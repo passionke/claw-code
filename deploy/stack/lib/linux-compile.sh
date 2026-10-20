@@ -144,11 +144,12 @@ claw_linux_compile_release() {
 
   local sccache_size="${CLAW_SCCACHE_CACHE_SIZE:-10G}"
   # Home CI: cap crate parallelism (default ~nproc was crashing rustc under sccache).
-  # Stack: rustc docs suggest 32MiB when SIGSEGV under deep codegen. Author: kejiqing
+  # Stack: after 32MiB still SIGSEGV, rustc help text asks for 64MiB. Author: kejiqing
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
     export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+    export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
   fi
-  export RUST_MIN_STACK="${RUST_MIN_STACK:-33554432}"
+  export RUST_MIN_STACK="${RUST_MIN_STACK:-67108864}"
 
   local ci_cache=""
   local -a vol_args=()
@@ -164,7 +165,7 @@ claw_linux_compile_release() {
       -v "${ci_cache}/sccache:/root/.cache/sccache:Z"
     )
     echo "  ci cache: ${ci_cache}"
-    echo "  CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} RUST_MIN_STACK=${RUST_MIN_STACK}"
+    echo "  CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} RUST_MIN_STACK=${RUST_MIN_STACK} CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-}"
   else
     vol_args=(
       -v claw-cargo-registry:/usr/local/cargo/registry
