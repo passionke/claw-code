@@ -152,6 +152,7 @@ claw_linux_compile_release() {
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
     export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
     export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-8}"
+    export CARGO_PROFILE_RELEASE_OPT_LEVEL="${CARGO_PROFILE_RELEASE_OPT_LEVEL:-2}"
     export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
     export CLAW_DISABLE_SCCACHE="${CLAW_DISABLE_SCCACHE:-1}"
     export CLAW_LINUX_LINKER="${CLAW_LINUX_LINKER:-lld}"
@@ -177,7 +178,7 @@ claw_linux_compile_release() {
       -v "${ci_cache}/sccache:/root/.cache/sccache:Z"
     )
     echo "  ci cache: ${ci_cache}"
-    echo "  CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} RUST_MIN_STACK=${RUST_MIN_STACK} CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-} CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-} CLAW_DISABLE_SCCACHE=${CLAW_DISABLE_SCCACHE:-0} CLAW_LINUX_LINKER=${CLAW_LINUX_LINKER:-mold}"
+    echo "  CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} RUST_MIN_STACK=${RUST_MIN_STACK} CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-} OPT_LEVEL=${CARGO_PROFILE_RELEASE_OPT_LEVEL:-} CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-} CLAW_DISABLE_SCCACHE=${CLAW_DISABLE_SCCACHE:-0} CLAW_LINUX_LINKER=${CLAW_LINUX_LINKER:-mold}"
   else
     vol_args=(
       -v claw-cargo-registry:/usr/local/cargo/registry
@@ -207,6 +208,8 @@ claw_linux_compile_release() {
   [[ -n "${CARGO_INCREMENTAL:-}" ]] && cargo_env_args+=(-e "CARGO_INCREMENTAL=${CARGO_INCREMENTAL}")
   [[ -n "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-}" ]] && \
     cargo_env_args+=(-e "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS}")
+  [[ -n "${CARGO_PROFILE_RELEASE_OPT_LEVEL:-}" ]] && \
+    cargo_env_args+=(-e "CARGO_PROFILE_RELEASE_OPT_LEVEL=${CARGO_PROFILE_RELEASE_OPT_LEVEL}")
 
   # utoipa-swagger-ui build.rs curls a zip at compile time (not our shell). Prefetch on the
   # host into the durable ci-cache and pass file:// so the container never hits the network.

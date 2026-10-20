@@ -56,6 +56,7 @@ Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GI
 | `CARGO_BUILD_JOBS` | `8`（CI） | crate 级并行 |
 | `RUST_MIN_STACK` | `268435456`（256MiB，CI） | rustc 线程栈（#54 MIR SIGSEGV 后按 rustc 提示加大） |
 | `CARGO_PROFILE_RELEASE_CODEGEN_UNITS` | `8`（CI） | 单 crate 内并行（覆盖 Cargo.toml 的 256） |
+| `CARGO_PROFILE_RELEASE_OPT_LEVEL` | `2`（CI） | 避开 home29 上 opt-level=3 触发的 LLVM SIGSEGV |
 | `CARGO_INCREMENTAL` | `0`（CI） | 关掉 release incremental（共享 target 上易脏） |
 | `CLAW_DISABLE_SCCACHE` | `1`（CI 默认） | 直连 rustc；`0` 可重新启用 sccache |
 | `CLAW_LINUX_LINKER` | `lld`（CI） | `mold` / `lld` / `default`；home29 上 mold 与 binutils ld 链 proc-macro 均 SIGSEGV |

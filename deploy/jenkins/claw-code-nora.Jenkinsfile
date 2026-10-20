@@ -45,13 +45,12 @@ pipeline {
     CLAW_REPO = 'https://code.passionke.top/passionke/claw-code.git'
     // Stabilize home29 release compiles (linker/rustc SIGSEGV under parallel pressure). Author: kejiqing
     CARGO_BUILD_JOBS = '8'
-    // #54: rustc SIGSEGV in MIR (needs_drop/elaborate_drops) on http-gateway-rs; help asked 128MiB. Author: kejiqing
     RUST_MIN_STACK = '268435456'
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS = '8'
+    // home29: rustc/LLVM SIGSEGV under opt-level=3 (hyper/h2 GlobalsAA). Author: kejiqing
+    CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
     CARGO_INCREMENTAL = '0'
-    // True-compile path was SIGSEGV under sccache wrapper; re-enable after green. Author: kejiqing
     CLAW_DISABLE_SCCACHE = '1'
-    // home29: mold and binutils ld both SIGSEGV linking proc-macros — use lld. Author: kejiqing
     CLAW_LINUX_LINKER = 'lld'
   }
   stages {
