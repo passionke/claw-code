@@ -73,7 +73,8 @@ Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GI
 - 正式：[`home-neurogate-deploy.yml`](../.gitea/workflows/home-neurogate-deploy.yml)  
 - 21 启动：[`home-neurogate-up.yml`](../.gitea/workflows/home-neurogate-up.yml)（仍 `push: branches: [main]`）  
 - 脚本：[`home-neurogate-deploy-from-tag.sh`](../deploy/stack/lib/home-neurogate-deploy-from-tag.sh)（接受 `v*` 或 `sha-*`）  
-- runner：[`gitea-act-runner-neurogate.md`](../deploy/docs/gitea-act-runner-neurogate.md)
+- runner：[`gitea-act-runner-neurogate.md`](../deploy/docs/gitea-act-runner-neurogate.md)  
+- 队列：`up` / `deploy` **各自** `concurrency` + `cancel-in-progress`（新 run 取消同组旧排队/在跑；两组互不掐）
 
 ### H.1b 协议 / Agent 引擎（仍各自 Job）
 

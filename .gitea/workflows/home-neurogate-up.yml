@@ -2,12 +2,17 @@
 # Fast path: push/merge to main → 21 only waits for Nora sha-* then up --release.
 # Heavy pack stays on Jenkins (claw-code-nora with GIT_REF=<commit>).
 # Formal releases stay on v* + home-neurogate-deploy. Do NOT build/push images here.
+# Only latest main up matters — cancel older queued/in-progress ups (separate from deploy).
 name: home-neurogate-up
 
 on:
   push:
     branches:
       - main
+
+concurrency:
+  group: home-neurogate-up
+  cancel-in-progress: true
 
 jobs:
   up:

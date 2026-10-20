@@ -3,12 +3,17 @@
 # waits for images then gateway.sh up --release (never compiles / never pushes).
 # Branch fast path (no tag): push main → home-neurogate-up (sha-*).
 # Do NOT trigger Jenkins from here.
+# Newer v* cancels older deploy runs; group is separate so main-up cannot cancel a tag deploy.
 name: home-neurogate-deploy
 
 on:
   push:
     tags:
       - "v*"
+
+concurrency:
+  group: home-neurogate-deploy
+  cancel-in-progress: true
 
 jobs:
   deploy:
