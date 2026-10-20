@@ -18,6 +18,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import os
@@ -25,11 +26,23 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 _E2B_DIR = Path(__file__).resolve().parent
 if str(_E2B_DIR) not in sys.path:
     sys.path.insert(0, str(_E2B_DIR))
+
+
+def _load_hyphen_module(mod_name: str, filename: str) -> ModuleType:
+    """Load deploy/e2b/*.py scripts whose filenames use hyphens (not importable). Author: kejiqing"""
+    path = _E2B_DIR / filename
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"error: cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 from e2b_template_build import build_template_with_retry
 from e2b_template_registry import (
@@ -144,16 +157,18 @@ def bind_project(
 
 def _build_e2b_image(relaxed: bool) -> str:
     if relaxed:
-        import build_claw_worker_relaxed_selfhosted as relaxed_mod
-
+        relaxed_mod = _load_hyphen_module(
+            "claw_worker_relaxed_build", "build-claw-worker-relaxed-selfhosted.py"
+        )
         source = _env("CLAW_E2B_WORKER_RELAXED_IMAGE") or relaxed_mod._worker_base_image()
         if not relaxed_mod._is_protocol_relaxed(source):
             raise SystemExit(
                 "error: relaxed resource template requires …/claw-worker-base-relaxed:<tag>"
             )
         return relaxed_mod._build_e2b_relaxed_image(source)
-    import build_claw_worker_selfhosted as strict_mod
-
+    strict_mod = _load_hyphen_module(
+        "claw_worker_strict_build", "build-claw-worker-selfhosted.py"
+    )
     source = strict_mod._worker_base_image()
     if not strict_mod._is_worker_series_source(source):
         raise SystemExit(
