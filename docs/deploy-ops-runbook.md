@@ -8,9 +8,10 @@ Author: kejiqing
 
 | 层 | Jenkins Job | 产物 | 写 PG？ |
 |----|-------------|------|---------|
-| Gateway/Admin | `claw-code-nora` | Nora `claw-code` + `claw-gateway-playground` | 否 |
-| e2b 协议 | `claw-e2b-protocol-nora` | Nora `claw-worker-base*` + e2b `Template.build` | **否** |
-| Agent 引擎 | `claw-agent-engine-nora` | Nora raw tar | 否 |
+| Gateway | `claw-code-gateway-nora` | Nora `claw-code` | 否 |
+| Playground | `claw-code-playground-nora` | Nora `claw-gateway-playground` | 否 |
+| e2b 协议 | `claw-e2b-protocol-nora` | Nora `claw-worker-base*`（neuro-* only）+ e2b `Template.build` | **否** |
+| Agent 引擎 / neuro-harness-acp | `claw-agent-engine-nora` | Nora raw tar（含 `claw`） | 否 |
 | 运行时绑定 | Admin / Gateway API | `e2bWorker.templateId` / `agentEngines` | **是** |
 
 ---
@@ -28,7 +29,7 @@ Author: kejiqing
 
 | 角色 | 机器 / Job | 做什么 | 不做什么 |
 |------|------------|--------|----------|
-| **重活** | Jenkins `claw-code-nora`（label `nora-pack`） | clone、编译、打镜像、skopeo 推 Nora | 不改 neurogate 运行态 |
+| **重活** | Jenkins `claw-code-gateway-nora` / `claw-code-playground-nora`（label `nora-pack`） | path 门禁；各自 clone、编译/构建、skopeo 推 Nora | 不改 neurogate 运行态 |
 | **轻活** | `10.8.0.21` Gitea Actions（label `neurogate`） | 等/拉 Nora 镜像 → `gateway.sh up --release` | **不**编译、**不**推镜像 |
 
 **`nora-pack` 节点（离线自动换机，禁止写死单机）：**
@@ -41,29 +42,29 @@ Author: kejiqing
 ```text
 正式线（v* tag）:
   git tag vX.Y.Z && git push gitea vX.Y.Z
-  → Jenkins GIT_TAG=vX.Y.Z → Nora :vX.Y.Z (+ :sha-…)
+  → gateway + playground Jobs GIT_TAG=vX.Y.Z → Nora :vX.Y.Z（各包只推正式 tag）
   → Actions home-neurogate-deploy → up --release vX.Y.Z
 
 快线打包（任意分支推送，不必合 main）:
   git push gitea <branch>
-  → Jenkins GIT_REF=<commit> → Nora :sha-<12>
+  → 两 Job path 门禁；仅变更侧 → Nora :sha-<12> + :latest
   （只打 Nora；不自动上 neurogate）
 
 快线启动（合入 / 推 main 后）:
-  → Actions home-neurogate-up → up --release sha-<12>
+  → Actions home-neurogate-up → up --release latest（各包 :latest）
 ```
 
 Jenkins 入参：`GIT_TAG`（正式）与 `GIT_REF`（快线）二选一。  
-Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GIT_TAG`。
+Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GIT_TAG`（两 Job 同 token）。
 
-**home29 / CI 编译（`claw-code-nora`）— 单一默认路径：**
+**home29 / CI 编译（gateway Job）— 单一默认路径：**
 
 | 旋钮 | 默认 | 作用 |
 |------|------|------|
 | release `opt-level` | **3**（Cargo.toml） | 不在 CI 里永久降到 2 |
 | linker | **mold**（`config.toml.example`） | 不在 CI 里永久改成 lld |
 | `CARGO_INCREMENTAL` | `0`（CI） | 每次 job 的 target 目录会被清，关掉 incremental |
-| `CLAW_DISABLE_SCCACHE` | **`1`（home 打包）** | Nora/`claw-code-nora` 不走 sccache，直调 rustc |
+| `CLAW_DISABLE_SCCACHE` | **`1`（home 打包）** | Nora/gateway Job 不走 sccache，直调 rustc |
 | `CLAW_CARGO_CACHE_RESET=1` / Job 勾选 `CARGO_CACHE_RESET` | 关 | 编译前清空 `cargo-registry` + `cargo-git` + `sccache` |
 | `CLAW_COMPILE_RETRY_ON_FAIL` | `1`（CI） | **失败后自动清上述缓存再编一次**（标准恢复） |
 
@@ -72,7 +73,7 @@ Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GI
 用户日常**不**手搓 `up --release`（紧急除外）。  
 - 正式：[`home-neurogate-deploy.yml`](../.gitea/workflows/home-neurogate-deploy.yml)  
 - 21 启动：[`home-neurogate-up.yml`](../.gitea/workflows/home-neurogate-up.yml)（仍 `push: branches: [main]`）  
-- 脚本：[`home-neurogate-deploy-from-tag.sh`](../deploy/stack/lib/home-neurogate-deploy-from-tag.sh)（接受 `v*` 或 `sha-*`）  
+- 脚本：[`home-neurogate-deploy-from-tag.sh`](../deploy/stack/lib/home-neurogate-deploy-from-tag.sh)（接受 `v*` 或 `latest`）  
 - runner：[`gitea-act-runner-neurogate.md`](../deploy/docs/gitea-act-runner-neurogate.md)  
 - 队列：`up` / `deploy` **各自** `concurrency` + `cancel-in-progress`（新 run 取消同组旧排队/在跑；两组互不掐）
 

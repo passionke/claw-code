@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time pre-upgrade migration from fixed ACP pins to raw Agent engines. Author: kejiqing
+# One-time pre-upgrade migration to raw Agent engines (opencode + appserver + claw). Author: kejiqing
 set -euo pipefail
 
 : "${CLAW_GATEWAY_DATABASE_URL:?CLAW_GATEWAY_DATABASE_URL is required}"
@@ -7,15 +7,17 @@ set -euo pipefail
 : "${OPENCODE_ENGINE_DIGEST:?OPENCODE_ENGINE_DIGEST is required}"
 : "${APPSERVER_ENGINE_REF:?APPSERVER_ENGINE_REF is required}"
 : "${APPSERVER_ENGINE_DIGEST:?APPSERVER_ENGINE_DIGEST is required}"
+: "${CLAW_ENGINE_REF:?CLAW_ENGINE_REF is required (neuro-harness-acp tar.gz)}"
+: "${CLAW_ENGINE_DIGEST:?CLAW_ENGINE_DIGEST is required}"
 command -v psql >/dev/null 2>&1 || { echo "psql is required" >&2; exit 1; }
 
-for ref in "$OPENCODE_ENGINE_REF" "$APPSERVER_ENGINE_REF"; do
+for ref in "$OPENCODE_ENGINE_REF" "$APPSERVER_ENGINE_REF" "$CLAW_ENGINE_REF"; do
   [[ "$ref" =~ ^https?://[^[:space:]]+\.tar\.gz$ ]] || {
     echo "Agent engine ref must be an http(s) tar.gz URL: $ref" >&2
     exit 1
   }
 done
-for digest in "$OPENCODE_ENGINE_DIGEST" "$APPSERVER_ENGINE_DIGEST"; do
+for digest in "$OPENCODE_ENGINE_DIGEST" "$APPSERVER_ENGINE_DIGEST" "$CLAW_ENGINE_DIGEST"; do
   [[ "$digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]] || {
     echo "Agent engine digest must be sha256:<64 hex>" >&2
     exit 1
@@ -27,7 +29,9 @@ psql "$CLAW_GATEWAY_DATABASE_URL" \
   -v opencode_ref="$OPENCODE_ENGINE_REF" \
   -v opencode_digest="$OPENCODE_ENGINE_DIGEST" \
   -v appserver_ref="$APPSERVER_ENGINE_REF" \
-  -v appserver_digest="$APPSERVER_ENGINE_DIGEST" <<'SQL'
+  -v appserver_digest="$APPSERVER_ENGINE_DIGEST" \
+  -v claw_ref="$CLAW_ENGINE_REF" \
+  -v claw_digest="$CLAW_ENGINE_DIGEST" <<'SQL'
 BEGIN;
 
 UPDATE gateway_global_settings
@@ -45,6 +49,10 @@ SET settings_json =
                'appserver', jsonb_build_object(
                  'ref', :'appserver_ref',
                  'digest', :'appserver_digest'
+               ),
+               'claw', jsonb_build_object(
+                 'ref', :'claw_ref',
+                 'digest', :'claw_digest'
                )
              )
            )
@@ -58,7 +66,8 @@ BEGIN
     SELECT 1
     FROM gateway_global_settings
     WHERE settings_json ? 'cliPins'
-       OR jsonb_object_length(settings_json #> '{agentEngines,engines}') <> 2
+       OR jsonb_object_length(settings_json #> '{agentEngines,engines}') <> 3
+       OR NOT (settings_json #> '{agentEngines,engines}' ? 'claw')
   ) THEN
     RAISE EXCEPTION 'Agent engine configuration migration failed';
   END IF;

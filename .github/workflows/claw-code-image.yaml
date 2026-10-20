@@ -1,4 +1,4 @@
-# Gateway/Admin release workflow. It must not publish e2b templates or Agent engines.
+# Gateway/Admin release workflow — split packages. Must not publish e2b/Agent engines.
 # Author: kejiqing
 #
 # Optional repo Variables:
@@ -16,7 +16,6 @@ permissions:
 
 env:
   CLAW_CONTAINER_RUNTIME: docker
-  # Unified region switch: china → CN apt/cargo/rust mirrors; else → international. Author: kejiqing
   REGION: china
 
 jobs:
@@ -31,7 +30,6 @@ jobs:
           echo "hostname=$(hostname)"
           echo "runner=${RUNNER_NAME:-}"
 
-      # Before checkout: docker-written .ci-cache is root-owned; clean must chown first. Author: kejiqing
       - name: Self-hosted workspace prep
         run: |
           set -euo pipefail
@@ -89,7 +87,6 @@ jobs:
           # shellcheck source=/dev/null
           source deploy/stack/lib/claw-region.sh
           claw_apply_region_defaults
-          # GHA cannot pull nora.home; seed local sccache OCI then COPY --from. Author: kejiqing
           chmod +x deploy/stack/lib/seed-sccache-local.sh
           REGION="${REGION:-else}" bash deploy/stack/lib/seed-sccache-local.sh
           ./deploy/stack/lib/container-build.sh docker deploy/stack/Containerfile.rust-compile \
@@ -155,9 +152,6 @@ jobs:
           REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
           echo "container_base_registry=${REG}" >> "$GITHUB_OUTPUT"
 
-      # No actions/cache: durable cache lives under $HOME/claw-ci-cache (survives checkout).
-      # Uploading hundreds of MB to GitHub cache via proxy often sticks at 0 B/s. Author: kejiqing
-
       - name: Resolve rust compile image ref (ACR)
         id: compile_image
         env:
@@ -168,7 +162,7 @@ jobs:
           source deploy/stack/rust-version.env
           echo "ref=${PREFIX}/claw-rust-compile:${CLAW_RUST_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Linux compile (once)
+      - name: Linux compile (gateway only)
         env:
           CLAW_LINUX_COMPILE_CI: "1"
           CLAW_LINUX_RELEASE_BINS: "http-gateway-rs"
@@ -177,21 +171,7 @@ jobs:
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: bash deploy/stack/lib/linux-compile.sh
 
-      - name: Verify ci-cache ownership
-        run: |
-          set -euo pipefail
-          CACHE="${CLAW_CI_CACHE_DIR:-${HOME}/claw-ci-cache/claw-code}"
-          if [ ! -d "${CACHE}" ]; then exit 0; fi
-          RUN_UID="$(id -u)"
-          BAD="$(find "${CACHE}" -not -user "${RUN_UID}" 2>/dev/null | head -5 || true)"
-          if [ -n "${BAD}" ]; then
-            echo "::error::ci-cache non-runner-owned files under ${CACHE}" >&2
-            printf '%s\n' "${BAD}" >&2
-            exit 1
-          fi
-          echo "ci-cache ownership ok (${CACHE})"
-
-      - name: Stash linux artifacts locally (skip GitHub upload-artifact)
+      - name: Stash linux artifacts locally
         run: |
           set -euo pipefail
           DEST="${HOME}/claw-ci-artifacts/${{ github.run_id }}"
@@ -204,19 +184,12 @@ jobs:
         run: bash deploy/stack/lib/ci-self-hosted-workspace-cleanup.sh
         continue-on-error: true
 
-  build-and-push:
+  build-gateway:
+    name: build claw-code
     if: startsWith(github.ref, 'refs/tags/release-v')
     needs: linux-compile-once
     runs-on: [self-hosted, home-ubt]
     environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - package: claw-code
-            dockerfile: deploy/stack/Containerfile.gateway-rs.prebuilt
-          - package: claw-gateway-playground
-            dockerfile: deploy/stack/Containerfile.gateway-playground
     steps:
       - name: Self-hosted workspace prep
         run: |
@@ -230,7 +203,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Restore linux artifacts from local stash
-        if: matrix.package == 'claw-code'
         run: |
           set -euo pipefail
           SRC="${HOME}/claw-ci-artifacts/${{ github.run_id }}/release"
@@ -262,43 +234,111 @@ jobs:
           set -euo pipefail
           REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
           echo "debian_image=${REG}/library/debian:bookworm-slim" >> "$GITHUB_OUTPUT"
-          echo "node_image=${REG}/library/node:20-alpine" >> "$GITHUB_OUTPUT"
 
-      - name: Build ${{ matrix.package }} (local)
+      - name: Build claw-code (local)
         id: build
         env:
-          PACKAGE: ${{ matrix.package }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          LOCAL="${PACKAGE}:${RELEASE_TAG}"
+          LOCAL="claw-code:${RELEASE_TAG}"
           # shellcheck source=/dev/null
           source deploy/stack/lib/claw-region.sh
           claw_apply_region_defaults
-          ./deploy/stack/lib/container-build.sh docker "${{ matrix.dockerfile }}" \
+          ./deploy/stack/lib/container-build.sh docker deploy/stack/Containerfile.gateway-rs.prebuilt \
             --build-arg "DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}" \
-            --build-arg "NODE_BASE_IMAGE=${{ steps.base_images.outputs.node_image }}" \
             --build-arg "CLAW_USE_CN_APT_MIRROR=${CLAW_USE_CN_APT_MIRROR:-0}" \
             -t "${LOCAL}"
           echo "local=${LOCAL}" >> "$GITHUB_OUTPUT"
 
-      - name: Push ${{ matrix.package }} → ACR (skopeo v2s2)
+      - name: Push claw-code → ACR (formal tag only)
         env:
-          PACKAGE: ${{ matrix.package }}
           PREFIX: ${{ steps.reg.outputs.image_prefix }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           chmod +x ./deploy/stack/lib/ci-push-acr-skopeo.sh
-          SHA12="${GITHUB_SHA:0:12}"
           ./deploy/stack/lib/ci-push-acr-skopeo.sh \
-            "${PACKAGE}:${RELEASE_TAG}" \
-            "${PREFIX}/${PACKAGE}:${RELEASE_TAG}" \
-            "${PREFIX}/${PACKAGE}:sha-${SHA12}" \
-            "${PREFIX}/${PACKAGE}:latest"
+            "claw-code:${RELEASE_TAG}" \
+            "${PREFIX}/claw-code:${RELEASE_TAG}"
+
+      - name: Self-hosted workspace cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -rf "${GITHUB_WORKSPACE}/deploy/stack/.linux-artifacts" 2>/dev/null || true
+          rm -rf "${HOME}/claw-ci-artifacts/${{ github.run_id }}" 2>/dev/null || true
+          bash deploy/stack/lib/ci-home-ubt-post-image-cleanup.sh
+
+  build-playground:
+    name: build claw-gateway-playground
+    if: startsWith(github.ref, 'refs/tags/release-v')
+    runs-on: [self-hosted, home-ubt]
+    environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
+    steps:
+      - name: Self-hosted workspace prep
+        run: |
+          set -euo pipefail
+          WS="${GITHUB_WORKSPACE}"
+          RUN_UID="$(id -u)"
+          docker run --rm -v "${WS}:/w:rw" alpine:3.20 chown -R "${RUN_UID}:$(id -g)" /w
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify ACR_REGISTRY
+        id: reg
+        env:
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+        run: |
+          set -euo pipefail
+          echo "login_host=${ACR_REGISTRY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.reg.outputs.login_host }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Resolve build base images
+        id: base_images
+        env:
+          CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
+        run: |
+          set -euo pipefail
+          REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
+          echo "debian_image=${REG}/library/debian:bookworm-slim" >> "$GITHUB_OUTPUT"
+          echo "node_image=${REG}/library/node:20-alpine" >> "$GITHUB_OUTPUT"
+
+      - name: Build claw-gateway-playground (local)
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          LOCAL="claw-gateway-playground:${RELEASE_TAG}"
+          # shellcheck source=/dev/null
+          source deploy/stack/lib/claw-region.sh
+          claw_apply_region_defaults
+          ./deploy/stack/lib/container-build.sh docker deploy/stack/Containerfile.gateway-playground \
+            --build-arg "DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}" \
+            --build-arg "NODE_BASE_IMAGE=${{ steps.base_images.outputs.node_image }}" \
+            --build-arg "CLAW_USE_CN_APT_MIRROR=${CLAW_USE_CN_APT_MIRROR:-0}" \
+            -t "${LOCAL}"
+
+      - name: Push claw-gateway-playground → ACR (formal tag only)
+        env:
+          PREFIX: ${{ steps.reg.outputs.image_prefix }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          chmod +x ./deploy/stack/lib/ci-push-acr-skopeo.sh
+          ./deploy/stack/lib/ci-push-acr-skopeo.sh \
+            "claw-gateway-playground:${RELEASE_TAG}" \
+            "${PREFIX}/claw-gateway-playground:${RELEASE_TAG}"
 
       - name: Verify playground admin assets
-        if: matrix.package == 'claw-gateway-playground'
         env:
           PREFIX: ${{ steps.reg.outputs.image_prefix }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -308,13 +348,3 @@ jobs:
           docker pull "${IMG}"
           docker run --rm "${IMG}" sh -c 'test -f /app/admin-dist/index.html && test -n "$(ls /app/admin-dist/assets/*.js 2>/dev/null)"'
           docker rmi "${IMG}" 2>/dev/null || true
-
-      - name: Self-hosted workspace cleanup
-        if: always()
-        run: |
-          set -euo pipefail
-          rm -rf "${GITHUB_WORKSPACE}/deploy/stack/.linux-artifacts" 2>/dev/null || true
-          if [ "${{ matrix.package }}" = "claw-code" ]; then
-            rm -rf "${HOME}/claw-ci-artifacts/${{ github.run_id }}" 2>/dev/null || true
-            bash deploy/stack/lib/ci-home-ubt-post-image-cleanup.sh
-          fi

@@ -7,7 +7,7 @@ Workflows on this runner (label **`neurogate`**, host `10.8.0.21`):
 | Workflow | Trigger | Role |
 |----------|---------|------|
 | [`home-neurogate-deploy.yml`](../../.gitea/workflows/home-neurogate-deploy.yml) | push `v*` | wait Nora (Jenkins publish) → `up --release` |
-| [`home-neurogate-up.yml`](../../.gitea/workflows/home-neurogate-up.yml) | push `main` | wait Nora `:sha-<12>` → `up --release`（打包由任意分支 push 触发 Jenkins） |
+| [`home-neurogate-up.yml`](../../.gitea/workflows/home-neurogate-up.yml) | push `main` | wait Nora `:latest` → `up --release`（打包由 gateway/playground Jobs path 门禁） |
 
 Both paths **never** compile or push images on 21.
 

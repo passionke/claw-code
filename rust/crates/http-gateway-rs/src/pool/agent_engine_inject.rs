@@ -16,12 +16,13 @@ pub async fn run_agent_engine_inject(
     harness_engine: &str,
 ) -> Result<(), String> {
     let requested = harness_engine.trim().to_ascii_lowercase();
-    if requested.is_empty() || requested == "claw" {
+    if requested.is_empty() {
         return Ok(());
     }
+    // claw / opencode / appserver all install from agentEngines raw (claw = neuro-harness-acp).
     let config = load_agent_engines(db).await.map_err(|e| e.to_string())?;
     let (engine_id, engine) = selected_engine(&config, &requested)?
-        .ok_or_else(|| "native claw engine unexpectedly required an artifact".to_string())?;
+        .ok_or_else(|| format!("Agent engine {requested:?} is not configured"))?;
     let script = guest_install_script()?;
     let env = BTreeMap::from([
         ("ENGINE_REF".to_string(), engine.r#ref.clone()),
@@ -46,7 +47,7 @@ fn selected_engine<'a>(
     harness_engine: &str,
 ) -> Result<Option<(String, &'a AgentEngineEntry)>, String> {
     let engine_id = harness_engine.trim().to_ascii_lowercase();
-    if engine_id.is_empty() || engine_id == "claw" {
+    if engine_id.is_empty() {
         return Ok(None);
     }
     let engine = config
@@ -106,19 +107,30 @@ mod tests {
     }
 
     #[test]
-    fn selects_a_new_dynamic_engine_without_a_code_branch() {
+    fn selects_claw_and_dynamic_engines_from_agent_engines_map() {
         let entry = AgentEngineEntry {
             r#ref: "https://raw.example/future-v1.tar.gz".into(),
             digest: format!("sha256:{}", "a".repeat(64)),
         };
+        let claw = AgentEngineEntry {
+            r#ref: "https://raw.example/neuro-harness-acp-v1.tar.gz".into(),
+            digest: format!("sha256:{}", "b".repeat(64)),
+        };
         let config = AgentEngines {
-            engines: BTreeMap::from([("future-engine".into(), entry.clone())]),
+            engines: BTreeMap::from([
+                ("future-engine".into(), entry.clone()),
+                ("claw".into(), claw.clone()),
+            ]),
         };
         let (id, selected) = selected_engine(&config, " Future-Engine ")
             .unwrap()
             .unwrap();
         assert_eq!(id, "future-engine");
         assert_eq!(selected, &entry);
-        assert!(selected_engine(&config, "claw").unwrap().is_none());
+        let (id, selected) = selected_engine(&config, "claw").unwrap().unwrap();
+        assert_eq!(id, "claw");
+        assert_eq!(selected, &claw);
+        assert!(selected_engine(&config, "").unwrap().is_none());
+        assert!(selected_engine(&config, "missing").is_err());
     }
 }

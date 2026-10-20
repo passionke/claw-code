@@ -15,6 +15,7 @@
     clippy::unnecessary_wraps,
     clippy::unused_self
 )]
+mod acp_serve;
 mod brand;
 mod display;
 mod init;
@@ -698,7 +699,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         }
         CliAction::Doctor { output_format } => run_doctor(output_format)?,
-        CliAction::Acp { output_format } => print_acp_status(output_format)?,
+        CliAction::Acp {
+            output_format,
+            serve,
+        } => {
+            if serve {
+                acp_serve::run_acp_serve()?;
+            } else {
+                print_acp_status(output_format)?;
+            }
+        }
         CliAction::State { output_format } => run_worker_state(output_format)?,
         CliAction::ServeWeb => {
             let bind =
@@ -877,6 +887,8 @@ enum CliAction {
     },
     Acp {
         output_format: CliOutputFormat,
+        /// `true` → stdio ACP agent (`claw acp serve`); `false` → status only.
+        serve: bool,
     },
     State {
         output_format: CliOutputFormat,
@@ -1557,8 +1569,14 @@ fn removed_auth_surface_error(command_name: &str) -> String {
 
 fn parse_acp_args(args: &[String], output_format: CliOutputFormat) -> Result<CliAction, String> {
     match args {
-        [] => Ok(CliAction::Acp { output_format }),
-        [subcommand] if subcommand == "serve" => Ok(CliAction::Acp { output_format }),
+        [] => Ok(CliAction::Acp {
+            output_format,
+            serve: false,
+        }),
+        [subcommand] if subcommand == "serve" => Ok(CliAction::Acp {
+            output_format,
+            serve: true,
+        }),
         _ => Err(String::from(
             "unsupported ACP invocation. Use `claw acp`, `claw acp serve`, `claw --acp`, or `claw -acp`.",
         )),
@@ -6676,12 +6694,13 @@ fn render_help_topic(topic: LocalHelpTopic) -> String {
   Related          /doctor · claw --resume latest /doctor"
             .to_string(),
         LocalHelpTopic::Acp => "ACP / Zed
-  Usage            claw acp [serve] [--output-format <format>]
-  Aliases          claw --acp · claw -acp
-  Purpose          explain the current editor-facing ACP/Zed launch contract without starting the runtime
-  Status           discoverability only; `serve` is a status alias and does not launch a daemon yet
-  Formats          text (default), json
-  Related          ROADMAP #64a (discoverability) · ROADMAP #76 (real ACP support) · claw --help"
+  Usage            claw acp [--output-format <format>]
+                   claw acp serve
+  Aliases          claw --acp · claw -acp (status)
+  Purpose          status for editor wiring; `serve` runs the ACP JSON-RPC agent on stdio
+  Status           `claw acp serve` is the supported editor launch command (ROADMAP #76)
+  Formats          text (default), json (status only)
+  Related          ROADMAP #64a · ROADMAP #76 · gateway-solve-once for worker turns"
             .to_string(),
         LocalHelpTopic::Init => "Init
   Usage            claw init [--output-format <format>]
@@ -6743,11 +6762,11 @@ fn print_help_topic(topic: LocalHelpTopic) {
 }
 
 fn print_acp_status(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
-    let message = "ACP/Zed editor integration is not implemented in claw-code yet. `claw acp serve` is only a discoverability alias today; it does not launch a daemon or Zed-specific protocol endpoint. Use the normal terminal surfaces for now and track ROADMAP #76 for real ACP support.";
+    let message = "ACP stdio agent is available via `claw acp serve` (initialize / session/new / session/prompt). Worker solve path remains `claw gateway-solve-once`. Editor launch command: `claw acp serve`.";
     match output_format {
         CliOutputFormat::Text => {
             println!(
-                "ACP / Zed\n  Status           discoverability only\n  Launch           `claw acp serve` / `claw --acp` / `claw -acp` report status only; no editor daemon is available yet\n  Today            use `claw prompt`, the REPL, or `claw doctor` for local verification\n  Tracking         ROADMAP #76\n  Message          {message}"
+                "ACP / Zed\n  Status           supported\n  Launch           `claw acp serve` (stdio JSON-RPC ACP agent)\n  Status aliases   `claw acp` / `claw --acp` / `claw -acp`\n  Worker turns     `claw gateway-solve-once` (unchanged)\n  Tracking         ROADMAP #76\n  Message          {message}"
             );
         }
         CliOutputFormat::Json => {
@@ -6755,17 +6774,17 @@ fn print_acp_status(output_format: CliOutputFormat) -> Result<(), Box<dyn std::e
                 "{}",
                 serde_json::to_string_pretty(&json!({
                     "kind": "acp",
-                    "status": "discoverability_only",
-                    "supported": false,
-                    "serve_alias_only": true,
+                    "status": "supported",
+                    "supported": true,
+                    "serve_alias_only": false,
                     "message": message,
-                    "launch_command": serde_json::Value::Null,
+                    "launch_command": "claw acp serve",
                     "aliases": ["acp", "--acp", "-acp"],
                     "discoverability_tracking": "ROADMAP #64a",
                     "tracking": "ROADMAP #76",
                     "recommended_workflows": [
+                        "claw acp serve",
                         "claw prompt TEXT",
-                        "claw",
                         "claw doctor"
                     ],
                 }))?
@@ -11482,24 +11501,28 @@ mod tests {
             parse_args(&["acp".to_string()]).expect("acp should parse"),
             CliAction::Acp {
                 output_format: CliOutputFormat::Text,
+                serve: false,
             }
         );
         assert_eq!(
             parse_args(&["acp".to_string(), "serve".to_string()]).expect("acp serve should parse"),
             CliAction::Acp {
                 output_format: CliOutputFormat::Text,
+                serve: true,
             }
         );
         assert_eq!(
             parse_args(&["--acp".to_string()]).expect("--acp should parse"),
             CliAction::Acp {
                 output_format: CliOutputFormat::Text,
+                serve: false,
             }
         );
         assert_eq!(
             parse_args(&["-acp".to_string()]).expect("-acp should parse"),
             CliAction::Acp {
                 output_format: CliOutputFormat::Text,
+                serve: false,
             }
         );
     }

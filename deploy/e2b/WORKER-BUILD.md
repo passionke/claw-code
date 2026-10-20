@@ -4,9 +4,12 @@ Author: kejiqing
 
 The e2b Worker template is the stable protocol layer. It contains:
 
-- `/usr/local/bin/claw`
 - `/usr/local/bin/neuro-opencode`
 - `/usr/local/bin/neuro-appserver`
+
+`claw` is **not** in the protocol image. Publish it as Agent engine
+`neuro-harness-acp` (`deploy/agent-engines/neuro-harness-acp/`); worker.init installs it when
+`harnessEngine=claw`.
 
 Publish it independently:
 

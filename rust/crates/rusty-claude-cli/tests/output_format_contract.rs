@@ -53,15 +53,16 @@ fn acp_guidance_emits_json_when_requested() {
 
     let acp = assert_json_command(&root, &["--output-format", "json", "acp"]);
     assert_eq!(acp["kind"], "acp");
-    assert_eq!(acp["status"], "discoverability_only");
-    assert_eq!(acp["supported"], false);
-    assert_eq!(acp["serve_alias_only"], true);
+    assert_eq!(acp["status"], "supported");
+    assert_eq!(acp["supported"], true);
+    assert_eq!(acp["serve_alias_only"], false);
+    assert_eq!(acp["launch_command"], "claw acp serve");
     assert_eq!(acp["discoverability_tracking"], "ROADMAP #64a");
     assert_eq!(acp["tracking"], "ROADMAP #76");
     assert!(acp["message"]
         .as_str()
         .expect("acp message")
-        .contains("discoverability alias"));
+        .contains("claw acp serve"));
 }
 
 #[test]

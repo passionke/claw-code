@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Wait for Nora Gateway images for TAG, then up --release on neurogate host.
 # Does NOT trigger Jenkins (hook already builds). Author: kejiqing
+# TAG: formal vX.Y.Z | fast :latest (per-image pin after path-gated Jobs).
 set -euo pipefail
 
 TAG="${1:-}"
-# Formal vX.Y.Z or fast-path sha-<hex> (main branch publish). Author: kejiqing
-if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && ! "$TAG" =~ ^sha-[0-9a-f]{7,40}$ ]]; then
-  echo "usage: $0 vX.Y.Z|sha-<hex>" >&2
+if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$TAG" != "latest" ]]; then
+  echo "usage: $0 vX.Y.Z|latest" >&2
   exit 2
 fi
 
@@ -31,7 +31,6 @@ need_images=(
 
 echo "==> neurogate deploy tag=${TAG} prefix=${PREFIX} root=${ROOT}"
 
-# Docker expects DOCKER_CONFIG/dir/config.json; host secret file is docker-config.json.
 if [[ -f "$DOCKER_CONFIG_JSON" ]]; then
   DOCKER_CFG_DIR="$(mktemp -d)"
   cp "$DOCKER_CONFIG_JSON" "${DOCKER_CFG_DIR}/config.json"
@@ -47,7 +46,7 @@ image_ready() {
   docker manifest inspect "$ref" >/dev/null 2>&1
 }
 
-echo "==> wait Nora images (timeout=${WAIT_SECS}s) — Jenkins hook must publish claw-code-nora"
+echo "==> wait Nora images (timeout=${WAIT_SECS}s) — Jenkins hook must publish gateway/playground Jobs"
 deadline=$((SECONDS + WAIT_SECS))
 while true; do
   missing=()
@@ -62,7 +61,7 @@ while true; do
     break
   fi
   if (( SECONDS >= deadline )); then
-    echo "error: timed out waiting for Nora images (Jenkins hook / claw-code-nora):" >&2
+    echo "error: timed out waiting for Nora images (Jenkins gateway/playground Jobs):" >&2
     printf '  - %s\n' "${missing[@]}" >&2
     exit 1
   fi
@@ -71,7 +70,6 @@ while true; do
 done
 
 cd "$ROOT"
-# Home tags live on gitea only; origin is GitHub (release-v*) — do not prefer origin.
 if git remote get-url gitea >/dev/null 2>&1; then
   git fetch --tags --force gitea
   git fetch --force gitea || true
@@ -79,12 +77,10 @@ else
   git fetch --tags --force origin
   git fetch --force origin || true
 fi
-if [[ "$TAG" =~ ^sha-([0-9a-f]{7,40})$ ]]; then
-  # Fast path: image tag is sha-*; checkout matching commit (already checked out by Actions often). Author: kejiqing
-  HEX="${BASH_REMATCH[1]}"
-  git checkout -f "${HEX}" 2>/dev/null || git checkout -f "$TAG" || true
-  git log -1 --oneline
-else
+if [[ "$TAG" == "latest" ]]; then
+  # Fast path: images pinned to :latest; stay on the Actions-checked-out commit. Author: kejiqing
+  git log -1 --oneline || true
+elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   git checkout -f "tags/${TAG}" 2>/dev/null || git checkout -f "${TAG}"
   git describe --tags --exact-match HEAD
 fi

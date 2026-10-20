@@ -227,7 +227,7 @@ env 显式传入 worker 的全部环境变量：Codex 会清洗 MCP 子进程的
   - `.githooks/pre-push` 发现自带 `Cargo.lock` 的 crate 时，用 `--manifest-path` 单独执行 fmt、clippy（`--all-targets -D warnings`）和 test，不会因此触发 workspace 全量检查。
   - 本地产物位于 `rust/crates/neuro-harness/target/`。
   - `rust-ci.yml` 另有 job `neuro-harness (standalone)`：对 `crates/neuro-harness/Cargo.toml` 单独跑 fmt / clippy（`--all-targets -D warnings`）/ test，与 pre-push 同隔离。
-- `deploy/stack/lib/linux-compile.sh`：产物统一由 `CLAW_LINUX_RELEASE_BINS` 列出，包括 `claw`、`http-gateway-rs`、`neuro-opencode`、`neuro-appserver`。
+- `deploy/stack/lib/linux-compile.sh`：产物由 `CLAW_LINUX_RELEASE_BINS` 列出（`claw` / `http-gateway-rs` / `neuro-opencode` / `neuro-appserver`）。协议镜像只编 neuro-*；`claw` 走 Agent engine `neuro-harness-acp` raw。
 - npm 源统一用 `claw_npm_registry`（`deploy/stack/lib/claw-region.sh`）：region 为 `china` 时用 `registry.npmmirror.com`，其他情况用 `registry.npmjs.org`。已实测：同一份 lockfile 用 `npm ci --registry=https://registry.npmmirror.com` 安装时，全部从 npmmirror 下载，integrity 校验通过（npm 默认 `replace-registry-host=npmjs`）。
 - `deploy/agent-engines/opencode/` 独立生成 opencode raw tar；glibc 平台包
   `opencode-linux-{x64,arm64}@1.18.34` 的 sha512 integrity 固定在该引擎的 Containerfile。
