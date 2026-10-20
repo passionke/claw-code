@@ -57,10 +57,6 @@ set -euo pipefail
 echo "==> wipe workspace (root-owned compile debris)"
 docker run --rm -v "${WORKSPACE}:/w" alpine:3.20 \
   sh -c 'rm -rf /w/* /w/.[!.]* /w/..?* 2>/dev/null || true'
-git clone "${CLAW_REPO}" .
-# Prefer gitea remote name when present; CLAW_REPO already points at gitea. Author: kejiqing
-git fetch --tags --force origin
-git fetch --force origin '+refs/heads/*:refs/remotes/origin/*' || true
 
 TAG_TRIM="$(printf '%s' "${GIT_TAG:-}" | tr -d '[:space:]')"
 REF_TRIM="$(printf '%s' "${GIT_REF:-}" | tr -d '[:space:]')"
@@ -84,14 +80,18 @@ if [[ -z "$TAG_TRIM" && -z "$REF_TRIM" ]]; then
   fi
 fi
 
+# Shallow checkout only — full clone was multi-minute on built-in. Author: kejiqing
 if [[ -n "$TAG_TRIM" ]]; then
-  echo "==> formal checkout tag ${TAG_TRIM}"
-  git checkout -f "tags/${TAG_TRIM}" 2>/dev/null || git checkout -f "${TAG_TRIM}"
+  echo "==> shallow clone tag ${TAG_TRIM}"
+  git clone --depth 1 --branch "${TAG_TRIM}" "${CLAW_REPO}" .
   git describe --tags --exact-match HEAD
   export RELEASE_TAG="${TAG_TRIM}"
 elif [[ -n "$REF_TRIM" ]]; then
-  echo "==> fast checkout ref ${REF_TRIM}"
-  git checkout -f "${REF_TRIM}"
+  echo "==> shallow fetch ref ${REF_TRIM}"
+  git init
+  git remote add origin "${CLAW_REPO}"
+  git fetch --depth 1 origin "${REF_TRIM}"
+  git checkout -f FETCH_HEAD
   SHA12="$(git rev-parse --short=12 HEAD)"
   export RELEASE_TAG="sha-${SHA12}"
 else

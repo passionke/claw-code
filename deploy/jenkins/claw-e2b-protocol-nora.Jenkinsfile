@@ -26,9 +26,8 @@ pipeline {
 set -euo pipefail
 docker run --rm -v "${WORKSPACE}:/w" alpine:3.20 \
   sh -c 'rm -rf /w/* /w/.[!.]* /w/..?* 2>/dev/null || true'
-git clone "${CLAW_REPO}" .
-git fetch --tags --force origin
-git checkout -f "tags/${GIT_TAG}" 2>/dev/null || git checkout -f "${GIT_TAG}"
+# Shallow tag only — avoid full-history clone. Author: kejiqing
+git clone --depth 1 --branch "${GIT_TAG}" "${CLAW_REPO}" .
 git describe --tags --exact-match HEAD
 git log -1 --oneline
 chmod +x deploy/e2b/ci-publish-nora.sh deploy/e2b/publish-worker-protocol.sh deploy/verify-release-boundaries.sh
