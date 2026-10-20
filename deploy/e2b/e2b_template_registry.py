@@ -71,12 +71,10 @@ def cn_mirror_enabled() -> bool:
     return region_is_china()
 
 
-def load_repo_dotenv(repo_root: Path | None = None) -> Path:
-    """Load repo root `.env` into os.environ (does not override existing vars)."""
-    root = repo_root or Path(__file__).resolve().parents[2]
-    path = root / ".env"
+def _load_env_file(path: Path) -> None:
+    """Load KEY=VAL lines into os.environ (does not override existing vars). Author: kejiqing"""
     if not path.is_file():
-        return root
+        return
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -89,6 +87,14 @@ def load_repo_dotenv(repo_root: Path | None = None) -> Path:
         val = val.strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = val
+
+
+def load_repo_dotenv(repo_root: Path | None = None) -> Path:
+    """Load repo root `.env` (+ compose `/run/claw/deploy.env`) into os.environ."""
+    root = repo_root or Path(__file__).resolve().parents[2]
+    _load_env_file(root / ".env")
+    # Gateway compose bind: host .env → /run/claw/deploy.env. Author: kejiqing
+    _load_env_file(Path("/run/claw/deploy.env"))
     return root
 
 

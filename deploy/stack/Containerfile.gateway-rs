@@ -53,6 +53,11 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
 WORKDIR /app
 COPY --from=builder /rust/target/release/claw /usr/local/bin/claw
 COPY --from=builder /rust/target/release/http-gateway-rs /usr/local/bin/http-gateway-rs
+COPY deploy/e2b/e2b_exec.py /app/deploy/e2b/
+COPY deploy/e2b/guest-install-agent-engine.sh /app/deploy/e2b/
+COPY deploy/e2b/ensure-worker-resource-template.py /app/deploy/e2b/
+COPY deploy/e2b/e2b_template_build.py /app/deploy/e2b/
+COPY deploy/e2b/e2b_template_registry.py /app/deploy/e2b/
 COPY scripts/mind-kb/ /app/scripts/mind-kb/
 COPY docs/gpos-assistant-prompt-content.md /app/docs/
 

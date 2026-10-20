@@ -42,7 +42,15 @@ from e2b_template_registry import (
     log_debian_base_resolution,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
+def _repo_root() -> Path:
+    env = os.environ.get("CLAW_REPO_ROOT", "").strip()
+    if env:
+        return Path(env)
+    # parents[2]: repo/deploy/e2b/script.py → repo; or /app when image-bundled. Author: kejiqing
+    return Path(__file__).resolve().parents[2]
+
+
+ROOT = _repo_root()
 load_repo_dotenv(ROOT)
 
 CPU_MIN, CPU_MAX = 1, 16
