@@ -146,15 +146,15 @@ claw_linux_compile_release() {
   # Home CI: cap crate parallelism (default ~nproc was crashing rustc under sccache).
   # Disable release incremental on shared CI target dir (Cargo.toml sets incremental=true).
   # sccache optional: CLAW_DISABLE_SCCACHE=1 skips RUSTC_WRAPPER.
-  # mold: home29 true-compile still SIGSEGV on proc-macros (utoipa-gen) with
-  # -fuse-ld=mold even without sccache — CI defaults CLAW_DISABLE_MOLD=1.
+  # Linker: home29 true-compile SIGSEGV in both mold and binutils ld when linking
+  # proc-macros (utoipa-gen). CI default CLAW_LINUX_LINKER=lld (clang -fuse-ld=lld).
   # Author: kejiqing
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
-    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
     export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
     export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
     export CLAW_DISABLE_SCCACHE="${CLAW_DISABLE_SCCACHE:-1}"
-    export CLAW_DISABLE_MOLD="${CLAW_DISABLE_MOLD:-1}"
+    export CLAW_LINUX_LINKER="${CLAW_LINUX_LINKER:-lld}"
   fi
   export RUST_MIN_STACK="${RUST_MIN_STACK:-67108864}"
 
@@ -172,7 +172,7 @@ claw_linux_compile_release() {
       -v "${ci_cache}/sccache:/root/.cache/sccache:Z"
     )
     echo "  ci cache: ${ci_cache}"
-    echo "  CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} RUST_MIN_STACK=${RUST_MIN_STACK} CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-} CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-} CLAW_DISABLE_SCCACHE=${CLAW_DISABLE_SCCACHE:-0} CLAW_DISABLE_MOLD=${CLAW_DISABLE_MOLD:-0}"
+    echo "  CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} RUST_MIN_STACK=${RUST_MIN_STACK} CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-} CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-} CLAW_DISABLE_SCCACHE=${CLAW_DISABLE_SCCACHE:-0} CLAW_LINUX_LINKER=${CLAW_LINUX_LINKER:-mold}"
   else
     vol_args=(
       -v claw-cargo-registry:/usr/local/cargo/registry
@@ -288,7 +288,8 @@ claw_linux_compile_release() {
     "${sccache_env_args[@]+"${sccache_env_args[@]}"}" \
     -e "RUST_MIN_STACK=${RUST_MIN_STACK}" \
     -e "CLAW_LINUX_RELEASE_BINS=${CLAW_LINUX_RELEASE_BINS}" \
-    -e "CLAW_DISABLE_MOLD=${CLAW_DISABLE_MOLD:-0}" \
+    -e "CLAW_LINUX_LINKER=${CLAW_LINUX_LINKER:-mold}" \
+    -e "CLAW_USE_CN_APT_MIRROR=${use_cn_cargo}" \
     "${cargo_env_args[@]+"${cargo_env_args[@]}"}" \
     "${uid_args[@]+"${uid_args[@]}"}" \
     -v "${root_dir}:/workspace:Z" \
@@ -303,26 +304,53 @@ claw_linux_compile_release() {
       if [ -f .cargo/config.toml.example ] && [ ! -f .cargo/config.toml ]; then
         cp .cargo/config.toml.example .cargo/config.toml
       fi
-      # Drop mold for linux triples (home29: SIGSEGV linking proc-macros). Author: kejiqing
-      if [ "${CLAW_DISABLE_MOLD:-0}" = "1" ] || [ "${CLAW_DISABLE_MOLD:-}" = "true" ]; then
-        if [ -f .cargo/config.toml ]; then
-          awk '\''
-            /^\[target\.(x86_64|aarch64)-unknown-linux-gnu\]/ { in_linux=1; print; next }
-            /^\[/ { in_linux=0 }
-            in_linux && /(^[[:space:]]*linker[[:space:]]*=|^[[:space:]]*rustflags[[:space:]]*=)/ { next }
-            { print }
-          '\'' .cargo/config.toml > .cargo/config.toml.nomold
-          mv .cargo/config.toml.nomold .cargo/config.toml
-          echo "linux compile: mold linker rustflags stripped (CLAW_DISABLE_MOLD=1)"
-        fi
-      fi
+      # Pick linux linker: mold (default image) | lld | default (binutils ld). Author: kejiqing
+      linker_choice="${CLAW_LINUX_LINKER:-mold}"
+      case "${linker_choice}" in
+        lld)
+          if ! command -v ld.lld >/dev/null 2>&1 && ! command -v lld >/dev/null 2>&1; then
+            echo "linux compile: installing lld (not in compile image yet)"
+            if [ "${CLAW_USE_CN_APT_MIRROR:-0}" = "1" ] && [ -f /workspace/deploy/stack/debian-bookworm-ustc.sources ]; then
+              cp /workspace/deploy/stack/debian-bookworm-ustc.sources /etc/apt/sources.list.d/debian.sources
+            fi
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends lld clang
+          fi
+          if [ -f .cargo/config.toml ]; then
+            awk '\''
+              /^\[target\.(x86_64|aarch64)-unknown-linux-gnu\]/ { in_linux=1; print; next }
+              /^\[/ { in_linux=0 }
+              in_linux && /(^[[:space:]]*linker[[:space:]]*=|^[[:space:]]*rustflags[[:space:]]*=)/ { next }
+              { print }
+            '\'' .cargo/config.toml > .cargo/config.toml.lldtmp
+            printf "\n[target.x86_64-unknown-linux-gnu]\nlinker = \"clang\"\nrustflags = [\"-C\", \"link-arg=-fuse-ld=lld\"]\n\n[target.aarch64-unknown-linux-gnu]\nlinker = \"clang\"\nrustflags = [\"-C\", \"link-arg=-fuse-ld=lld\"]\n" >> .cargo/config.toml.lldtmp
+            mv .cargo/config.toml.lldtmp .cargo/config.toml
+          fi
+          echo "linux compile: using clang -fuse-ld=lld"
+          ;;
+        default|binutils|ld)
+          if [ -f .cargo/config.toml ]; then
+            awk '\''
+              /^\[target\.(x86_64|aarch64)-unknown-linux-gnu\]/ { in_linux=1; print; next }
+              /^\[/ { in_linux=0 }
+              in_linux && /(^[[:space:]]*linker[[:space:]]*=|^[[:space:]]*rustflags[[:space:]]*=)/ { next }
+              { print }
+            '\'' .cargo/config.toml > .cargo/config.toml.ldtmp
+            mv .cargo/config.toml.ldtmp .cargo/config.toml
+          fi
+          echo "linux compile: using default binutils ld (no fuse-ld)"
+          ;;
+        mold|*)
+          echo "linux compile: using clang -fuse-ld=mold (config.toml.example)"
+          ;;
+      esac
       got=$(rustc --version | awk "{print \$2}")
       want="${CLAW_RUST_VERSION:?CLAW_RUST_VERSION unset}"
       if [ "$got" != "$want" ]; then
         echo "rustc version mismatch: want $want got $got" >&2
         exit 1
       fi
-      echo "rustc $got (locked) RUSTC_WRAPPER=${RUSTC_WRAPPER:-} CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-} CLAW_DISABLE_MOLD=${CLAW_DISABLE_MOLD:-0}"
+      echo "rustc $got (locked) RUSTC_WRAPPER=${RUSTC_WRAPPER:-} CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-} CLAW_LINUX_LINKER=${CLAW_LINUX_LINKER:-mold}"
       if [ -n "${RUSTC_WRAPPER:-}" ] && command -v sccache >/dev/null 2>&1; then
         sccache --show-stats || true
       fi
