@@ -8,6 +8,7 @@ import {
   InputNumber,
   Popconfirm,
   Radio,
+  Select,
   Space,
   Spin,
   Switch,
@@ -22,7 +23,11 @@ import { proxyHttp } from "../api/client";
 import { useApp } from "../context/AppContext";
 import { putProjectConfigDraft } from "../utils/projectConfig";
 import type { GlobalSettingsResponse } from "../types/globalSettings";
-import type { LandlockDsl, WorkerProfileJson } from "../types/landlock";
+import type {
+  LandlockDsl,
+  WorkerProfileJson,
+  WorkerVolumeMountJson,
+} from "../types/landlock";
 import {
   normalizeWorkerResourcesClient,
   validateLandlockDslClient,
@@ -38,6 +43,11 @@ import type {
 } from "../types/projectE2bWorker";
 
 type Mode = WorkerProfileJson["mode"];
+
+type E2bVolumeCatalogEntry = {
+  volumeID: string;
+  name: string;
+};
 
 type FormValues = {
   mode: Mode;
@@ -64,6 +74,9 @@ export default function WorkerProfilePage() {
   const [workerResetting, setWorkerResetting] = useState(false);
   const [ensureBusy, setEnsureBusy] = useState(false);
   const [ensureLog, setEnsureLog] = useState<string[]>([]);
+  const [volumeCatalog, setVolumeCatalog] = useState<E2bVolumeCatalogEntry[]>([]);
+  const [volumeCatalogLoading, setVolumeCatalogLoading] = useState(false);
+  const [volumeMounts, setVolumeMounts] = useState<WorkerVolumeMountJson[]>([]);
   const mode = Form.useWatch("mode", form);
   const resourcesCustom = Form.useWatch("resourcesCustom", form);
   const cpuWatch = Form.useWatch("cpuCount", form);
@@ -112,6 +125,23 @@ export default function WorkerProfilePage() {
     }
   }, [gatewayBase]);
 
+  const loadVolumeCatalog = useCallback(async () => {
+    setVolumeCatalogLoading(true);
+    try {
+      const r = await proxyHttp<{ volumes: E2bVolumeCatalogEntry[] }>(
+        gatewayBase,
+        "GET",
+        "/v1/gateway/global-settings/e2b-volumes"
+      );
+      setVolumeCatalog(Array.isArray(r.volumes) ? r.volumes : []);
+    } catch (e) {
+      setVolumeCatalog([]);
+      message.error(e instanceof Error ? e.message : "加载 e2b volumes 失败");
+    } finally {
+      setVolumeCatalogLoading(false);
+    }
+  }, [gatewayBase]);
+
   useEffect(() => {
     void loadSystemDefault();
   }, [loadSystemDefault]);
@@ -119,6 +149,10 @@ export default function WorkerProfilePage() {
   useEffect(() => {
     void loadWorkerStatus();
   }, [loadWorkerStatus]);
+
+  useEffect(() => {
+    void loadVolumeCatalog();
+  }, [loadVolumeCatalog]);
 
   useEffect(() => {
     const wp = projectConfig?.workerProfileJson;
@@ -145,6 +179,18 @@ export default function WorkerProfilePage() {
       landlockRw: landlock?.rw ?? systemDefault?.rw ?? ["${session_root}"],
       landlockRo: landlock?.ro ?? systemDefault?.ro ?? [],
     });
+    const mounts = Array.isArray(wp?.volumeMounts)
+      ? wp!.volumeMounts!
+          .filter(
+            (m) =>
+              typeof m?.name === "string" &&
+              m.name.trim() &&
+              typeof m?.path === "string" &&
+              m.path.trim()
+          )
+          .map((m) => ({ name: m.name.trim(), path: m.path.trim() }))
+      : [];
+    setVolumeMounts(mounts);
   }, [projectConfig, form, systemDefault, relaxedAllowed]);
 
   const fillFromSystemDefault = () => {
@@ -189,8 +235,22 @@ export default function WorkerProfilePage() {
     }
     // resourcesCustom=false → omit resources + resourceTemplate (reverse: clear pointer)
 
+    const cleanedMounts = volumeMounts
+      .map((m) => ({ name: m.name.trim(), path: m.path.trim() }))
+      .filter((m) => m.name && m.path);
+    for (const m of cleanedMounts) {
+      if (!m.path.startsWith("/")) {
+        throw new Error(`volumeMounts path 须为绝对路径：${m.name}`);
+      }
+      if (m.path.includes("..")) {
+        throw new Error(`volumeMounts path 不能包含 ..：${m.name}`);
+      }
+    }
+    const volumeBlock: Pick<WorkerProfileJson, "volumeMounts"> =
+      cleanedMounts.length > 0 ? { volumeMounts: cleanedMounts } : {};
+
     if (v.mode === "relaxed") {
-      return { mode: "relaxed", ...askUser, ...resourcesBlock };
+      return { mode: "relaxed", ...askUser, ...resourcesBlock, ...volumeBlock };
     }
     const poolSize =
       typeof v.poolSize === "number" && Number.isFinite(v.poolSize) ? v.poolSize : undefined;
@@ -200,6 +260,7 @@ export default function WorkerProfilePage() {
         ...(poolSize != null ? { poolSize } : {}),
         ...askUser,
         ...resourcesBlock,
+        ...volumeBlock,
         strict: { useSystemDefault: true },
       };
     }
@@ -213,6 +274,7 @@ export default function WorkerProfilePage() {
       ...(poolSize != null ? { poolSize } : {}),
       ...askUser,
       ...resourcesBlock,
+      ...volumeBlock,
       strict: { useSystemDefault: false, landlock },
     };
   };
@@ -687,6 +749,102 @@ export default function WorkerProfilePage() {
               description="关闭自定义会清空 resources 与 resourceTemplate，回落到全局模板。"
             />
           )}
+        </Card>
+
+        <Card
+          type="inner"
+          title="e2b Volume 挂载（volumeMounts）"
+          size="small"
+          style={{ marginBottom: 16 }}
+          extra={
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              loading={volumeCatalogLoading}
+              onClick={() => void loadVolumeCatalog()}
+            >
+              刷新清单
+            </Button>
+          }
+        >
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="清单来自 e2b GET /volumes；物理后端（含 CIFS 账密）只在 e2b Admin 绑定"
+            description="与内部 nasConfig 工程盘并存。保存后需「强制重建」worker 才会挂进沙箱。容器内用 path（如 /mnt/ivqa）直接读写，勿再 smbclient。"
+          />
+          {volumeMounts.map((row, idx) => (
+            <Space
+              key={`${row.name}-${idx}`}
+              align="start"
+              wrap
+              style={{ display: "flex", marginBottom: 8 }}
+            >
+              <Select
+                style={{ width: 220 }}
+                placeholder="逻辑卷 name"
+                value={row.name || undefined}
+                options={volumeCatalog.map((v) => ({
+                  value: v.name,
+                  label: v.name,
+                }))}
+                showSearch
+                optionFilterProp="label"
+                onChange={(name: string) => {
+                  setVolumeMounts((prev) =>
+                    prev.map((m, i) =>
+                      i === idx
+                        ? {
+                            name,
+                            path: m.path?.startsWith("/")
+                              ? m.path
+                              : `/mnt/${name}`,
+                          }
+                        : m
+                    )
+                  );
+                }}
+              />
+              <Input
+                style={{ width: 240 }}
+                placeholder="容器内 path，如 /mnt/ivqa"
+                value={row.path}
+                onChange={(e) => {
+                  const path = e.target.value;
+                  setVolumeMounts((prev) =>
+                    prev.map((m, i) => (i === idx ? { ...m, path } : m))
+                  );
+                }}
+              />
+              <MinusCircleOutlined
+                onClick={() =>
+                  setVolumeMounts((prev) => prev.filter((_, i) => i !== idx))
+                }
+              />
+            </Space>
+          ))}
+          <Button
+            type="dashed"
+            size="small"
+            icon={<PlusOutlined />}
+            disabled={volumeCatalog.length === 0}
+            onClick={() => {
+              const first = volumeCatalog[0];
+              if (!first) return;
+              setVolumeMounts((prev) => [
+                ...prev,
+                { name: first.name, path: `/mnt/${first.name}` },
+              ]);
+            }}
+          >
+            添加挂载
+          </Button>
+          {volumeCatalog.length === 0 && !volumeCatalogLoading ? (
+            <Typography.Text type="secondary" style={{ display: "block", marginTop: 8 }}>
+              e2b 尚无逻辑卷；请先在 e2b Admin → Volume 创建并绑定后端。
+            </Typography.Text>
+          ) : null}
         </Card>
 
         {mode === "strict" ? (

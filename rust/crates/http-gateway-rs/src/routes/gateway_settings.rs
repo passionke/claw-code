@@ -6,9 +6,10 @@ use crate::routes::app::{
     ensure_gateway_e2b_singleton_handler, get_gateway_bootstrap_ci_image_tags_handler,
     get_gateway_bootstrap_env_snapshot_handler, get_gateway_bootstrap_publish_templates_handler,
     get_gateway_bootstrap_status_handler, get_gateway_e2b_singletons_handler,
-    get_gateway_e2b_templates_handler, get_gateway_global_settings_handler,
-    issue_gateway_admin_mcp_token_handler, list_gateway_llm_model_versions_handler,
-    lookup_gateway_llm_context_window_handler, post_gateway_bootstrap_apply_deploy_env_handler,
+    get_gateway_e2b_templates_handler, get_gateway_e2b_volumes_handler,
+    get_gateway_global_settings_handler, issue_gateway_admin_mcp_token_handler,
+    list_gateway_llm_model_versions_handler, lookup_gateway_llm_context_window_handler,
+    post_gateway_bootstrap_apply_deploy_env_handler,
     post_gateway_bootstrap_apply_llm_from_env_handler, post_gateway_bootstrap_complete_handler,
     post_gateway_bootstrap_ensure_core_handler,
     post_gateway_bootstrap_publish_observe_templates_handler,
@@ -87,6 +88,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/v1/gateway/global-settings/e2b-templates",
             get(get_gateway_e2b_templates_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-volumes",
+            get(get_gateway_e2b_volumes_handler),
         )
         .route(
             "/v1/gateway/global-settings/e2b-singleton-templates",

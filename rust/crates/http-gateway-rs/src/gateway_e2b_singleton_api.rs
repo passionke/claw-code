@@ -94,6 +94,31 @@ pub async fn list_e2b_templates(
     })
 }
 
+/// Schema mirror for OpenAPI (utoipa cannot derive on foreign crate types). Author: kejiqing
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct E2bVolumeEntrySchema {
+    #[serde(rename = "volumeID")]
+    pub volume_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct E2bVolumesListResponse {
+    #[serde(rename = "apiUrl")]
+    pub api_url: String,
+    #[schema(value_type = Vec<E2bVolumeEntrySchema>)]
+    pub volumes: Vec<claw_e2b_sandbox_client::E2bVolumeEntry>,
+}
+
+/// Catalog for Admin volumeMounts picker (physical backend stays on e2b). Author: kejiqing
+pub async fn list_e2b_volumes(client: &E2bSandboxClient) -> Result<E2bVolumesListResponse, String> {
+    let volumes = client.list_volumes().await?;
+    Ok(E2bVolumesListResponse {
+        api_url: client.config().api_url.clone(),
+        volumes,
+    })
+}
+
 pub async fn load_e2b_singletons_status(
     db: &GatewaySessionDb,
     client: Option<&E2bSandboxClient>,

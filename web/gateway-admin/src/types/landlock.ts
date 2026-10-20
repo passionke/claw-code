@@ -26,6 +26,12 @@ export interface WorkerResourceTemplateJson {
   fingerprint: string;
 }
 
+/** e2b official Volume pin (logical name + guest path). Author: kejiqing */
+export interface WorkerVolumeMountJson {
+  name: string;
+  path: string;
+}
+
 export interface WorkerProfileJson {
   mode: "strict" | "relaxed";
   /** Optional per-project override; omit to inherit global e2bWorker.poolSize. */
@@ -39,6 +45,11 @@ export interface WorkerProfileJson {
   resources?: WorkerResourcesJson | null;
   /** Set by ensure CLI after Template.build; stripped when resources cleared or fingerprint stale. */
   resourceTemplate?: WorkerResourceTemplateJson | null;
+  /**
+   * Optional e2b Volume mounts (CIFS/SMB etc.). Names come from e2b GET /volumes;
+   * physical backend is bound in e2b Admin — not stored here.
+   */
+  volumeMounts?: WorkerVolumeMountJson[] | null;
   strict?: WorkerProfileStrictJson;
 }
 

@@ -988,6 +988,12 @@ impl E2bProjWorkerRegistry {
             .map_err(|e| format!("load worker_env_json for proj {proj_id}: {e}"))?;
         let env_vars = crate::pool::parse_worker_env_map(&worker_env_json)
             .map_err(|e| format!("invalid worker_env_json for proj {proj_id}: {e}"))?;
+        let worker_profile_json = db
+            .get_worker_profile_json(proj_id)
+            .await
+            .map_err(|e| format!("load worker_profile_json for proj {proj_id}: {e}"))?;
+        let volume_mounts = crate::pool::volume_mounts_from_json(&worker_profile_json)
+            .map_err(|e| format!("invalid volumeMounts for proj {proj_id}: {e}"))?;
         // Prefer alias for create target; pin buildId only when PG has one (after publish on
         // *this* e2b). Endpoint change clears pins so stale UUIDs cannot 503. Author: kejiqing
         let template_ref = claw_e2b_sandbox_client::e2b_sandbox_template_ref(
@@ -1003,6 +1009,7 @@ impl E2bProjWorkerRegistry {
                 &template_ref,
                 spec.home_read_only(),
                 env_vars,
+                &volume_mounts,
             )
             .await?;
         self.client

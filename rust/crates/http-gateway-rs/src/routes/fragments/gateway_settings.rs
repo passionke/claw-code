@@ -141,6 +141,33 @@ pub(crate) async fn get_gateway_e2b_templates_handler(
 }
 
 #[utoipa::path(
+    get,
+    path = "/v1/gateway/global-settings/e2b-volumes",
+    tag = "Gateway Settings",
+    operation_id = "get_gateway_e2b_volumes_handler",
+    summary = "List e2b logical volumes (Admin volumeMounts catalog)",
+    responses(
+        (status = 200, description = "Volume catalog", body = gateway_e2b_singleton_api::E2bVolumesListResponse),
+        (status = 503, description = "e2b sandbox client not configured"),
+        (status = 502, description = "Upstream e2b volume list failed")
+    )
+)]
+pub(crate) async fn get_gateway_e2b_volumes_handler(
+    State(state): State<AppState>,
+) -> Result<Json<gateway_e2b_singleton_api::E2bVolumesListResponse>, ApiError> {
+    let client = state.pool_clients.e2b_sandbox_client().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "e2b sandbox client not configured",
+        )
+    })?;
+    let body = gateway_e2b_singleton_api::list_e2b_volumes(client)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(body))
+}
+
+#[utoipa::path(
     put,
     path = "/v1/gateway/global-settings/e2b-singleton-templates",
     tag = "Gateway Settings",
