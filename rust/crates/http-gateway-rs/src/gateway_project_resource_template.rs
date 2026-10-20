@@ -14,7 +14,7 @@ use tokio::process::Command;
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-use crate::gateway_bootstrap_deploy::resolve_bootstrap_repo_root;
+use crate::gateway_bootstrap_deploy::{deploy_env_get, resolve_bootstrap_repo_root};
 use crate::pool::{
     effective_mode, effective_resource_template, normalize_worker_resources,
     relaxed_worker_allowed_from_env, resource_template_alias, sanitize_worker_profile_json,
@@ -231,7 +231,7 @@ async fn run_ensure_script(
         cmd.arg("--relaxed");
     }
     // SKU path: e2b API + PREFIX/BASE_TAG only (script does Template.build, not docker).
-    // Author: kejiqing
+    // Read deploy.env when compose did not inject (29-style host). Author: kejiqing
     for key in [
         "REGION",
         "region",
@@ -249,11 +249,8 @@ async fn run_ensure_script(
         "CLAW_E2B_WORKER_BASE_TAG",
         "CLAW_E2B_TEMPLATE_SKIP_CACHE",
     ] {
-        if let Ok(v) = std::env::var(key) {
-            let t = v.trim();
-            if !t.is_empty() {
-                cmd.env(key, t);
-            }
+        if let Some(v) = deploy_env_get(key) {
+            cmd.env(key, v);
         }
     }
 
@@ -338,6 +335,16 @@ pub async fn start_ensure_resource_template(
     let script = resolve_ensure_script()?;
     // cwd for dotenv / relative paths; bundled script does not require a host checkout.
     let repo = resolve_bootstrap_repo_root().unwrap_or_else(|| PathBuf::from("/app"));
+    if deploy_env_get("CLAW_IMAGE_PREFIX").is_none()
+        || deploy_env_get("CLAW_E2B_WORKER_BASE_TAG").is_none()
+    {
+        return Err(
+            "SKU ensure needs CLAW_IMAGE_PREFIX and CLAW_E2B_WORKER_BASE_TAG in deploy .env \
+             (protocol image {prefix}/debian-bookworm-claw-worker:{tag} from claw-e2b-protocol-nora; \
+             Gateway does not build that image)"
+                .into(),
+        );
+    }
 
     {
         let mut guard = ensure_state()

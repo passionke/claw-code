@@ -70,6 +70,14 @@ claw_deploy_preflight() {
     echo "    pool: remote ${CLAW_POOL_REMOTE_BASE} (pool_id=${CLAW_POOL_ID})" >&2
   elif claw_interactive_backend_is_e2b; then
     echo "    pool: e2b backend (no host claw-pool-daemon)" >&2
+    # Admin「确保派生模板」needs protocol from_image pin (not Gateway release tag). Author: kejiqing
+    if [[ -z "${CLAW_IMAGE_PREFIX:-}" || -z "${CLAW_E2B_WORKER_BASE_TAG:-}" ]]; then
+      echo "error: e2b SKU ensure needs CLAW_IMAGE_PREFIX and CLAW_E2B_WORKER_BASE_TAG in repo .env" >&2
+      echo "  example: CLAW_IMAGE_PREFIX=nora.home.passionke.top/passionke" >&2
+      echo "           CLAW_E2B_WORKER_BASE_TAG=<tag from claw-e2b-protocol-nora>" >&2
+      return 1
+    fi
+    echo "    e2b protocol from_image: ${CLAW_IMAGE_PREFIX}/debian-bookworm-claw-worker:${CLAW_E2B_WORKER_BASE_TAG}" >&2
   else
     claw_pool_daemon_on_host || return 1
   fi

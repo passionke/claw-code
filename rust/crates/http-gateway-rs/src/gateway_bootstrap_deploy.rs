@@ -17,6 +17,9 @@ const DEPLOY_ENV_WHITELIST: &[&str] = &[
     "CLAW_E2B_API_KEY",
     "ALIYUN_E2B_TOKEN",
     "CLAW_E2B_DOMAIN",
+    // SKU ensure from_image = {PREFIX}/debian-bookworm-claw-worker:{BASE_TAG}. Author: kejiqing
+    "CLAW_IMAGE_PREFIX",
+    "CLAW_E2B_WORKER_BASE_TAG",
     "GATEWAY_HOST_PORT",
     "GATEWAY_PLAYGROUND_HOST_PORT",
     "PLAYGROUND_PUBLIC_GATEWAY_BASE",
@@ -93,6 +96,16 @@ fn env_trim(key: &str) -> Option<String> {
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+}
+
+/// Process env first, then deploy `.env` (compose may not inject every key). Author: kejiqing
+#[must_use]
+pub fn deploy_env_get(key: &str) -> Option<String> {
+    if let Some(v) = env_trim(key) {
+        return Some(v);
+    }
+    let path = resolve_deploy_env_file()?;
+    read_deploy_env_values(&path).remove(key)
 }
 
 /// Deploy `.env` path: `CLAW_DEPLOY_ENV_FILE` → `/run/claw/deploy.env` → repo `.env`. Author: kejiqing
