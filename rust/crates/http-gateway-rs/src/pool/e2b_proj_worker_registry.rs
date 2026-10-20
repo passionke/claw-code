@@ -484,6 +484,17 @@ impl E2bProjWorkerRegistry {
                 create_alias: t.alias,
             });
         }
+        // Project resource CoW: fingerprint-matched binding overrides global template.
+        // Stale / orphan pointers are ignored (same as cleared resources). Author: kejiqing
+        if let Some(rt) = super::worker_resources::effective_resource_template(&json) {
+            return Ok(WorkerSpec {
+                e2b_template_id: rt.template_id.clone(),
+                build_id: rt.build_id,
+                mode,
+                profile_label,
+                create_alias: rt.template_id,
+            });
+        }
         match mode {
             WorkerProfileMode::Relaxed => {
                 let e2b_template_id = load_e2b_worker_relaxed_template_id(db.as_ref())

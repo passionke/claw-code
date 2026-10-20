@@ -6,6 +6,9 @@ use gateway_solve_turn::{
 use serde_json::{json, Value};
 
 use super::config::relaxed_worker_allowed_from_env;
+use super::worker_resources::{
+    sanitize_worker_profile_resources, validate_worker_profile_resources,
+};
 use crate::gateway_e2b_worker_settings::{
     clamp_strict_worker_pool_size, load_e2b_strict_worker_pool_size,
     validate_strict_worker_pool_size,
@@ -146,6 +149,13 @@ fn validate_ask_user_question_in_agent_flag(value: &Value) -> Result<(), String>
     Ok(())
 }
 
+/// Normalize resources + strip stale `resourceTemplate`, then validate. Author: kejiqing
+pub fn sanitize_worker_profile_json(value: &Value) -> Result<Value, String> {
+    let sanitized = sanitize_worker_profile_resources(value)?;
+    validate_worker_profile_json(&sanitized)?;
+    Ok(sanitized)
+}
+
 /// Validate Admin `worker_profile_json` shape (+ env gate for relaxed / poolSize cap).
 pub fn validate_worker_profile_json(value: &Value) -> Result<(), String> {
     let mode = value
@@ -161,6 +171,7 @@ pub fn validate_worker_profile_json(value: &Value) -> Result<(), String> {
             }
             validate_worker_profile_pool_size(value)?;
             validate_ask_user_question_in_agent_flag(value)?;
+            validate_worker_profile_resources(value)?;
             Ok(())
         }
         "relaxed" => {
@@ -181,6 +192,7 @@ pub fn validate_worker_profile_json(value: &Value) -> Result<(), String> {
                 );
             }
             validate_ask_user_question_in_agent_flag(value)?;
+            validate_worker_profile_resources(value)?;
             Ok(())
         }
         other => Err(format!("invalid worker_profile_json.mode={other:?}")),
@@ -340,5 +352,55 @@ mod tests {
                 2
             );
         });
+    }
+
+    #[test]
+    fn sanitize_accepts_resources_and_ceil() {
+        let out = sanitize_worker_profile_json(&json!({
+            "mode": "strict",
+            "resources": {"cpuCount": 1.1, "memoryMb": 257}
+        }))
+        .unwrap();
+        assert_eq!(out["resources"]["cpuCount"], json!(2));
+        assert_eq!(out["resources"]["memoryMb"], json!(512));
+        assert!(out.get("resourceTemplate").is_none());
+    }
+
+    #[test]
+    fn sanitize_rejects_cpu_over_cap() {
+        let err = sanitize_worker_profile_json(&json!({
+            "mode": "strict",
+            "resources": {"cpuCount": 16.1, "memoryMb": 256}
+        }))
+        .unwrap_err();
+        assert!(err.contains("cpuCount"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn reverse_clear_resources_matches_never_configured() {
+        let customized = sanitize_worker_profile_json(&json!({
+            "mode": "strict",
+            "resources": {"cpuCount": 4, "memoryMb": 1024},
+            "resourceTemplate": {
+                "templateId": "tpl_x",
+                "fingerprint": "cpu4-mem1024"
+            }
+        }))
+        .unwrap();
+        assert!(customized.get("resourceTemplate").is_some());
+
+        let cleared = sanitize_worker_profile_json(&json!({
+            "mode": "strict",
+            "resources": null,
+            "resourceTemplate": customized["resourceTemplate"].clone()
+        }))
+        .unwrap();
+        let baseline = sanitize_worker_profile_json(&json!({"mode": "strict"})).unwrap();
+        assert!(cleared.get("resources").is_none());
+        assert!(cleared.get("resourceTemplate").is_none());
+        assert_eq!(
+            crate::pool::worker_resources::effective_resource_template(&cleared),
+            crate::pool::worker_resources::effective_resource_template(&baseline)
+        );
     }
 }

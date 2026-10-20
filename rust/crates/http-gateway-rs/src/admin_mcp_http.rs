@@ -21,7 +21,7 @@ use crate::admin_mcp_solve::{
 use crate::gateway_admin_mcp_token::{extract_bearer_token, verify_admin_mcp_token, TOKEN_PREFIX};
 use crate::gateway_global_settings;
 use crate::pool::{
-    validate_worker_env_json, validate_worker_profile_json, NasLayoutBackend, PoolClients,
+    sanitize_worker_profile_json, validate_worker_env_json, NasLayoutBackend, PoolClients,
 };
 use crate::project_config_apply;
 use crate::project_config_draft;
@@ -245,7 +245,7 @@ fn tools_list_result() -> Value {
                     "skillsJson": { "type": "array" },
                     "workerProfileJson": {
                         "type": "object",
-                        "description": "e2b worker profile sidecar: mode strict|relaxed; strict may set poolSize (1..CLAW_E2B_POOL_SIZE_CAP)."
+                        "description": "e2b worker profile: mode strict|relaxed; optional poolSize; optional resources {cpuCount, memoryMb} (ceil-normalized; cpu 1..=16, mem 256MiB steps max 16GiB) + resourceTemplate binding."
                     },
                     "workerEnvJson": {
                         "type": "object",
@@ -404,9 +404,13 @@ async fn upsert_project_draft(
         )?;
     }
     let skills_json = patch.skills_json.unwrap_or(&existing.skills_json);
-    let worker_profile_json = patch
-        .worker_profile_json
-        .unwrap_or(&existing.worker_profile_json);
+    let sanitized_worker_profile;
+    let worker_profile_json = if let Some(incoming) = patch.worker_profile_json {
+        sanitized_worker_profile = sanitize_worker_profile_json(incoming)?;
+        &sanitized_worker_profile
+    } else {
+        &existing.worker_profile_json
+    };
     let worker_env_json = patch.worker_env_json.unwrap_or(&existing.worker_env_json);
     let max_iterations = crate::max_iterations::parse_project_max_iterations_put(
         patch.max_iterations,
@@ -525,7 +529,7 @@ fn parse_config_put_draft_patch(args: &Value) -> Result<DraftPatch<'_>, String> 
     }
     if let Some(v) = args.get("workerProfileJson") {
         any = true;
-        validate_worker_profile_json(v)?;
+        let _ = sanitize_worker_profile_json(v)?;
         patch.worker_profile_json = Some(v);
     }
     if let Some(v) = args.get("workerEnvJson") {
@@ -929,12 +933,12 @@ async fn handle_project_config_tool(
             let worker_profile_json = args
                 .get("workerProfileJson")
                 .ok_or_else(|| "arguments.workerProfileJson required".to_string())?;
-            validate_worker_profile_json(worker_profile_json)?;
+            let cleaned = sanitize_worker_profile_json(worker_profile_json)?;
             upsert_project_draft(
                 db,
                 proj_id,
                 DraftPatch {
-                    worker_profile_json: Some(worker_profile_json),
+                    worker_profile_json: Some(&cleaned),
                     ..Default::default()
                 },
             )
@@ -943,7 +947,7 @@ async fn handle_project_config_tool(
             Ok(tool_text_result(&json!({
                 "projId": proj_id,
                 "updated": true,
-                "workerProfileJson": worker_profile_json
+                "workerProfileJson": cleaned
             })))
         }
         "project_worker_env_put_draft" => {
