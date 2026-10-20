@@ -3,8 +3,9 @@
 // Formal: GIT_TAG=vX.Y.Z. Fast: any branch push → GIT_REF=<sha> → publish sha-<12>.
 // Pack does not require merge to main. neurogate up stays main-only (Actions).
 // Gitea webhook → GenericTrigger (same token as repo hook). Manual builds use params.
+// Agent: shared label nora-pack (home29 + controller built-in). Offline nodes skipped. Author: kejiqing
 pipeline {
-  agent { label 'home29' }
+  agent { label 'nora-pack' }
   options {
     disableConcurrentBuilds()
   }

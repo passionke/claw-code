@@ -1,7 +1,8 @@
 // Author: kejiqing
 // One Agent engine → Nora raw. Manual job. Never touches Gateway or e2b protocol.
 pipeline {
-  agent { label 'home29' }
+  // Shared nora-pack: home29 preferred when online; built-in failover. Author: kejiqing
+  agent { label 'nora-pack' }
   options {
     disableConcurrentBuilds()
   }

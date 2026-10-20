@@ -21,15 +21,22 @@ Author: kejiqing
 **Home git tag：** **`vX.Y.Z`**（禁止在 gitea 打 `release-v*`；`release-v*` 只给 GitHub Actions）  
 **制品：** `nora.home.passionke.top/passionke`  
 **e2b API：** `http://e2b.home.passionke.top:3000`（sandbox `:3002`）  
-**Jenkins：** `https://jenkins.home.passionke.top/`（agent `home29`；tag hook 自动跑 Gateway Job）  
+**Jenkins：** `https://jenkins.home.passionke.top/`（agent label **`nora-pack`**；tag hook 自动跑 Gateway Job）  
 **neurogate：** `https://neurogate.home.passionke.top`（`10.8.0.21`）
 
 ### H.1 Gateway/Admin 发版（职责拆分）
 
 | 角色 | 机器 / Job | 做什么 | 不做什么 |
 |------|------------|--------|----------|
-| **重活** | Jenkins `claw-code-nora`（home29） | clone、编译、打镜像、skopeo 推 Nora | 不改 neurogate 运行态 |
+| **重活** | Jenkins `claw-code-nora`（label `nora-pack`） | clone、编译、打镜像、skopeo 推 Nora | 不改 neurogate 运行态 |
 | **轻活** | `10.8.0.21` Gitea Actions（label `neurogate`） | 等/拉 Nora 镜像 → `gateway.sh up --release` | **不**编译、**不**推镜像 |
+
+**`nora-pack` 节点（离线自动换机，禁止写死单机）：**
+
+| 节点 | 角色 |
+|------|------|
+| `home29`（`10.8.0.29`） | 主打包机；label 含 `nora-pack` + `primary` |
+| Built-In（Jenkins controller on `10.8.0.21`，docker.sock） | 备份；label 含 `nora-pack`。home29 离线时 Job 落到这里，**不会**一直排队夯死 |
 
 ```text
 正式线（v* tag）:

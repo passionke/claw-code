@@ -1,7 +1,8 @@
 // Author: kejiqing
 // e2b Worker protocol only → Nora + e2b template register. Manual job.
 pipeline {
-  agent { label 'home29' }
+  // Shared nora-pack: home29 preferred when online; built-in failover. Author: kejiqing
+  agent { label 'nora-pack' }
   options {
     disableConcurrentBuilds()
   }
