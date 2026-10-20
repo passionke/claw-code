@@ -45,7 +45,8 @@ pipeline {
     CLAW_REPO = 'https://code.passionke.top/passionke/claw-code.git'
     // Stabilize home29 release compiles (rustc SIGSEGV/SIGBUS under default ~nproc). Author: kejiqing
     CARGO_BUILD_JOBS = '4'
-    RUST_MIN_STACK = '33554432'
+    RUST_MIN_STACK = '67108864'
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS = '16'
   }
   stages {
     stage('Checkout') {

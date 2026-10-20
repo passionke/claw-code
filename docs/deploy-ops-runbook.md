@@ -54,7 +54,8 @@ Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GI
 | 旋钮 | 默认 | 作用 |
 |------|------|------|
 | `CARGO_BUILD_JOBS` | `4` | crate 级并行（避免默认≈16 路把 rustc 打崩） |
-| `RUST_MIN_STACK` | `33554432`（32MiB） | rustc 线程栈 |
+| `RUST_MIN_STACK` | `67108864`（64MiB） | rustc 线程栈（32MiB 仍 SIGSEGV 时按 rustc 提示升到 64） |
+| `CARGO_PROFILE_RELEASE_CODEGEN_UNITS` | `16` | 单 crate 内并行（覆盖 Cargo.toml 的 256） |
 | `CLAW_SCCACHE_RESET=1` / Job 勾选 `SCCACHE_RESET` | 关 | 编译前清空 `~/claw-ci-cache/claw-code/sccache` |
 | `CLAW_SCCACHE_RETRY_ON_FAIL` | `1`（CI） | 首次失败后自动清 sccache 再编一次 |
 
