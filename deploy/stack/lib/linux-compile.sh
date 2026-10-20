@@ -304,7 +304,9 @@ claw_linux_compile_release() {
       if [ -f .cargo/config.toml.example ] && [ ! -f .cargo/config.toml ]; then
         cp .cargo/config.toml.example .cargo/config.toml
       fi
-      # Pick linux linker: mold (default image) | lld | default (binutils ld). Author: kejiqing
+      # Pick linux linker: mold (default image) | lld | default (binutils ld).
+      # In-place edit only — never re-append target tables (TOML forbids duplicates).
+      # Author: kejiqing
       linker_choice="${CLAW_LINUX_LINKER:-mold}"
       case "${linker_choice}" in
         lld)
@@ -317,14 +319,7 @@ claw_linux_compile_release() {
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends lld clang
           fi
           if [ -f .cargo/config.toml ]; then
-            awk '\''
-              /^\[target\.(x86_64|aarch64)-unknown-linux-gnu\]/ { in_linux=1; print; next }
-              /^\[/ { in_linux=0 }
-              in_linux && /(^[[:space:]]*linker[[:space:]]*=|^[[:space:]]*rustflags[[:space:]]*=)/ { next }
-              { print }
-            '\'' .cargo/config.toml > .cargo/config.toml.lldtmp
-            printf "\n[target.x86_64-unknown-linux-gnu]\nlinker = \"clang\"\nrustflags = [\"-C\", \"link-arg=-fuse-ld=lld\"]\n\n[target.aarch64-unknown-linux-gnu]\nlinker = \"clang\"\nrustflags = [\"-C\", \"link-arg=-fuse-ld=lld\"]\n" >> .cargo/config.toml.lldtmp
-            mv .cargo/config.toml.lldtmp .cargo/config.toml
+            sed -i 's/fuse-ld=mold/fuse-ld=lld/g' .cargo/config.toml
           fi
           echo "linux compile: using clang -fuse-ld=lld"
           ;;
