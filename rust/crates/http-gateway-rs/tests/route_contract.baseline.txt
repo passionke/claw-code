@@ -117,6 +117,8 @@ GET	/v1/projects/{proj_id}/delegate-targets	get_delegate_targets
 PUT	/v1/projects/{proj_id}/delegate-targets	put_delegate_targets
 POST	/v1/projects/{proj_id}/delegate/resolve-session	resolve_delegate_session
 GET	/v1/projects/{proj_id}/e2b-worker	get_project_e2b_worker_handler
+GET	/v1/projects/{proj_id}/e2b-worker/ensure-resource-template	get_project_ensure_resource_template_handler
+POST	/v1/projects/{proj_id}/e2b-worker/ensure-resource-template	post_project_ensure_resource_template_handler
 POST	/v1/projects/{proj_id}/e2b-worker/reset	reset_project_e2b_worker_handler
 POST	/v1/projects/{proj_id}/git/pull	pull_project_git
 GET	/v1/projects/{proj_id}/inference	get_project_inference_handler
