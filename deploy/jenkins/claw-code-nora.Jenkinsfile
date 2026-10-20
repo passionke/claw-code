@@ -43,15 +43,15 @@ pipeline {
     CLAW_LINUX_COMPILE_PLATFORM = 'linux/amd64'
     TARGETARCH = 'amd64'
     CLAW_REPO = 'https://code.passionke.top/passionke/claw-code.git'
-    // Stabilize home29 release compiles (rustc SIGSEGV/SIGBUS under default ~nproc). Author: kejiqing
-    CARGO_BUILD_JOBS = '4'
+    // Stabilize home29 release compiles (linker SIGSEGV under mold/binutils ld). Author: kejiqing
+    CARGO_BUILD_JOBS = '2'
     RUST_MIN_STACK = '67108864'
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS = '16'
     CARGO_INCREMENTAL = '0'
     // True-compile path was SIGSEGV under sccache wrapper; re-enable after green. Author: kejiqing
     CLAW_DISABLE_SCCACHE = '1'
-    // home29: rustc SIGSEGV on proc-macro link with -fuse-ld=mold. Author: kejiqing
-    CLAW_DISABLE_MOLD = '1'
+    // home29: mold and binutils ld both SIGSEGV linking proc-macros — use lld. Author: kejiqing
+    CLAW_LINUX_LINKER = 'lld'
   }
   stages {
     stage('Checkout') {
