@@ -645,16 +645,30 @@ export default function WorkerProfilePage() {
                 </Typography.Paragraph>
               ) : null}
               {projectConfig?.workerProfileJson?.resourceTemplate ? (
-                <Descriptions size="small" column={1} style={{ marginTop: 12 }} bordered>
-                  <Descriptions.Item label="已绑定 templateId">
-                    <Typography.Text copyable>
-                      {projectConfig.workerProfileJson.resourceTemplate.templateId}
-                    </Typography.Text>
-                  </Descriptions.Item>
-                  <Descriptions.Item label="fingerprint">
-                    {projectConfig.workerProfileJson.resourceTemplate.fingerprint}
-                  </Descriptions.Item>
-                </Descriptions>
+                <>
+                  <Descriptions size="small" column={1} style={{ marginTop: 12 }} bordered>
+                    <Descriptions.Item label="已绑定 templateId">
+                      <Typography.Text copyable>
+                        {projectConfig.workerProfileJson.resourceTemplate.templateId}
+                      </Typography.Text>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="buildId（起沙 pin）">
+                      <Typography.Text copyable>
+                        {projectConfig.workerProfileJson.resourceTemplate.buildId || "—"}
+                      </Typography.Text>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="fingerprint">
+                      {projectConfig.workerProfileJson.resourceTemplate.fingerprint}
+                    </Descriptions.Item>
+                  </Descriptions>
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginTop: 12 }}
+                    message="验收口径：强制重建后以 e2b/cgroup 为准"
+                    description="本页 cpu/memory 经「确保派生模板」写入 build；起沙 templateID=buildId。内存必须受 cgroup memory.max 约束（超限 OOM）。容器内 lscpu、/proc/meminfo MemTotal 常仍显示宿主机，不代表未限流——CPU 看 cpu.max/NanoCpus，内存看 memory.max。"
+                  />
+                </>
               ) : (
                 <Alert
                   type="warning"

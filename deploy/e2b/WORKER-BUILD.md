@@ -49,6 +49,10 @@ Nora (`claw-e2b-protocol-nora`). Gateway sets both env vars; missing either fail
 Gateway `POST /v1/projects/{projId}/e2b-worker/ensure-resource-template` spawns the same script and
 binds `resourceTemplate` (requires `CLAW_REPO_ROOT` + e2b API env + the two image-contract vars).
 
+CPU/MEM are set only by `Template.build` (standard e2b). Warm create uses
+`templateID=<buildUUID>` (pin). Home e2b must resolve that build's declared cpu/mem; default
+2/1024 only when the template/build has no declaration.
+
 **CLI escape hatch only:**
 
 ```bash
