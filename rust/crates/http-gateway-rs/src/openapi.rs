@@ -51,6 +51,7 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::app::reset_gateway_observe_tap_handler,
         crate::routes::app::get_gateway_e2b_singletons_handler,
         crate::routes::app::get_gateway_e2b_templates_handler,
+        crate::routes::app::get_gateway_e2b_volumes_handler,
         crate::routes::app::put_gateway_e2b_singleton_templates_handler,
         crate::routes::app::ensure_gateway_e2b_singleton_handler,
         crate::routes::app::reset_gateway_e2b_singleton_handler,
