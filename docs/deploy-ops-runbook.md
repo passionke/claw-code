@@ -49,21 +49,17 @@ Author: kejiqing
 Jenkins 入参：`GIT_TAG`（正式）与 `GIT_REF`（快线）二选一。  
 Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GIT_TAG`。
 
-**home29 编译稳态（`claw-code-nora`）：**
+**home29 / CI 编译（`claw-code-nora`）— 单一默认路径：**
 
 | 旋钮 | 默认 | 作用 |
 |------|------|------|
-| `CARGO_BUILD_JOBS` | `8`（CI） | crate 级并行 |
-| `RUST_MIN_STACK` | `268435456`（256MiB，CI） | rustc 线程栈（#54 MIR SIGSEGV 后按 rustc 提示加大） |
-| `CARGO_PROFILE_RELEASE_CODEGEN_UNITS` | `8`（CI） | 单 crate 内并行（覆盖 Cargo.toml 的 256） |
-| `CARGO_PROFILE_RELEASE_OPT_LEVEL` | `2`（CI） | 避开 home29 上 opt-level=3 触发的 LLVM SIGSEGV |
-| `CARGO_INCREMENTAL` | `0`（CI） | 关掉 release incremental（共享 target 上易脏） |
-| `CLAW_DISABLE_SCCACHE` | `1`（CI 默认） | 直连 rustc；`0` 可重新启用 sccache |
-| `CLAW_LINUX_LINKER` | `lld`（CI） | `mold` / `lld` / `default`；home29 上 mold 与 binutils ld 链 proc-macro 均 SIGSEGV |
-| `CLAW_SCCACHE_RESET=1` / Job 勾选 `SCCACHE_RESET` | 关 | 编译前清空 sccache 目录 |
-| `CLAW_SCCACHE_RETRY_ON_FAIL` | `1`（CI 且启用 sccache） | 失败后清 sccache 再编一次 |
+| release `opt-level` | **3**（Cargo.toml） | 不在 CI 里永久降到 2 |
+| linker | **mold**（`config.toml.example`） | 不在 CI 里永久改成 lld |
+| `CARGO_INCREMENTAL` | `0`（CI） | 每次 job 的 target 目录会被清，关掉 incremental |
+| `CLAW_CARGO_CACHE_RESET=1` / Job 勾选 `CARGO_CACHE_RESET` | 关 | 编译前清空 `cargo-registry` + `cargo-git` + `sccache` |
+| `CLAW_COMPILE_RETRY_ON_FAIL` | `1`（CI） | **失败后自动清上述缓存再编一次**（标准恢复） |
 
-sccache 清缓存机制：手动 `RESET`；启用 wrapper 时失败自动清一次重试。当前 CI 默认关 sccache + 用 lld，先保证真编能绿。
+不要用拧 `opt-level` / `jobs` 当根因修复。若清缓存重试后仍是 `rustc`/`gcc`/`ld` SIGSEGV，查 **home29 主机**（`dmesg`、重启、memtest），不是再改 Cargo 旋钮。
 
 用户日常**不**手搓 `up --release`（紧急除外）。  
 - 正式：[`home-neurogate-deploy.yml`](../.gitea/workflows/home-neurogate-deploy.yml)  

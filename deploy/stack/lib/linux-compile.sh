@@ -58,34 +58,37 @@ claw_linux_compile_prune_ci_bins() {
   shopt -u nullglob
 }
 
-# Wipe durable sccache so the next compile cannot reuse a half-written / corrupt cache.
-# CI path: $CLAW_CI_CACHE_DIR/sccache (or ~/claw-ci-cache/claw-code/sccache).
-# Local path: docker volume claw-sccache. Author: kejiqing
-claw_linux_sccache_reset() {
-  local ci_cache="${1:-}"
+# Wipe one durable CI cache dir (root-owned files via alpine). Author: kejiqing
+claw_linux_ci_cache_dir_reset() {
+  local dir="$1"
   local host_uid host_gid
   host_uid="$(id -u)"
   host_gid="$(id -g)"
+  echo "linux compile: reset ${dir}"
+  mkdir -p "${dir}"
+  if ! rm -rf "${dir:?}"/* "${dir}"/.[!.]* 2>/dev/null; then
+    if command -v docker >/dev/null 2>&1; then
+      docker run --rm -v "${dir}:/c:rw" alpine:3.20 \
+        sh -c 'rm -rf /c/* /c/.[!.]* /c/..?* 2>/dev/null || true'
+    fi
+  fi
+  mkdir -p "${dir}"
+  if ! chown -R "${host_uid}:${host_gid}" "${dir}" 2>/dev/null; then
+    if command -v docker >/dev/null 2>&1; then
+      docker run --rm -v "${dir}:/c:rw" alpine:3.20 \
+        chown -R "${host_uid}:${host_gid}" /c || true
+    fi
+  fi
+}
+
+# Wipe durable sccache. Author: kejiqing
+claw_linux_sccache_reset() {
+  local ci_cache="${1:-}"
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
     if [[ -z "${ci_cache}" ]]; then
       ci_cache="${CLAW_CI_CACHE_DIR:-${HOME}/claw-ci-cache/claw-code}"
     fi
-    echo "linux compile: reset sccache under ${ci_cache}/sccache"
-    mkdir -p "${ci_cache}/sccache"
-    # Root-owned files from prior container runs need docker chown/rm. Author: kejiqing
-    if ! rm -rf "${ci_cache}/sccache"/* "${ci_cache}/sccache"/.[!.]* 2>/dev/null; then
-      if command -v docker >/dev/null 2>&1; then
-        docker run --rm -v "${ci_cache}/sccache:/c:rw" alpine:3.20 \
-          sh -c 'rm -rf /c/* /c/.[!.]* /c/..?* 2>/dev/null || true'
-      fi
-    fi
-    mkdir -p "${ci_cache}/sccache"
-    if ! chown -R "${host_uid}:${host_gid}" "${ci_cache}/sccache" 2>/dev/null; then
-      if command -v docker >/dev/null 2>&1; then
-        docker run --rm -v "${ci_cache}/sccache:/c:rw" alpine:3.20 \
-          chown -R "${host_uid}:${host_gid}" /c || true
-      fi
-    fi
+    claw_linux_ci_cache_dir_reset "${ci_cache}/sccache"
     return 0
   fi
   echo "linux compile: reset docker volume claw-sccache"
@@ -94,6 +97,24 @@ claw_linux_sccache_reset() {
     docker run --rm -v claw-sccache:/c alpine:3.20 \
       sh -c 'rm -rf /c/* /c/.[!.]* /c/..?* 2>/dev/null || true'
   fi
+}
+
+# Standard recovery after rustc/gcc SIGSEGV or corrupt rmeta (TokenKind):
+# wipe registry + git + sccache so the next attempt cannot reuse half-written artifacts.
+# Author: kejiqing
+claw_linux_cargo_cache_reset() {
+  local ci_cache="${1:-}"
+  if [[ "${CLAW_LINUX_COMPILE_CI:-0}" != "1" ]]; then
+    echo "linux compile: cargo cache reset is CI-only" >&2
+    return 1
+  fi
+  if [[ -z "${ci_cache}" ]]; then
+    ci_cache="${CLAW_CI_CACHE_DIR:-${HOME}/claw-ci-cache/claw-code}"
+  fi
+  echo "linux compile: reset durable cargo caches under ${ci_cache}"
+  claw_linux_ci_cache_dir_reset "${ci_cache}/cargo-registry"
+  claw_linux_ci_cache_dir_reset "${ci_cache}/cargo-git"
+  claw_linux_ci_cache_dir_reset "${ci_cache}/sccache"
 }
 
 claw_linux_compile_release() {
@@ -143,26 +164,14 @@ claw_linux_compile_release() {
   fi
 
   local sccache_size="${CLAW_SCCACHE_CACHE_SIZE:-10G}"
-  # Home CI: cap crate parallelism (default ~nproc was crashing rustc under sccache).
-  # Disable release incremental on shared CI target dir (Cargo.toml sets incremental=true).
-  # sccache optional: CLAW_DISABLE_SCCACHE=1 skips RUSTC_WRAPPER.
-  # Linker: home29 true-compile SIGSEGV in both mold and binutils ld when linking
-  # proc-macros (utoipa-gen). CI default CLAW_LINUX_LINKER=lld (clang -fuse-ld=lld).
+  # CI defaults: keep release semantics (opt=3 via Cargo.toml). Only force incremental=0
+  # on the wiped-per-job target dir. Do NOT permanently lower opt-level / jobs / linker —
+  # those were panic knobs; corrupt cache → claw_linux_cargo_cache_reset + one retry.
   # Author: kejiqing
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
-    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
-    export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-8}"
-    export CARGO_PROFILE_RELEASE_OPT_LEVEL="${CARGO_PROFILE_RELEASE_OPT_LEVEL:-2}"
     export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
-    export CLAW_DISABLE_SCCACHE="${CLAW_DISABLE_SCCACHE:-1}"
-    export CLAW_LINUX_LINKER="${CLAW_LINUX_LINKER:-lld}"
   fi
-  # CI/home29: rustc MIR SIGSEGV on large crates; rustc help escalates 32→64→128. Author: kejiqing
-  if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
-    export RUST_MIN_STACK="${RUST_MIN_STACK:-268435456}"
-  else
-    export RUST_MIN_STACK="${RUST_MIN_STACK:-67108864}"
-  fi
+  export RUST_MIN_STACK="${RUST_MIN_STACK:-67108864}"
 
   local ci_cache=""
   local -a vol_args=()
@@ -178,7 +187,7 @@ claw_linux_compile_release() {
       -v "${ci_cache}/sccache:/root/.cache/sccache:Z"
     )
     echo "  ci cache: ${ci_cache}"
-    echo "  CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} RUST_MIN_STACK=${RUST_MIN_STACK} CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-} OPT_LEVEL=${CARGO_PROFILE_RELEASE_OPT_LEVEL:-} CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-} CLAW_DISABLE_SCCACHE=${CLAW_DISABLE_SCCACHE:-0} CLAW_LINUX_LINKER=${CLAW_LINUX_LINKER:-mold}"
+    echo "  CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-} RUST_MIN_STACK=${RUST_MIN_STACK} CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-} CLAW_LINUX_LINKER=${CLAW_LINUX_LINKER:-mold}"
   else
     vol_args=(
       -v claw-cargo-registry:/usr/local/cargo/registry
@@ -193,8 +202,10 @@ claw_linux_compile_release() {
     echo "linux compile: sccache disabled (CLAW_DISABLE_SCCACHE=1)"
   fi
 
-  # Explicit wipe: CLAW_SCCACHE_RESET=1. Author: kejiqing
-  if [[ "${use_sccache}" -eq 1 ]] \
+  # Explicit wipe. Author: kejiqing
+  if [[ "${CLAW_CARGO_CACHE_RESET:-0}" == "1" || "${CLAW_CARGO_CACHE_RESET:-}" == "true" ]]; then
+    claw_linux_cargo_cache_reset "${ci_cache}"
+  elif [[ "${use_sccache}" -eq 1 ]] \
     && { [[ "${CLAW_SCCACHE_RESET:-0}" == "1" || "${CLAW_SCCACHE_RESET:-}" == "true" ]]; }; then
     claw_linux_sccache_reset "${ci_cache}"
   fi
@@ -208,8 +219,6 @@ claw_linux_compile_release() {
   [[ -n "${CARGO_INCREMENTAL:-}" ]] && cargo_env_args+=(-e "CARGO_INCREMENTAL=${CARGO_INCREMENTAL}")
   [[ -n "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-}" ]] && \
     cargo_env_args+=(-e "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS}")
-  [[ -n "${CARGO_PROFILE_RELEASE_OPT_LEVEL:-}" ]] && \
-    cargo_env_args+=(-e "CARGO_PROFILE_RELEASE_OPT_LEVEL=${CARGO_PROFILE_RELEASE_OPT_LEVEL}")
 
   # utoipa-swagger-ui build.rs curls a zip at compile time (not our shell). Prefetch on the
   # host into the durable ci-cache and pass file:// so the container never hits the network.
@@ -263,16 +272,15 @@ claw_linux_compile_release() {
     vol_args+=(-v "${swagger_dir}:/swagger-ui:ro")
   fi
 
-  # CI default: one automatic sccache wipe + recompile after a failed attempt
-  # (rustc SIGSEGV/SIGBUS under stale cache). Disable with CLAW_SCCACHE_RETRY_ON_FAIL=0.
+  # CI: one automatic durable-cache wipe + recompile after failure (corrupt rmeta /
+  # half-written sccache after rustc SIGSEGV). Disable: CLAW_COMPILE_RETRY_ON_FAIL=0.
   # Author: kejiqing
   local compile_rc=0
   local compile_attempt=1
   local compile_max_attempts=1
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" \
-    && "${use_sccache}" -eq 1 \
-    && "${CLAW_SCCACHE_RETRY_ON_FAIL:-1}" != "0" \
-    && "${CLAW_SCCACHE_RETRY_ON_FAIL:-}" != "false" ]]; then
+    && "${CLAW_COMPILE_RETRY_ON_FAIL:-1}" != "0" \
+    && "${CLAW_COMPILE_RETRY_ON_FAIL:-}" != "false" ]]; then
     compile_max_attempts=2
   fi
 
@@ -411,10 +419,8 @@ claw_linux_compile_release() {
     break
   fi
   if [[ "${compile_attempt}" -lt "${compile_max_attempts}" ]]; then
-    echo "linux compile: attempt ${compile_attempt} failed (rc=${compile_rc}); reset sccache and retry once" >&2
-    if [[ "${use_sccache}" -eq 1 ]]; then
-      claw_linux_sccache_reset "${ci_cache}"
-    fi
+    echo "linux compile: attempt ${compile_attempt} failed (rc=${compile_rc}); reset cargo caches and retry once" >&2
+    claw_linux_cargo_cache_reset "${ci_cache}"
     # Drop partial target dir so retry does not link against broken objects. Author: kejiqing
     rm -rf "${out_root}" 2>/dev/null || true
     if [[ -d "${out_root}" ]] && command -v docker >/dev/null 2>&1; then

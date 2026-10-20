@@ -12,9 +12,9 @@ pipeline {
     string(name: 'GIT_TAG', defaultValue: '', description: 'Formal gitea tag vX.Y.Z (never release-v*). Empty when using GIT_REF.')
     string(name: 'GIT_REF', defaultValue: '', description: 'Fast path: branch or commit SHA on gitea (publishes sha-<12>). Empty when using GIT_TAG.')
     booleanParam(
-      name: 'SCCACHE_RESET',
+      name: 'CARGO_CACHE_RESET',
       defaultValue: false,
-      description: 'Wipe durable sccache (~/claw-ci-cache/claw-code/sccache) before compile. Compile also auto-resets once on failure.'
+      description: 'Wipe durable cargo-registry/git/sccache before compile. Compile also auto-wipes once on failure then retries.'
     )
   }
   triggers {
@@ -43,15 +43,8 @@ pipeline {
     CLAW_LINUX_COMPILE_PLATFORM = 'linux/amd64'
     TARGETARCH = 'amd64'
     CLAW_REPO = 'https://code.passionke.top/passionke/claw-code.git'
-    // Stabilize home29 release compiles (linker/rustc SIGSEGV under parallel pressure). Author: kejiqing
-    CARGO_BUILD_JOBS = '8'
-    RUST_MIN_STACK = '268435456'
-    CARGO_PROFILE_RELEASE_CODEGEN_UNITS = '8'
-    // home29: rustc/LLVM SIGSEGV under opt-level=3 (hyper/h2 GlobalsAA). Author: kejiqing
-    CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
+    // CI only: no incremental on wiped-per-job target. Keep Cargo release opt=3 / mold. Author: kejiqing
     CARGO_INCREMENTAL = '0'
-    CLAW_DISABLE_SCCACHE = '1'
-    CLAW_LINUX_LINKER = 'lld'
   }
   stages {
     stage('Checkout') {
@@ -124,11 +117,10 @@ RELEASE_TAG="$(cat .claw-release-tag)"
 export RELEASE_TAG
 export GIT_TAG="${RELEASE_TAG}"
 # booleanParam becomes "true"/"false" strings. Author: kejiqing
-if [[ "${SCCACHE_RESET:-false}" == "true" ]]; then
-  export CLAW_SCCACHE_RESET=1
-  echo "==> CLAW_SCCACHE_RESET=1 (Jenkins SCCACHE_RESET)"
+if [[ "${CARGO_CACHE_RESET:-false}" == "true" ]]; then
+  export CLAW_CARGO_CACHE_RESET=1
+  echo "==> CLAW_CARGO_CACHE_RESET=1 (Jenkins CARGO_CACHE_RESET)"
 fi
-echo "==> CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-} RUST_MIN_STACK=${RUST_MIN_STACK:-}"
 bash deploy/stack/lib/ci-publish-nora.sh
 '''
         }
