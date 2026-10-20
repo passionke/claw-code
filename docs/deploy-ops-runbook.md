@@ -49,6 +49,17 @@ Author: kejiqing
 Jenkins 入参：`GIT_TAG`（正式）与 `GIT_REF`（快线）二选一。  
 Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GIT_TAG`。
 
+**home29 编译稳态（`claw-code-nora`）：**
+
+| 旋钮 | 默认 | 作用 |
+|------|------|------|
+| `CARGO_BUILD_JOBS` | `4` | crate 级并行（避免默认≈16 路把 rustc 打崩） |
+| `RUST_MIN_STACK` | `33554432`（32MiB） | rustc 线程栈 |
+| `CLAW_SCCACHE_RESET=1` / Job 勾选 `SCCACHE_RESET` | 关 | 编译前清空 `~/claw-ci-cache/claw-code/sccache` |
+| `CLAW_SCCACHE_RETRY_ON_FAIL` | `1`（CI） | 首次失败后自动清 sccache 再编一次 |
+
+sccache 是编译结果缓存；清缓存不会改产物语义，只避免半残缓存干扰真编。
+
 用户日常**不**手搓 `up --release`（紧急除外）。  
 - 正式：[`home-neurogate-deploy.yml`](../.gitea/workflows/home-neurogate-deploy.yml)  
 - 21 启动：[`home-neurogate-up.yml`](../.gitea/workflows/home-neurogate-up.yml)（仍 `push: branches: [main]`）  

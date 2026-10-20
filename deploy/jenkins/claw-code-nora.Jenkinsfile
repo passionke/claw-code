@@ -11,6 +11,11 @@ pipeline {
   parameters {
     string(name: 'GIT_TAG', defaultValue: '', description: 'Formal gitea tag vX.Y.Z (never release-v*). Empty when using GIT_REF.')
     string(name: 'GIT_REF', defaultValue: '', description: 'Fast path: branch or commit SHA on gitea (publishes sha-<12>). Empty when using GIT_TAG.')
+    booleanParam(
+      name: 'SCCACHE_RESET',
+      defaultValue: false,
+      description: 'Wipe durable sccache (~/claw-ci-cache/claw-code/sccache) before compile. Compile also auto-resets once on failure.'
+    )
   }
   triggers {
     // Token must match Gitea hook …/generic-webhook-trigger/invoke?token=… Author: kejiqing
@@ -38,6 +43,9 @@ pipeline {
     CLAW_LINUX_COMPILE_PLATFORM = 'linux/amd64'
     TARGETARCH = 'amd64'
     CLAW_REPO = 'https://code.passionke.top/passionke/claw-code.git'
+    // Stabilize home29 release compiles (rustc SIGSEGV/SIGBUS under default ~nproc). Author: kejiqing
+    CARGO_BUILD_JOBS = '4'
+    RUST_MIN_STACK = '33554432'
   }
   stages {
     stage('Checkout') {
@@ -109,6 +117,12 @@ set -euo pipefail
 RELEASE_TAG="$(cat .claw-release-tag)"
 export RELEASE_TAG
 export GIT_TAG="${RELEASE_TAG}"
+# booleanParam becomes "true"/"false" strings. Author: kejiqing
+if [[ "${SCCACHE_RESET:-false}" == "true" ]]; then
+  export CLAW_SCCACHE_RESET=1
+  echo "==> CLAW_SCCACHE_RESET=1 (Jenkins SCCACHE_RESET)"
+fi
+echo "==> CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-} RUST_MIN_STACK=${RUST_MIN_STACK:-}"
 bash deploy/stack/lib/ci-publish-nora.sh
 '''
         }
