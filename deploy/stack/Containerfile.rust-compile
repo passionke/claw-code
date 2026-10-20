@@ -31,6 +31,12 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
 
 # Self-contained pinned toolchain: rust-toolchain.toml declares rustfmt+clippy.
 # Pre-install so linux-compile never triggers an online `rustup` channel sync.
-RUN rustup component add rustfmt clippy \
+# CN: static.rust-lang.org times out on home29 — use USTC rust-static. Author: kejiqing
+ARG CLAW_USE_CN_RUST_MIRROR=1
+RUN if [ "${CLAW_USE_CN_RUST_MIRROR}" = "1" ] || [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
+      export RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static \
+        RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup; \
+    fi; \
+    rustup component add rustfmt clippy \
     && rustfmt --version \
     && cargo clippy --version
