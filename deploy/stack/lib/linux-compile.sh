@@ -150,8 +150,8 @@ claw_linux_compile_release() {
   # proc-macros (utoipa-gen). CI default CLAW_LINUX_LINKER=lld (clang -fuse-ld=lld).
   # Author: kejiqing
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
-    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
-    export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
+    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+    export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-1}"
     export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
     export CLAW_DISABLE_SCCACHE="${CLAW_DISABLE_SCCACHE:-1}"
     export CLAW_LINUX_LINKER="${CLAW_LINUX_LINKER:-lld}"
