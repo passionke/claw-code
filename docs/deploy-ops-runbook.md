@@ -56,6 +56,7 @@ Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GI
 | release `opt-level` | **3**（Cargo.toml） | 不在 CI 里永久降到 2 |
 | linker | **mold**（`config.toml.example`） | 不在 CI 里永久改成 lld |
 | `CARGO_INCREMENTAL` | `0`（CI） | 每次 job 的 target 目录会被清，关掉 incremental |
+| `CLAW_DISABLE_SCCACHE` | **`1`（home 打包）** | Nora/`claw-code-nora` 不走 sccache，直调 rustc |
 | `CLAW_CARGO_CACHE_RESET=1` / Job 勾选 `CARGO_CACHE_RESET` | 关 | 编译前清空 `cargo-registry` + `cargo-git` + `sccache` |
 | `CLAW_COMPILE_RETRY_ON_FAIL` | `1`（CI） | **失败后自动清上述缓存再编一次**（标准恢复） |
 

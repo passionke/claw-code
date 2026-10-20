@@ -35,6 +35,12 @@ present in these images; worker init downloads only the engine selected for the 
 Project-level cpu/memory overrides use fingerprint-keyed **shared** templates (not one template per
 project). Normalize first (cpu ceil `1..=16`, memory ceil to 256 MiB, max 16384), then:
 
+**Product path (preferred):** Admin → Worker profile → 保存自定义 cpu/memory → **确保派生模板** → **强制重建**.
+Gateway `POST /v1/projects/{projId}/e2b-worker/ensure-resource-template` runs the same script and binds
+`resourceTemplate` (requires `CLAW_REPO_ROOT` + e2b env on the Gateway host).
+
+**CLI escape hatch only:**
+
 ```bash
 python3 deploy/e2b/ensure-worker-resource-template.py \
   --cpu 4 --memory-mb 8192 \
