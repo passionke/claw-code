@@ -1,7 +1,7 @@
 // Author: kejiqing
-// MANUAL all-in-one (Gateway + Playground). Prefer split Jobs:
-//   claw-code-gateway-nora / claw-code-playground-nora (webhook + path gate).
-// No GenericTrigger — avoids double-fire with split Jobs.
+// MANUAL all-in-one (Gateway + Playground). Prefer split Jobs started by
+// Gitea Actions: claw-code-gateway-nora / claw-code-playground-nora.
+// No GenericTrigger.
 pipeline {
   agent { label 'nora-pack' }
   options {

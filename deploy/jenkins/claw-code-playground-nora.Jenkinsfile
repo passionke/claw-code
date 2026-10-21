@@ -1,5 +1,6 @@
 // Author: kejiqing
-// Playground/Admin only → Nora + ACR. Path-gated on branch; always on v*. No cargo.
+// Playground/Admin only → Nora + ACR. Path-gated on GIT_REF; always on v*. No cargo.
+// Started by Gitea Actions (home-neurogate-*), not a repo webhook.
 pipeline {
   agent { label 'nora-pack' }
   options {
@@ -12,21 +13,6 @@ pipeline {
       name: 'FORCE_PUBLISH',
       defaultValue: false,
       description: 'Ignore path gate (always publish).'
-    )
-  }
-  triggers {
-    GenericTrigger(
-      genericVariables: [
-        [key: 'ref', value: '$.ref'],
-        [key: 'after', value: '$.after'],
-        [key: 'hook_sha', value: '$.sha']
-      ],
-      causeString: 'Gitea webhook $ref',
-      token: 'cab0cf265cdb70d5bc725a9cd69ac7c1ebadaaed',
-      printContributedVariables: true,
-      printPostContent: false,
-      regexpFilterText: '$ref',
-      regexpFilterExpression: 'refs/heads/.+|refs/tags/v[0-9]+[.][0-9]+[.][0-9]+|^v[0-9]+[.][0-9]+[.][0-9]+$'
     )
   }
   environment {

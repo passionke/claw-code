@@ -1,7 +1,7 @@
 # Author: kejiqing
-# Fast path: push/merge to main → 21 waits for Nora :latest (per-image) then up --release.
-# Heavy pack stays on Jenkins (claw-code-gateway-nora / claw-code-playground-nora).
-# Formal releases stay on v* + home-neurogate-deploy. Do NOT build/push images here.
+# push/merge main → Jenkins pack this SHA (path gate) → then up --release latest.
+# Does not compile on 21. No Gitea webhook (this workflow is the only starter).
+# Formal v* stays on home-neurogate-deploy.
 name: home-neurogate-up
 
 on:
@@ -16,12 +16,14 @@ concurrency:
 jobs:
   up:
     runs-on: neurogate
+    timeout-minutes: 180
     steps:
-      - name: Wait Nora latest images and up --release
+      - name: Jenkins pack this commit, then up --release latest
         shell: bash
         env:
           CLAW_DEPLOY_ROOT: /home/passionke/work/claw-code
           CLAW_IMAGE_PREFIX: nora.home.passionke.top/passionke
+          JENKINS_ENV_FILE: /home/passionke/.secrets/jenkins.env
           FULL_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -36,9 +38,20 @@ jobs:
           fi
           git checkout -f "${FULL_SHA}"
           git log -1 --oneline
-          test -f deploy/stack/lib/home-neurogate-deploy-from-tag.sh
-          chmod +x deploy/stack/lib/home-neurogate-deploy-from-tag.sh
+          chmod +x deploy/stack/lib/home-neurogate-pack-via-jenkins.sh \
+            deploy/stack/lib/home-neurogate-deploy-from-tag.sh
+          echo "==> pack then up commit=${FULL_SHA}"
+          set +e
+          bash deploy/stack/lib/home-neurogate-pack-via-jenkins.sh "GIT_REF=${FULL_SHA}"
+          RC=$?
+          set -e
+          if [[ "$RC" -eq 20 ]]; then
+            echo "==> path gate published nothing for this commit; skip up"
+            exit 0
+          fi
+          if [[ "$RC" -ne 0 ]]; then
+            exit "$RC"
+          fi
           export CLAW_NORA_IMAGE_WAIT_SECS="${CLAW_NORA_IMAGE_WAIT_SECS:-3600}"
           export CLAW_NORA_IMAGE_POLL_SECS="${CLAW_NORA_IMAGE_POLL_SECS:-30}"
-          echo "==> branch fast-up commit=${FULL_SHA} image_tag=latest"
           bash deploy/stack/lib/home-neurogate-deploy-from-tag.sh latest

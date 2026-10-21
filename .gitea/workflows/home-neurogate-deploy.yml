@@ -1,9 +1,7 @@
 # Author: kejiqing
-# Full auto on v* tag: Jenkins does heavy Nora publish; this job on 10.8.0.21 only
-# waits for images then gateway.sh up --release (never compiles / never pushes).
-# Branch fast path (no tag): push main → home-neurogate-up (sha-*).
-# Do NOT trigger Jenkins from here.
-# Newer v* cancels older deploy runs; group is separate so main-up cannot cancel a tag deploy.
+# v* tag: this job starts Jenkins gateway+playground (GIT_TAG), waits, then up --release.
+# Never compiles on 21. push main → home-neurogate-up (same pack-then-up, GIT_REF).
+# No Gitea webhook. Newer v* cancels older deploy runs; group is separate from main-up.
 name: home-neurogate-deploy
 
 on:
@@ -19,12 +17,14 @@ jobs:
   deploy:
     # Register act_runner on neurogate host (10.8.0.21) with label neurogate.
     runs-on: neurogate
+    timeout-minutes: 180
     steps:
-      - name: Validate tag and deploy
+      - name: Validate tag, Jenkins pack, then deploy
         shell: bash
         env:
           CLAW_DEPLOY_ROOT: /home/passionke/work/claw-code
           CLAW_IMAGE_PREFIX: nora.home.passionke.top/passionke
+          JENKINS_ENV_FILE: /home/passionke/.secrets/jenkins.env
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME:-}"
@@ -42,7 +42,7 @@ jobs:
             git fetch --tags --force origin
           fi
           git checkout -f "tags/${TAG}" 2>/dev/null || git checkout -f "${TAG}"
-          test -f deploy/stack/lib/home-neurogate-deploy-from-tag.sh
-          chmod +x deploy/stack/lib/home-neurogate-deploy-from-tag.sh
-          # Wait Nora (Jenkins hook) then up --release. Author: kejiqing
+          chmod +x deploy/stack/lib/home-neurogate-pack-via-jenkins.sh \
+            deploy/stack/lib/home-neurogate-deploy-from-tag.sh
+          bash deploy/stack/lib/home-neurogate-pack-via-jenkins.sh "GIT_TAG=${TAG}"
           bash deploy/stack/lib/home-neurogate-deploy-from-tag.sh "${TAG}"

@@ -1,6 +1,7 @@
 // Author: kejiqing
-// Gateway only → Nora + ACR. Path-gated on branch; always on v*.
-// Formal: GIT_TAG=vX.Y.Z. Fast: GIT_REF=<sha> → sha-<12> + :latest.
+// Gateway only → Nora + ACR. Path-gated on GIT_REF; always on v*.
+// Started by Gitea Actions (home-neurogate-*), not a repo webhook.
+// Formal: GIT_TAG=vX.Y.Z. Main: GIT_REF=<sha> → sha-<12> + :latest.
 pipeline {
   agent { label 'nora-pack' }
   options {
@@ -18,21 +19,6 @@ pipeline {
       name: 'FORCE_PUBLISH',
       defaultValue: false,
       description: 'Ignore path gate (always publish).'
-    )
-  }
-  triggers {
-    GenericTrigger(
-      genericVariables: [
-        [key: 'ref', value: '$.ref'],
-        [key: 'after', value: '$.after'],
-        [key: 'hook_sha', value: '$.sha']
-      ],
-      causeString: 'Gitea webhook $ref',
-      token: 'cab0cf265cdb70d5bc725a9cd69ac7c1ebadaaed',
-      printContributedVariables: true,
-      printPostContent: false,
-      regexpFilterText: '$ref',
-      regexpFilterExpression: 'refs/heads/.+|refs/tags/v[0-9]+[.][0-9]+[.][0-9]+|^v[0-9]+[.][0-9]+[.][0-9]+$'
     )
   }
   environment {

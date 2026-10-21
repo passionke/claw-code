@@ -42,20 +42,19 @@ Author: kejiqing
 ```text
 正式线（v* tag）:
   git tag vX.Y.Z && git push gitea vX.Y.Z
-  → gateway + playground Jobs GIT_TAG=vX.Y.Z → Nora :vX.Y.Z（各包只推正式 tag）
-  → Actions home-neurogate-deploy → up --release vX.Y.Z
+  → Actions home-neurogate-deploy
+  → Jenkins gateway + playground GIT_TAG=vX.Y.Z → Nora :vX.Y.Z
+  → up --release vX.Y.Z
 
-快线打包（任意分支推送，不必合 main）:
-  git push gitea <branch>
-  → 两 Job path 门禁；仅变更侧 → Nora :sha-<12> + :latest
-  （只打 Nora；不自动上 neurogate）
-
-快线启动（合入 / 推 main 后）:
-  → Actions home-neurogate-up → up --release latest（各包 :latest）
+合入 main:
+  → Actions home-neurogate-up
+  → Jenkins GIT_REF=<sha>（path 门禁；变更侧 Nora :sha-<12> + :latest）
+  → 至少一侧打出 sha 镜像后 up --release latest
+  → 两侧都跳过则不 up
 ```
 
-Jenkins 入参：`GIT_TAG`（正式）与 `GIT_REF`（快线）二选一。  
-Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GIT_TAG`（两 Job 同 token）。
+Jenkins 入参：`GIT_TAG`（正式）与 `GIT_REF`（main 这次提交）二选一。  
+由 Actions `home-neurogate-pack-via-jenkins.sh` 调 Jenkins CLI 并等待；**不要**再配 Gitea webhook。
 
 **home29 / CI 编译（gateway Job）— 单一默认路径：**
 
@@ -72,8 +71,8 @@ Gitea hook / GenericTrigger：任意 `refs/heads/*` → `GIT_REF`；`v*` → `GI
 
 用户日常**不**手搓 `up --release`（紧急除外）。  
 - 正式：[`home-neurogate-deploy.yml`](../.gitea/workflows/home-neurogate-deploy.yml)  
-- 21 启动：[`home-neurogate-up.yml`](../.gitea/workflows/home-neurogate-up.yml)（仍 `push: branches: [main]`）  
-- 脚本：[`home-neurogate-deploy-from-tag.sh`](../deploy/stack/lib/home-neurogate-deploy-from-tag.sh)（接受 `v*` 或 `latest`）  
+- 21 启动：[`home-neurogate-up.yml`](../.gitea/workflows/home-neurogate-up.yml)（`push: branches: [main]`，先 Jenkins 再 up）  
+- 脚本：[`home-neurogate-pack-via-jenkins.sh`](../deploy/stack/lib/home-neurogate-pack-via-jenkins.sh) 然后 [`home-neurogate-deploy-from-tag.sh`](../deploy/stack/lib/home-neurogate-deploy-from-tag.sh)（`v*` 或 `latest`）  
 - runner：[`gitea-act-runner-neurogate.md`](../deploy/docs/gitea-act-runner-neurogate.md)  
 - 队列：`up` / `deploy` **各自** `concurrency` + `cancel-in-progress`（新 run 取消同组旧排队/在跑；两组互不掐）
 

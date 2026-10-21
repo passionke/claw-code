@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Wait for Nora Gateway images for TAG, then up --release on neurogate host.
-# Does NOT trigger Jenkins (hook already builds). Author: kejiqing
+# Caller (home-neurogate-*.yml) already waited for Jenkins. Author: kejiqing
 # TAG: formal vX.Y.Z | fast :latest (per-image pin after path-gated Jobs).
 set -euo pipefail
 
@@ -46,7 +46,7 @@ image_ready() {
   docker manifest inspect "$ref" >/dev/null 2>&1
 }
 
-echo "==> wait Nora images (timeout=${WAIT_SECS}s) — Jenkins hook must publish gateway/playground Jobs"
+echo "==> wait Nora images (timeout=${WAIT_SECS}s) — Jenkins pack for this tag must already be done or in flight"
 deadline=$((SECONDS + WAIT_SECS))
 while true; do
   missing=()

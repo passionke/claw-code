@@ -6,10 +6,10 @@ Workflows on this runner (label **`neurogate`**, host `10.8.0.21`):
 
 | Workflow | Trigger | Role |
 |----------|---------|------|
-| [`home-neurogate-deploy.yml`](../../.gitea/workflows/home-neurogate-deploy.yml) | push `v*` | wait Nora (Jenkins publish) → `up --release` |
-| [`home-neurogate-up.yml`](../../.gitea/workflows/home-neurogate-up.yml) | push `main` | wait Nora `:latest` → `up --release`（打包由 gateway/playground Jobs path 门禁） |
+| [`home-neurogate-deploy.yml`](../../.gitea/workflows/home-neurogate-deploy.yml) | push `v*` | Jenkins `GIT_TAG` → wait Nora → `up --release` |
+| [`home-neurogate-up.yml`](../../.gitea/workflows/home-neurogate-up.yml) | push `main` | Jenkins `GIT_REF` (path gate) → `up --release latest` |
 
-Both paths **never** compile or push images on 21.
+Both paths **never** compile or push images on 21. Pack is Jenkins, started by these workflows (`~/.secrets/jenkins.env`). No repo webhook.
 
 ## One-time register
 

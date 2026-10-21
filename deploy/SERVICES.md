@@ -4,10 +4,10 @@ Author: kejiqing
 
 **Home 升级闭环（发 → 绑 → 用）：** [`docs/deploy-ops-runbook.md`](../docs/deploy-ops-runbook.md) §H。  
 **Home git tag：** `code.passionke.top` 只用 **`vX.Y.Z`**；GitHub 用 `release-v*`——禁止混打。  
-**Gateway 自动线：**  
-- **正式**推 `v*` → Jenkins gateway + playground Jobs（`GIT_TAG`）→ Nora → Actions `home-neurogate-deploy` 在 21 `up --release`  
-- **快线打包**推任意分支 → 两 Job path 门禁 → 变更侧 Nora `:sha-<12>` + `:latest`（不必合 main）  
-- **快线启动**推/合入 `main` → Actions `home-neurogate-up` 在 21 只启动（`:latest`；不打包）
+**Gateway 自动线（Actions 触发 Jenkins，先打包再启动）：**  
+- **正式**推 `v*` → Actions `home-neurogate-deploy` 调 Jenkins `GIT_TAG` → Nora `:vX.Y.Z` → `up --release`  
+- **合入 main** → Actions `home-neurogate-up` 调 Jenkins `GIT_REF=<sha>`（path 门禁）→ 有 `:sha-<12>` 才 `up --release latest`  
+- 不要再挂 Gitea webhook（与 Actions 双点火）
 
 The release architecture has independent layers. Publishing one layer must not invoke the others.
 
@@ -15,7 +15,7 @@ The release architecture has independent layers. Publishing one layer must not i
 
 - Scope: `http-gateway-rs` + e2b helper scripts baked into the gateway image.
 - Private Jenkins entry: `deploy/stack/lib/ci-publish-gateway-nora.sh`.
-- Jenkins Pipeline: `deploy/jenkins/claw-code-gateway-nora.Jenkinsfile` (webhook + path gate).
+- Jenkins Pipeline: `deploy/jenkins/claw-code-gateway-nora.Jenkinsfile` (Actions `GIT_REF`/`GIT_TAG` + path gate).
 - Output: `claw-code` only → **Nora** + **ACR**.
 - Formal `v*`: push `:vX.Y.Z` only. Fast `sha-*`: push `:sha-*` + `:latest`.
 
@@ -23,7 +23,7 @@ The release architecture has independent layers. Publishing one layer must not i
 
 - Scope: Vite Admin SPA + async playground Python server.
 - Private Jenkins entry: `deploy/stack/lib/ci-publish-playground-nora.sh` (**no cargo**).
-- Jenkins Pipeline: `deploy/jenkins/claw-code-playground-nora.Jenkinsfile` (webhook + path gate).
+- Jenkins Pipeline: `deploy/jenkins/claw-code-playground-nora.Jenkinsfile` (Actions `GIT_REF`/`GIT_TAG` + path gate).
 - Output: `claw-gateway-playground` only → **Nora** + **ACR**.
 - Same tag rules as Gateway.
 
