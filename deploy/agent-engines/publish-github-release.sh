@@ -35,14 +35,18 @@ BODY="$(mktemp)"
 trap 'rm -f "$BODY"' EXIT
 CODE="$(curl -sS -o "$BODY" -w '%{http_code}' "${AUTH[@]}" "${API}/releases/tags/${TAG}" || true)"
 if [[ "$CODE" == "404" ]]; then
+  # A published release on this repo becomes immutable and then rejects assets.
+  # Create a draft, upload, and publish only after the asset is attached.
+  # Author: kejiqing
   CODE="$(curl -sS -o "$BODY" -w '%{http_code}' "${AUTH[@]}" -X POST "${API}/releases" \
-    -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"draft\":false,\"prerelease\":false}" || true)"
+    -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"draft\":true,\"prerelease\":false}" || true)"
 fi
 [[ "$CODE" == "200" || "$CODE" == "201" ]] || {
   echo "github release ${TAG} failed HTTP ${CODE}" >&2
   cat "$BODY" >&2
   exit 1
 }
+IS_DRAFT="$(python3 -c 'import json,sys; print("1" if json.load(open(sys.argv[1], encoding="utf-8")).get("draft") else "0")' "$BODY")"
 
 python3 - "$BODY" "$ASSET" <<'PY' >"${BODY}.ids"
 import json, sys
@@ -72,6 +76,15 @@ UPLOAD_CODE="$(curl -sS -o "$BODY" -w '%{http_code}' \
   cat "$BODY" >&2
   exit 1
 }
+if [[ "$IS_DRAFT" == "1" ]]; then
+  PUBLISH_CODE="$(curl -sS -o "$BODY" -w '%{http_code}' "${AUTH[@]}" -X PATCH "${API}/releases/${RELEASE_ID}" \
+    -d '{"draft":false}' || true)"
+  [[ "$PUBLISH_CODE" == "200" ]] || {
+    echo "publish draft ${TAG} failed HTTP ${PUBLISH_CODE}" >&2
+    cat "$BODY" >&2
+    exit 1
+  }
+fi
 
 echo "ref=https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
 echo "digest=${DIGEST}"

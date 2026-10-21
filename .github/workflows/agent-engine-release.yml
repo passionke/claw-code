@@ -52,7 +52,7 @@ jobs:
 
       - name: Upload tar to GitHub Release
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.CLAW_CODE_RELEASE_TOKEN }}
           GH_REPO: passionke/claw-code
           RELEASE_TAG: ${{ github.ref_name }}
           TAR_PATH: ${{ steps.tar.outputs.path }}
