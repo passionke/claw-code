@@ -1,52 +1,14 @@
-//! Interactive session backends (e2b sandbox only). Author: kejiqing
+//! e2b runtime helpers historically named "interactive" (NAS / Observe / worker tap).
+//! REPL lease API (OVS / web CLI) removed. Author: kejiqing
 
-mod e2b_interactive;
-mod e2b_interactive_materialize;
 mod e2b_nas_api_singleton;
 mod e2b_worker_tap;
 
-pub use e2b_interactive_materialize::{
-    build_e2b_guest_writes_script, build_proj_bake_script, build_session_attach_script,
-};
 pub use e2b_nas_api_singleton::E2bNasApiSingleton;
 pub use e2b_worker_tap::{
     e2b_worker_llm_env, e2b_worker_solve_route, load_e2b_observe_proxy_base_url,
     E2B_WORKER_TAP_PLACEHOLDER_API_KEY,
 };
-
-/// Admin `gateway_turns.pool_id` for interactive turns (distinct from solve `e2b-cloud`). Author: kejiqing
-pub const E2B_INTERACTIVE_POOL_ID: &str = "e2b-interactive";
-
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-
-pub use e2b_interactive::E2bInteractiveBackend;
-
-/// e2b is the only supported interactive backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InteractiveBackendKind {
-    E2b,
-}
-
-/// Input for starting an interactive REPL worker.
-#[derive(Debug, Clone)]
-pub struct InteractiveSessionSpec {
-    pub session_id: String,
-    /// Directory segment under `proj_N/sessions/` (same as DB `session_home` tail).
-    pub session_segment: String,
-    pub proj_id: i64,
-    pub session_home: PathBuf,
-    pub proj_home: PathBuf,
-    pub llm_env: std::collections::BTreeMap<String, String>,
-    /// FC: session attach (LLM env on `/claw_host_root`); project config on `/claw_ds`.
-    pub e2b_session_attach_script: Option<String>,
-    /// e2b cold fallback: project bake when proj worker unavailable.
-    pub e2b_proj_bake_script: Option<String>,
-}
 
 /// Interactive backend is always e2b (legacy `CLAW_INTERACTIVE_BACKEND` removed).
 #[must_use]
@@ -78,45 +40,4 @@ pub fn e2b_observe_is_enabled() -> bool {
                 .as_deref(),
             Some("0" | "false" | "no" | "off")
         )
-}
-
-/// Active interactive worker lease (e2b sandbox).
-#[derive(Debug, Clone)]
-pub struct InteractiveLease {
-    pub backend: InteractiveBackendKind,
-    pub slot_index: usize,
-    pub worker_name: Option<String>,
-    pub pool_id: String,
-    pub e2b_sandbox_id: Option<String>,
-    /// Proj worker lease marker (`e2b_warm_slot` legacy name); `None` = cold sandbox.
-    pub e2b_warm_slot: Option<usize>,
-    /// Project id for [`E2bProjWorkerRegistry`] release.
-    pub e2b_warm_proj_id: Option<i64>,
-    /// Session directory segment under `proj_N/sessions` (symlink name).
-    pub e2b_session_segment: Option<String>,
-    /// NAS worker root id (`proj_N/workers/{id}` bind target).
-    pub e2b_worker_id: Option<String>,
-    /// Sandbox traffic domain (`{sandboxId}.{domain}` suffix); rebuilds [`E2bSandboxHandle`]
-    /// for exec when the worker registry lease is gone. Author: kejiqing
-    pub e2b_sandbox_domain: Option<String>,
-    /// e2b traffic proxy token (`X-Access-Token`).
-    pub e2b_traffic_access_token: Option<String>,
-}
-
-#[async_trait]
-pub trait InteractiveSandboxBackend: Send + Sync {
-    async fn start_session(&self, spec: InteractiveSessionSpec)
-        -> Result<InteractiveLease, String>;
-    async fn stop_session(&self, lease: &InteractiveLease) -> Result<(), String>;
-}
-
-/// Construct e2b interactive backend (prefer [`super::clients::PoolClients::e2b_interactive`]).
-#[must_use]
-pub fn interactive_backend_from_env(
-    pool_clients: &super::clients::PoolClients,
-    _e2b_client: Option<Arc<claw_e2b_sandbox_client::E2bSandboxClient>>,
-    _pool_id: String,
-    _nas_layout: crate::pool::NasLayoutBackend,
-) -> Arc<dyn InteractiveSandboxBackend> {
-    pool_clients.e2b_interactive_arc()
 }

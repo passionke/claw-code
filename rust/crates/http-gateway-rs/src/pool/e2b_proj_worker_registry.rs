@@ -1398,12 +1398,6 @@ impl E2bProjWorkerRegistry {
         ))
     }
 
-    /// Relaxed interactive: slot 0 only.
-    pub async fn acquire(&self, proj_id: i64) -> Result<(E2bSandboxHandle, String), String> {
-        let (handle, worker_id, _) = self.acquire_for_solve(proj_id, "").await?;
-        Ok((handle, worker_id))
-    }
-
     async fn ensure_warm_worker_running(
         &self,
         proj_id: i64,

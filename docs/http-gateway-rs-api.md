@@ -304,19 +304,13 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
   - 落盘（activate 后）：`proj_<projId>/home/skills/<skillName>/` 整树
   - 返回：`projId`、`skillName`、`skillPath`、`created`、`updated`、`bytesWritten`、`workDir`
 
-## Interactive worker（OVS `agent/ws`）
+## Interactive worker（已移除）
 
-交互式会话以 **宿主机磁盘目录** `proj_{projId}/sessions/{sessionId}/` 为真相（bind 到 worker `/claw_host_root`）。**不走** PG `workspace_tar_gz` 的 `materialize_in` / `readback_out`（与 `solve_async` tmpfs+tar 双轨）。
-
-- `GET /v1/sessions/{session_id}/agent/ws?projId=`
-  - WebSocket：OVS `@claw` 对话通道；网关内部 `ensure_terminal_active` 保证该 `(projId, sessionId)` 已租到一个 interactive worker（NAS 会话目录 + `.claw/terminal-llm.env` attach），随后每轮 prompt 走 `claw gateway-interactive-once` exec。
-  - **沙箱内不再常驻任何终端服务**：worker 身份（`sandboxId` + `sandboxDomain` + traffic token）由 lease 直接携带，不从代理 Host 反解。
-
-`/v1/sessions/{session_id}/terminal/*` 一组 HTTP 路由（`start` / `stop` / `reattach` / `ws`）已随 ttyd 一起移除。
+OVS `@claw` / web CLI 长驻 REPL（`GET …/agent/ws`、`/terminal/*`、`claw gateway-interactive-once`）已全面退出。现行执行路径仅为 **solve / solve_async**（e2b worker + `gateway-solve-once`）。历史取证见 `docs/ovs-chat/`（文首 ARCHIVED）。
 
 ## Session workspace (read-only sidebar)
 
-读宿主机 `CLAW_WORK_ROOT/proj_{projId}/sessions/{sessionId}/`（与 interactive bind 同路径）。
+读宿主机 `CLAW_WORK_ROOT/proj_{projId}/sessions/{sessionId}/`（与 solve worker bind 同路径）。
 
 - `POST /v1/sessions/{session_id}/files?projId=`
   - 用途：上传用户附件到该会话 `uploads/`（NAS 供 solve 读取 + 可选 OSS 双写长周期持久化）。须先 `POST /v1/start`（或已有 session）。

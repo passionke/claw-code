@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::{
     claw_tap_cluster_state, gateway_cluster_bootstrap, gateway_llm_config_sync, gateway_logging,
-    pool, session_db, session_terminal_api,
+    pool, session_db,
 };
 use gateway_solve_turn::ReportPolishDeepseek;
 use tokio::sync::Mutex;
@@ -354,7 +354,6 @@ pub async fn run() {
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
         llm_runtime,
         claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
-        terminal_registry: session_terminal_api::TerminalSessionRegistry::new(),
         nas_api,
         gateway_identity: Arc::clone(&gateway_identity),
         inbox_capacity: Arc::new(
