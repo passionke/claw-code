@@ -41,10 +41,10 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
         -r /tmp/requirements-e2b-sdk.txt; \
     else \
       pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements-e2b-sdk.txt; \
-    fi \
-    && chmod +x /app/deploy/e2b/e2b_exec.py
-# Artifact upload may drop +x; enforce before ENTRYPOINT. kejiqing
-RUN chmod +x /usr/local/bin/http-gateway-rs
+    fi
+# Builder umask (0077 on the pack runner) strips group/other read at COPY.
+# Gateway is uid 1000; python opens these files, so modes are fixed here. Author: kejiqing
+RUN chmod -R a+rX /app/deploy/e2b /app/scripts /app/docs /usr/local/bin/http-gateway-rs
 # Host pool: claw-sandbox from linux-compile (.linux-artifacts/release/claw-sandbox), not in gateway image. kejiqing
 
 ENV CLAW_HTTP_ADDR=0.0.0.0:8080

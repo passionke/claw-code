@@ -36,11 +36,16 @@ impl E2bSandboxConfig {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| "https://api.cn-beijing.e2b.fc.aliyuncs.com".into());
-        let domain = std::env::var("CLAW_E2B_DOMAIN")
-            .ok()
-            .or_else(|| std::env::var("E2B_DOMAIN").ok())
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| "cn-beijing.e2b.fc.aliyuncs.com".into());
+        // No Aliyun FC default. Missing domain must not become a silent wrong host. Author: kejiqing
+        let domain = require_sandbox_domain(
+            std::env::var("CLAW_E2B_DOMAIN")
+                .ok()
+                .or_else(|| std::env::var("E2B_DOMAIN").ok()),
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("claw-e2b-sandbox-client: {e}");
+            std::process::exit(1);
+        });
         let sandbox_url = std::env::var("CLAW_E2B_SANDBOX_URL")
             .ok()
             .or_else(|| std::env::var("E2B_SANDBOX_URL").ok())
@@ -100,6 +105,13 @@ fn default_exec_helper_path() -> PathBuf {
     PathBuf::from("deploy/e2b/e2b_exec.py")
 }
 
+/// `CLAW_E2B_DOMAIN` / `E2B_DOMAIN`. Empty is an error; there is no baked-in host. Author: kejiqing
+fn require_sandbox_domain(raw: Option<String>) -> Result<String, &'static str> {
+    raw.map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or("CLAW_E2B_DOMAIN is required")
+}
+
 fn warn_if_legacy_nas_volume_name() {
     if std::env::var("CLAW_E2B_NAS_VOLUME_NAME")
         .ok()
@@ -120,5 +132,18 @@ mod tests {
     fn default_exec_helper_relative_to_repo() {
         let p = default_exec_helper_path();
         assert!(p.to_string_lossy().contains("e2b_exec.py"));
+    }
+
+    #[test]
+    fn sandbox_domain_has_no_default_host() {
+        assert_eq!(
+            require_sandbox_domain(None),
+            Err("CLAW_E2B_DOMAIN is required")
+        );
+        assert!(require_sandbox_domain(Some("  ".into())).is_err());
+        assert_eq!(
+            require_sandbox_domain(Some(" bitkindle.com ".into())).unwrap(),
+            "bitkindle.com"
+        );
     }
 }

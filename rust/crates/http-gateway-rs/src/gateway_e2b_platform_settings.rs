@@ -47,7 +47,7 @@ fn e2b_api_url_from_env() -> String {
 fn e2b_domain_from_env() -> String {
     env_trim("CLAW_E2B_DOMAIN")
         .or_else(|| env_trim("E2B_DOMAIN"))
-        .unwrap_or_else(|| "cn-beijing.e2b.fc.aliyuncs.com".into())
+        .unwrap_or_default()
 }
 
 fn e2b_sandbox_url_from_env() -> Option<String> {
@@ -71,16 +71,17 @@ fn sandbox_timeout_secs_from_env() -> u64 {
 #[must_use]
 pub fn e2b_platform_settings_public() -> E2bPlatformSettingsPublic {
     let e2b_api_url = e2b_api_url_from_env();
+    let e2b_domain = e2b_domain_from_env();
     let api_key_set = e2b_api_key_set();
     E2bPlatformSettingsPublic {
         read_only: true,
         e2b_sandbox_url: e2b_sandbox_url_from_env(),
-        e2b_domain: e2b_domain_from_env(),
+        e2b_domain,
         worker_strict_template: e2b_worker_template_from_env(),
         worker_relaxed_template: e2b_worker_relaxed_template_from_env(),
         sandbox_timeout_secs: sandbox_timeout_secs_from_env(),
         relaxed_worker_allowed: relaxed_worker_allowed_from_env(),
-        configured: api_key_set && !e2b_api_url.is_empty(),
+        configured: api_key_set && !e2b_api_url.is_empty() && !e2b_domain.is_empty(),
         api_key_set,
         e2b_api_url,
     }

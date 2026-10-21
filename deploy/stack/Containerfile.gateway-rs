@@ -60,6 +60,8 @@ COPY deploy/e2b/e2b_template_build.py /app/deploy/e2b/
 COPY deploy/e2b/e2b_template_registry.py /app/deploy/e2b/
 COPY scripts/mind-kb/ /app/scripts/mind-kb/
 COPY docs/gpos-assistant-prompt-content.md /app/docs/
+# Builder umask must not decide readability. Gateway uid 1000 opens these files. Author: kejiqing
+RUN chmod -R a+rX /app/deploy/e2b /app/scripts /app/docs /usr/local/bin/http-gateway-rs /usr/local/bin/claw
 
 ENV CLAW_HTTP_ADDR=0.0.0.0:8080
 ENV CLAW_WORK_ROOT=/var/lib/claw/workspace
