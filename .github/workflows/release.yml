@@ -1,3 +1,5 @@
+# Bare claw binaries only. Engine tar is agent-engine-release.yml on release-v*.
+# Do not attach neuro-harness-acp here. Author: kejiqing
 name: Release binaries
 
 on:

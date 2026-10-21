@@ -42,6 +42,10 @@ Manual all-in-one (no webhook): `claw-code-nora` → `ci-publish-nora.sh` (gatew
   (protocol binaries; no Agent engines).
 - e2b register: layer → push `debian-bookworm-claw-worker*` →
   standard `Template.build(from_image=…)`. Does **not** write Gateway PG.
+- Home `v*` registers templates on `e2b.home` from Nora. `release-v*` pushes the
+  same image names to **ACR only** (`.github/workflows/e2b-worker-protocol.yml`,
+  `CLAW_E2B_SKIP_TEMPLATE_REGISTER=1`). The target site registers with
+  `deploy/e2b/bootstrap-templates-from-ci-tag.sh`.
 - Bind `templateId` in Admin → e2b core components (runtime config).
 
 ## 3. Agent engines (+ neuro-harness-acp)
@@ -58,6 +62,12 @@ Manual all-in-one (no webhook): `claw-code-nora` → `ci-publish-nora.sh` (gatew
   `https://nora.home.passionke.top/raw/claw-agent-engines/opencode-1.18.34-amd64.tar.gz`
 - A tar extracts at `/` and may only contain paths under `usr/local/`.
 - Credential: Jenkins `nora-deployer` as `RAW_USERNAME` / `RAW_PASSWORD`.
+- Public `release-v*` copies **neuro-harness-acp** only:
+  `.github/workflows/agent-engine-release.yml` builds the tar once and
+  `deploy/agent-engines/publish-github-release.sh` uploads it to
+  `https://github.com/passionke/claw-code/releases/download/release-vX.Y.Z/neuro-harness-acp-X.Y.Z-amd64.tar.gz`.
+  The home `v*` engine Job does not call that upload. `.github/workflows/release.yml`
+  still builds a bare `claw` binary and is not this tar.
 
 Gateway settings store the dynamic Agent engine map (`opencode`, `appserver`, `claw`):
 
@@ -92,7 +102,9 @@ Solve path remains `claw gateway-solve-once`.
 protocol Job ──publishes──> Nora images + e2b Template.build
 Gateway Job ──publishes──> claw-code
 Playground Job ──publishes──> claw-gateway-playground
-neuro-harness-acp / agent-engines ──publishes──> Nora raw
+neuro-harness-acp / agent-engines ──v*──> Nora raw
+neuro-harness-acp ──release-v*──> GitHub Release (passionke/claw-code)
+protocol release-v* ──publishes──> ACR images (no template register)
 Gateway/Admin ──binds──> e2bWorker.templateId (PG)
 e2b Worker ──hosts──> one selected Agent engine (raw), including claw
 Gateway/Admin ──configures──> agentEngines map

@@ -1,0 +1,65 @@
+# release-v* Agent engine tar → public GitHub Release. Author: kejiqing
+# One build via neuro-harness-acp/build.sh, then upload that tar.
+# Home v* Jenkins stays on Nora raw and does not call this.
+# Not .github/workflows/release.yml (that compiles a bare claw binary).
+name: agent-engine-release
+
+on:
+  push:
+    tags:
+      - "release-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-tar:
+    runs-on: [self-hosted, home-ubt]
+    timeout-minutes: 360
+    steps:
+      - name: Self-hosted workspace prep
+        run: |
+          set -euo pipefail
+          docker run --rm -v "${GITHUB_WORKSPACE}:/w:rw" alpine:3.20 \
+            chown -R "$(id -u):$(id -g)" /w
+
+      - uses: actions/checkout@v4
+
+      - name: Verify release boundaries
+        run: bash deploy/verify-release-boundaries.sh
+
+      - name: Build neuro-harness-acp tar
+        id: tar
+        env:
+          REGION: china
+          TARGETARCH: amd64
+          CLAW_DISABLE_SCCACHE: "1"
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VER="${TAG#release-v}"
+          [[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "release tag must be release-vX.Y.Z, got: ${TAG}" >&2
+            exit 1
+          }
+          export NEURO_HARNESS_ACP_VERSION="$VER"
+          chmod +x deploy/agent-engines/neuro-harness-acp/build.sh \
+            deploy/agent-engines/publish-github-release.sh
+          TAR="$(bash deploy/agent-engines/neuro-harness-acp/build.sh | tail -n 1)"
+          TAR="${TAR//$'\r'/}"
+          [[ -f "$TAR" ]] || { echo "build produced no tar: ${TAR:-<empty>}" >&2; exit 1; }
+          echo "path=${TAR}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload tar to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: passionke/claw-code
+          RELEASE_TAG: ${{ github.ref_name }}
+          TAR_PATH: ${{ steps.tar.outputs.path }}
+        run: bash deploy/agent-engines/publish-github-release.sh "$TAR_PATH" "$RELEASE_TAG"
+
+      - name: Self-hosted workspace cleanup
+        if: always()
+        run: |
+          rm -rf deploy/stack/.linux-artifacts deploy/agent-engines/dist
+          bash deploy/stack/lib/ci-home-ubt-post-image-cleanup.sh

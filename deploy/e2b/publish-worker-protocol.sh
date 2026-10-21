@@ -115,6 +115,15 @@ docker build \
 "$ROOT/deploy/stack/lib/ci-push-acr-skopeo.sh" \
   "${E2B_RELAXED}:${TAG}" "${E2B_RELAXED}:${TAG}" "${E2B_RELAXED}:sha-${SHA12}"
 
+# release-v* pushes images only. Each site registers templates with
+# bootstrap-templates-from-ci-tag.sh. Home v* keeps registering via ci-publish-nora.sh.
+# Author: kejiqing
+if [[ "${CLAW_E2B_SKIP_TEMPLATE_REGISTER:-}" == "1" ]]; then
+  echo "published e2b Worker protocol images only ${TAG}: ${STRICT}, ${RELAXED} → ${E2B_STRICT}, ${E2B_RELAXED}"
+  echo "template register skipped (CLAW_E2B_SKIP_TEMPLATE_REGISTER=1)"
+  exit 0
+fi
+
 export CLAW_E2B_TEMPLATE_BUILD_STRATEGY=from_image
 export CLAW_E2B_WORKER_IMAGE="${STRICT}:${TAG}"
 export CLAW_E2B_TEMPLATE_FROM_IMAGE="${STRICT}:${TAG}"

@@ -1,6 +1,12 @@
 name: e2b-worker-protocol
 
+# release-v* pushes protocol images to ACR and does not register a site's e2b.
+# Home v* stays on Jenkins ci-publish-nora.sh (Nora + home e2b register).
+# Author: kejiqing
 on:
+  push:
+    tags:
+      - "release-v*"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -34,6 +40,7 @@ jobs:
         run: bash deploy/verify-release-boundaries.sh
 
       - name: Prepare pinned e2b SDK
+        if: github.event_name == 'workflow_dispatch'
         env:
           REGION: ${{ inputs.region }}
         run: |
@@ -50,8 +57,9 @@ jobs:
 
       - name: Publish e2b Worker protocol
         env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          REGION: ${{ inputs.region }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          REGION: ${{ github.event_name == 'workflow_dispatch' && inputs.region || 'china' }}
+          CLAW_E2B_SKIP_TEMPLATE_REGISTER: ${{ github.event_name == 'push' && '1' || '0' }}
           CLAW_IMAGE_PREFIX: ${{ vars.ACR_REGISTRY }}
           CLAW_REGISTRY_USER: ${{ secrets.ACR_USERNAME }}
           CLAW_REGISTRY_PASSWORD: ${{ secrets.ACR_PASSWORD }}

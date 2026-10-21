@@ -131,6 +131,36 @@ CLAW_IMAGE_PREFIX=nora.home.passionke.top/passionke \
 
 ---
 
+## E. 外部 `release-v*`（contabo-sg 验证）
+
+`v*` 只走 home。`release-v*` 的镜像在 ACR，neuro-harness-acp tar 在 `passionke/claw-code` 的 GitHub Release。550w 不收这些包。
+
+contabo-sg 不编译。环境用 [`deploy/stack/env.contabo-sg.example`](../deploy/stack/env.contabo-sg.example)，不要抄 home 的 `.env`。e2bserver 进程不由下面的命令启动。
+
+```bash
+cp deploy/stack/env.contabo-sg.example .env
+# 填写 CLAW_E2B_API_KEY，并把 postgres 密码从 change-me 换成该机自己的
+
+CLAW_E2B_WORKER_BASE_TAG=release-vX.Y.Z \
+  ./deploy/stack/gateway.sh up --release release-vX.Y.Z
+
+CLAW_IMAGE_PREFIX=crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke \
+CLAW_E2B_API_URL=http://127.0.0.1:3000 \
+  bash deploy/e2b/bootstrap-templates-from-ci-tag.sh release-vX.Y.Z
+
+./deploy/stack/gateway.sh verify
+```
+
+`up --release` 在库地址指向 compose 的 `postgres` 时会先起数据库，再拉 ACR 的 `claw-code` 和 `claw-gateway-playground`。升级换 tag 再跑同一条 `up --release`。只动库时用已有的 `gateway.sh pg-up` / `pg-down`。
+
+Admin 绑定 templateId。`agentEngines.claw.ref` 填：
+
+`https://github.com/passionke/claw-code/releases/download/release-vX.Y.Z/neuro-harness-acp-X.Y.Z-amd64.tar.gz`
+
+digest 用该次 `agent-engine-release` 日志里的 `digest=sha256:…`。不要用 `gateway.sh quick`、`pack-deploy`，也不要跑 `setup-selfhosted-e2b.sh` / `setup-e2b-traffic-proxy.sh`。
+
+---
+
 **Env 模板（本机 / 非 home）：** 复制 [`deploy/stack/env.selfhosted-e2b.example`](../deploy/stack/env.selfhosted-e2b.example) → 仓库根 `.env`。
 
 **IP 真值（勿混用；旧 lab 地址，home 以 H 节为准）：**
